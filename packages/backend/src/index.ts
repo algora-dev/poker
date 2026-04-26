@@ -1,7 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
-import rateLimit from '@fastify/rate-limit';
 import { CONFIG } from './config';
 import { logger } from './utils/logger';
 import { startBlockchainListener, stopBlockchainListener } from './blockchain/listener';
@@ -12,50 +11,55 @@ import gamesRoutes from './api/games';
 import adminRoutes from './api/admin';
 
 async function start() {
-  const app = Fastify({ logger: false });
+  const app = Fastify({
+    logger: false,
+    trustProxy: true, // Railway uses reverse proxy
+  });
 
+  // CORS — must be first
   await app.register(cors, {
     origin: true,
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    exposedHeaders: ['Content-Type'],
   });
 
   await app.register(jwt, { secret: CONFIG.JWT_SECRET });
-  await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
 
-  app.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
+  // Health check — simplest possible route
+  app.get('/health', async (_req, reply) => {
+    reply.code(200).send({ status: 'ok' });
+  });
 
+  // API routes
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(walletRoutes, { prefix: '/api/wallet' });
   await app.register(gamesRoutes, { prefix: '/api/games' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
 
-  // Start Fastify
-  const port = Number(process.env.PORT || CONFIG.PORT || 3000);
+  // Listen on Railway's PORT
+  const port = Number(process.env.PORT) || CONFIG.PORT || 3000;
   await app.listen({ port, host: '0.0.0.0' });
   logger.info(`HTTP server listening on port ${port}`);
 
-  // Attach Socket.io to Fastify's underlying Node server
+  // Attach Socket.io AFTER listen
   initializeSocketServer(app.server);
   logger.info('Socket.io attached');
 
+  // Background services
   startBlockchainListener();
   import('./jobs/autoStartGames');
   import('./jobs/turnTimer');
 
-  const shutdown = async () => {
-    logger.info('Shutting down...');
+  process.on('SIGTERM', async () => {
     stopBlockchainListener();
     await app.close();
     process.exit(0);
-  };
-
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  });
 }
 
 start().catch((err) => {
-  logger.error('Failed to start:', err);
+  console.error('FATAL:', err);
   process.exit(1);
 });
