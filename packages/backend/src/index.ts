@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
+import { createServer } from 'http';
 import { CONFIG } from './config';
 import { logger } from './utils/logger';
 import { startBlockchainListener, stopBlockchainListener } from './blockchain/listener';
@@ -12,9 +13,16 @@ import gamesRoutes from './api/games';
 import adminRoutes from './api/admin';
 
 async function start() {
-  // Create Fastify instance
+  // Create raw HTTP server first
+  const httpServer = createServer();
+
+  // Create Fastify instance attached to the same HTTP server
   const app = Fastify({
     logger: false,
+    serverFactory: (handler) => {
+      httpServer.on('request', handler);
+      return httpServer;
+    },
   });
 
   // Register plugins
@@ -45,15 +53,18 @@ async function start() {
   await app.register(gamesRoutes, { prefix: '/api/games' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
 
-  // Start HTTP server
-  await app.listen({ port: CONFIG.PORT, host: '0.0.0.0' });
-  logger.info(`HTTP server listening on port ${CONFIG.PORT}`);
+  // Initialize Fastify (but don't call listen - we use serverFactory)
+  await app.ready();
 
-  // Attach Socket.io to the SAME server (required for single-port hosting like Railway)
-  // Get the underlying Node http.Server from Fastify
-  const httpServer = app.server;
+  // Attach Socket.io to the same HTTP server
   initializeSocketServer(httpServer);
   logger.info('Socket.io attached to HTTP server');
+
+  // Start the shared HTTP server
+  const port = CONFIG.PORT;
+  httpServer.listen(port, '0.0.0.0', () => {
+    logger.info(`Server listening on port ${port}`);
+  });
 
   // Start blockchain listener
   startBlockchainListener();
@@ -67,6 +78,7 @@ async function start() {
     logger.info('Shutting down gracefully...');
     stopBlockchainListener();
     await app.close();
+    httpServer.close();
     process.exit(0);
   };
 
