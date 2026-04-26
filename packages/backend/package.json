@@ -4,6 +4,9 @@
   "private": true,
   "description": "Poker game backend server",
   "main": "dist/index.js",
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
