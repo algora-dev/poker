@@ -9,9 +9,11 @@ let io: SocketServer | null = null;
 export function initializeSocketServer(server: any) {
   io = new SocketServer(server, {
     cors: {
-      origin: true, // TODO: Restrict in production
+      origin: true,
       credentials: true,
+      methods: ['GET', 'POST'],
     },
+    transports: ['websocket', 'polling'],
   });
 
   // Handle connections
