@@ -1,0 +1,33 @@
+{
+  "name": "poker-game",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Crypto-enabled Texas Hold'em poker game",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=packages/backend",
+    "dev:frontend": "npm run dev --workspace=packages/frontend",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "build:backend": "npm run build --workspace=packages/backend",
+    "build:frontend": "npm run build --workspace=packages/frontend",
+    "build:contracts": "npm run compile --workspace=packages/contracts",
+    "build": "npm run build:backend && npm run build:frontend && npm run build:contracts",
+    "test:backend": "npm test --workspace=packages/backend",
+    "test:contracts": "npm test --workspace=packages/contracts",
+    "test": "npm run test:backend && npm run test:contracts",
+    "db:migrate": "npm run migrate:dev --workspace=packages/backend",
+    "db:studio": "npm run studio --workspace=packages/backend",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "clean": "rm -rf node_modules packages/*/node_modules packages/*/dist packages/contracts/artifacts packages/contracts/cache"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  }
+}

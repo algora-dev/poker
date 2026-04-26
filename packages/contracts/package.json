@@ -1,0 +1,40 @@
+{
+  "name": "@poker-game/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Smart contracts for poker game",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:testnet": "hardhat run scripts/deploy.ts --network lineaTestnet",
+    "deploy:mainnet": "hardhat run scripts/deploy.ts --network linea",
+    "verify:testnet": "hardhat verify --network lineaTestnet",
+    "verify:mainnet": "hardhat verify --network linea",
+    "clean": "hardhat clean",
+    "node": "hardhat node"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "^2.0.6",
+    "@nomicfoundation/hardhat-ethers": "^3.0.5",
+    "@nomicfoundation/hardhat-network-helpers": "^1.0.10",
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@nomicfoundation/hardhat-verify": "^2.0.5",
+    "@typechain/ethers-v6": "^0.5.1",
+    "@typechain/hardhat": "^9.1.0",
+    "@types/chai": "^4.3.14",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.30",
+    "chai": "^4.4.1",
+    "hardhat": "^2.22.2",
+    "hardhat-gas-reporter": "^1.0.10",
+    "solidity-coverage": "^0.8.11",
+    "ts-node": "^10.9.2",
+    "typechain": "^8.3.2",
+    "typescript": "^5.4.3"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.11.1"
+  }
+}

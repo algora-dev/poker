@@ -1,0 +1,209 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User accounts
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  username      String   @unique
+  pfpUrl        String?
+  avatarId      Int      @default(2) // Selected avatar (1-10), default: Hooded
+  walletAddress String?  @unique
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  chipBalance        ChipBalance?
+  deposits           Deposit[]
+  withdrawals        Withdrawal[]
+  gameParticipations GamePlayer[]
+  handActions        HandAction[]
+}
+
+// Chip balances (1:1 with User)
+model ChipBalance {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chips     BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// Deposit ledger
+model Deposit {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount      BigInt
+  txHash      String   @unique
+  blockNumber Int
+  confirmed   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([txHash])
+  @@index([confirmed])
+}
+
+// Withdrawal ledger
+model Withdrawal {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amount      BigInt
+  txHash      String?   @unique
+  status      String    @default("pending") // pending, approved, completed, failed, rejected
+  requestedAt DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([userId])
+  @@index([status])
+}
+
+// Games/tables
+model Game {
+  id          String    @id @default(cuid())
+  name        String
+  createdBy   String
+  maxPlayers  Int       @default(9)
+  minBuyIn    BigInt
+  maxBuyIn    BigInt
+  smallBlind  BigInt    @default(500000) // 0.5 chips in 6 decimals
+  bigBlind    BigInt    @default(1000000) // 1.0 chips in 6 decimals
+  status      String    @default("waiting") // waiting, in_progress, completed
+  currentHandId String?   // Current active hand
+  dealerIndex Int       @default(0) // Button position
+  blindLevel  Int       @default(0) // Current blind level index
+  handsAtLevel Int      @default(0) // Hands played at current blind level
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  players GamePlayer[]
+  hands   Hand[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Player participation in games
+model GamePlayer {
+  id        String    @id @default(cuid())
+  gameId    String
+  game      Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  seatIndex Int
+  chipStack BigInt
+  holeCards String    @default("[]") // JSON array of 2 cards
+  position  String    @default("waiting") // waiting, active, folded, all_in, out
+  joinedAt  DateTime  @default(now())
+  leftAt    DateTime?
+
+  @@unique([gameId, seatIndex])
+  @@index([gameId])
+  @@index([userId])
+}
+
+// Hand history (each dealt hand)
+model Hand {
+  id         String   @id @default(cuid())
+  gameId     String
+  game       Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  handNumber Int
+  deck       String   @default("[]") // JSON array of full shuffled deck (for community card dealing)
+  board      String   @default("[]") // JSON array of community cards
+  pot        BigInt   @default(0)
+  currentBet BigInt   @default(0) // Current bet to call
+  activePlayerIndex Int @default(0) // Whose turn it is
+  turnStartedAt DateTime? // When current player's turn began
+  winnerIds  String   @default("[]") // JSON array of user IDs
+  stage      String   @default("preflop") // preflop, flop, turn, river, showdown, completed
+  createdAt  DateTime @default(now())
+  completedAt DateTime?
+
+  actions HandAction[]
+  sidePots SidePot[]
+
+  @@index([gameId])
+  @@index([handNumber])
+}
+
+// Player actions within a hand
+model HandAction {
+  id        String   @id @default(cuid())
+  handId    String
+  hand      Hand     @relation(fields: [handId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action    String   // fold, check, call, raise, blind
+  amount    BigInt?
+  stage     String   // preflop, flop, turn, river - tracks which betting round
+  timestamp DateTime @default(now())
+
+  @@index([handId])
+  @@index([userId])
+  @@index([handId, stage]) // Fast queries for stage-specific actions
+}
+
+// Audit log for chip balance changes
+model ChipAudit {
+  id          String   @id @default(cuid())
+  userId      String
+  operation   String   // deposit, withdrawal, game_win, game_loss, admin_adjustment
+  amountDelta BigInt   // Positive for gains, negative for losses
+  balanceBefore BigInt
+  balanceAfter  BigInt
+  reference   String?  // Related entity ID (deposit ID, withdrawal ID, hand ID, etc.)
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([operation])
+  @@index([createdAt])
+}
+
+// Deposit authorization (10min window to deposit from specific wallet)
+model DepositAuthorization {
+  id            String   @id @default(cuid())
+  userId        String
+  walletAddress String   @unique // Only one active authorization per wallet
+  signature     String   // User's signature proving wallet ownership
+  message       String   // Message that was signed
+  expiresAt     DateTime
+  used          Boolean  @default(false)
+  usedAt        DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([walletAddress])
+  @@index([expiresAt])
+  @@map("deposit_authorizations")
+}
+
+// Side pots for all-in scenarios
+model SidePot {
+  id                String   @id @default(cuid())
+  handId            String
+  hand              Hand     @relation(fields: [handId], references: [id], onDelete: Cascade)
+  potNumber         Int      // 0 = main pot, 1 = first side pot, etc.
+  amount            BigInt   // Total chips in this pot
+  cappedAt          BigInt   // Max contribution per player for this pot
+  eligiblePlayerIds String   // JSON array of userIds who can win this pot
+  winnerId          String?  // Set at showdown (null if tie/split)
+  createdAt         DateTime @default(now())
+
+  @@unique([handId, potNumber])
+  @@index([handId])
+}
