@@ -2,7 +2,6 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
-import { createServer } from 'http';
 import { CONFIG } from './config';
 import { logger } from './utils/logger';
 import { startBlockchainListener, stopBlockchainListener } from './blockchain/listener';
@@ -13,19 +12,8 @@ import gamesRoutes from './api/games';
 import adminRoutes from './api/admin';
 
 async function start() {
-  // Create raw HTTP server first
-  const httpServer = createServer();
+  const app = Fastify({ logger: false });
 
-  // Create Fastify instance attached to the same HTTP server
-  const app = Fastify({
-    logger: false,
-    serverFactory: (handler) => {
-      httpServer.on('request', handler);
-      return httpServer;
-    },
-  });
-
-  // Register plugins
   await app.register(cors, {
     origin: true,
     credentials: true,
@@ -33,52 +21,33 @@ async function start() {
     allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
-  await app.register(jwt, {
-    secret: CONFIG.JWT_SECRET,
-  });
+  await app.register(jwt, { secret: CONFIG.JWT_SECRET });
+  await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
 
-  await app.register(rateLimit, {
-    max: 100,
-    timeWindow: '1 minute',
-  });
+  app.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }));
 
-  // Health check
-  app.get('/health', async () => {
-    return { status: 'ok', timestamp: new Date().toISOString() };
-  });
-
-  // Register routes
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(walletRoutes, { prefix: '/api/wallet' });
   await app.register(gamesRoutes, { prefix: '/api/games' });
   await app.register(adminRoutes, { prefix: '/api/admin' });
 
-  // Initialize Fastify (but don't call listen - we use serverFactory)
-  await app.ready();
+  // Start Fastify
+  const port = Number(process.env.PORT || CONFIG.PORT || 3000);
+  await app.listen({ port, host: '0.0.0.0' });
+  logger.info(`HTTP server listening on port ${port}`);
 
-  // Attach Socket.io to the same HTTP server
-  initializeSocketServer(httpServer);
-  logger.info('Socket.io attached to HTTP server');
+  // Attach Socket.io to Fastify's underlying Node server
+  initializeSocketServer(app.server);
+  logger.info('Socket.io attached');
 
-  // Start the shared HTTP server
-  const port = CONFIG.PORT;
-  httpServer.listen(port, '0.0.0.0', () => {
-    logger.info(`Server listening on port ${port}`);
-  });
-
-  // Start blockchain listener
   startBlockchainListener();
-
-  // Start background jobs
   import('./jobs/autoStartGames');
   import('./jobs/turnTimer');
 
-  // Graceful shutdown
   const shutdown = async () => {
-    logger.info('Shutting down gracefully...');
+    logger.info('Shutting down...');
     stopBlockchainListener();
     await app.close();
-    httpServer.close();
     process.exit(0);
   };
 
@@ -87,6 +56,6 @@ async function start() {
 }
 
 start().catch((err) => {
-  logger.error('Failed to start server:', err);
+  logger.error('Failed to start:', err);
   process.exit(1);
 });
