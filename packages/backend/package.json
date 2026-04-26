@@ -9,7 +9,6 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "echo 'Using tsx for runtime compilation'",
     "start": "npx tsx src/index.ts",
     "test": "vitest",
     "test:unit": "vitest run --dir tests/unit",
