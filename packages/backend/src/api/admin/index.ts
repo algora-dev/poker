@@ -144,4 +144,64 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       });
     }
   });
+
+  /**
+   * POST /api/admin/add-chips
+   * Add chips to a user by email
+   */
+  fastify.post('/add-chips', async (request, reply) => {
+    try {
+      const { secret, email, amount } = z.object({
+        secret: z.string(),
+        email: z.string().email(),
+        amount: z.number().min(0.01),
+      }).parse(request.body);
+
+      if (secret !== CONFIG.ADMIN_SECRET) {
+        return reply.code(403).send({ error: 'Invalid admin secret' });
+      }
+
+      const user = await prisma.user.findUnique({ where: { email } });
+      if (!user) {
+        return reply.code(404).send({ error: 'User not found', email });
+      }
+
+      const chipAmount = BigInt(Math.floor(amount * 1_000_000));
+
+      const balance = await prisma.chipBalance.findUnique({ where: { userId: user.id } });
+      if (!balance) {
+        await prisma.chipBalance.create({
+          data: { userId: user.id, chips: chipAmount },
+        });
+      } else {
+        await prisma.chipBalance.update({
+          where: { userId: user.id },
+          data: { chips: { increment: chipAmount } },
+        });
+      }
+
+      await prisma.chipAudit.create({
+        data: {
+          userId: user.id,
+          operation: 'admin_adjustment',
+          amountDelta: chipAmount,
+          balanceBefore: balance?.chips || BigInt(0),
+          balanceAfter: (balance?.chips || BigInt(0)) + chipAmount,
+          notes: `Admin added ${amount} chips to ${email}`,
+        },
+      });
+
+      logger.info('Admin added chips', { email, amount, userId: user.id });
+
+      return reply.send({
+        success: true,
+        email,
+        added: amount,
+        newBalance: ((Number(balance?.chips || 0) + amount * 1_000_000) / 1_000_000).toFixed(2),
+      });
+    } catch (error) {
+      logger.error('Add chips failed', { error });
+      return reply.code(500).send({ error: 'Failed to add chips' });
+    }
+  });
 }
