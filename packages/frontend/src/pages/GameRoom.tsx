@@ -59,11 +59,11 @@ export default function GameRoom() {
   const previousTurn = useRef<boolean>(false);
 
   // Load game state
-  const loadGameState = async () => {
+  const loadGameState = async (showLoader = false) => {
     if (!gameId) return;
 
     try {
-      setLoading(true);
+      if (showLoader) setLoading(true);
       const response = await api.get(`/api/games/${gameId}/state`);
       setGameState(response.data);
       setError('');
@@ -91,7 +91,7 @@ export default function GameRoom() {
   };
 
   useEffect(() => {
-    loadGameState();
+    loadGameState(true); // Show loader on initial load only
     
     // Request notification permission
     requestNotificationPermission();

@@ -187,10 +187,10 @@ export function PokerTable({
   };
 
   return (
-    <div className="relative w-full mx-auto" style={{ paddingBottom: 'clamp(70%, 55vw, 55%)', maxWidth: '1120px', minHeight: '320px' }}>
+    <div className="relative w-full mx-auto" style={{ paddingBottom: 'clamp(50%, 40vw, 45%)', maxWidth: '960px', minHeight: '300px' }}>
 
       {/* ── Table felt ── */}
-      <div className="absolute inset-[6%] rounded-[50%] overflow-hidden"
+      <div className="absolute inset-[5%] rounded-[50%] overflow-hidden"
            style={{
              background: 'radial-gradient(ellipse at center, #1a6b3c 0%, #145a30 50%, #0e4423 80%, #0a3219 100%)',
              boxShadow: 'inset 0 0 60px rgba(0,0,0,0.5), 0 8px 32px rgba(0,0,0,0.6)',
