@@ -251,56 +251,44 @@ export async function processAction(
     // Determine next state
     const bettingComplete = await checkBettingComplete(tx, currentHand.id, game.players);
 
-    // Check if all remaining players are all-in (auto-advance to showdown)
-    const freshPlayersForAllIn = await tx.gamePlayer.findMany({
-      where: { gameId: game.id },
-      orderBy: { seatIndex: 'asc' },
-    });
-    const activeNonAllIn = freshPlayersForAllIn.filter(
-      p => p.position === 'active'
-    );
-    const allInPlayers = freshPlayersForAllIn.filter(
-      p => p.position === 'all_in'
-    );
-    const everyoneAllIn = activeNonAllIn.length <= 1 && allInPlayers.length >= 1;
-
-    if (everyoneAllIn && bettingComplete) {
-      // Everyone is all-in AND betting is complete — fast-forward to showdown
-      logger.info('All players all-in — fast-forwarding to showdown', { gameId: game.id });
-      
-      let currentStage = currentHand.stage;
-      let currentBoard = JSON.parse(currentHand.board);
-      const deckCards = JSON.parse(currentHand.deck);
-      let deckIdx = 0;
-
-      // Deal remaining community cards
-      while (currentStage !== 'river') {
-        const next = getNextStage(currentStage);
-        if (next === 'showdown') break;
-        const cardsToDeal = next === 'flop' ? 3 : 1;
-        const newCards = deckCards.slice(deckIdx, deckIdx + cardsToDeal);
-        deckIdx += cardsToDeal;
-        currentBoard = [...currentBoard, ...newCards];
-        currentStage = next;
-      }
-
-      // Update hand with all community cards
-      await tx.hand.update({
-        where: { id: currentHand.id },
-        data: {
-          board: JSON.stringify(currentBoard),
-          deck: JSON.stringify(deckCards.slice(deckIdx)),
-          pot: newPot,
-          stage: 'river',
-        },
-      });
-
-      // Go straight to showdown
-      const showdownResults = await handleShowdown(tx, game, { ...currentHand, board: JSON.stringify(currentBoard), pot: newPot });
-      return { action, gameOver: true, showdownResults };
-    }
-
     if (bettingComplete && playerPosition !== 'folded') {
+      // Check if all remaining players are all-in (fast-forward to showdown)
+      const freshPlayers = await tx.gamePlayer.findMany({
+        where: { gameId: game.id },
+        orderBy: { seatIndex: 'asc' },
+      });
+      const activeNonFolded = freshPlayers.filter(
+        p => p.position !== 'folded' && p.position !== 'eliminated'
+      );
+      const canStillAct = activeNonFolded.filter(p => p.position === 'active');
+      const allInCount = activeNonFolded.filter(p => p.position === 'all_in').length;
+      
+      // If no one can act (all remaining are all-in, or 1 active + rest all-in)
+      if (canStillAct.length <= 1 && allInCount >= 1) {
+        logger.info('All-in fast-forward to showdown', { gameId: game.id, canAct: canStillAct.length, allIn: allInCount });
+        
+        let stage = currentHand.stage;
+        let board = JSON.parse(currentHand.board);
+        const deck = JSON.parse(currentHand.deck);
+        let deckIdx = 0;
+
+        while (stage !== 'river') {
+          const next = getNextStage(stage);
+          if (next === 'showdown') break;
+          const cards = next === 'flop' ? 3 : 1;
+          board = [...board, ...deck.slice(deckIdx, deckIdx + cards)];
+          deckIdx += cards;
+          stage = next;
+        }
+
+        await tx.hand.update({
+          where: { id: currentHand.id },
+          data: { board: JSON.stringify(board), deck: JSON.stringify(deck.slice(deckIdx)), pot: newPot, stage: 'river' },
+        });
+
+        const showdownResults = await handleShowdown(tx, game, { ...currentHand, board: JSON.stringify(board), pot: newPot });
+        return { action, gameOver: true, showdownResults };
+      }
       // Advance to next street or showdown
       const freshHand = await tx.hand.findUnique({ where: { id: currentHand.id } });
       if (!freshHand || freshHand.stage === 'completed') {
@@ -663,12 +651,15 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
   const playersWhoActed = new Set(Array.from(playerLastAction.keys()));
   const allActed = activePlayers.every(p => playersWhoActed.has(p.userId));
 
+  logger.info('Betting check details', {
+    stage: hand.stage,
+    activePlayers: activePlayers.map(p => p.userId.slice(-6)),
+    acted: Array.from(playerLastAction.entries()).map(([uid, act]) => `${uid.slice(-6)}:${act}`),
+    bets: Array.from(playerBets.entries()).map(([uid, amt]) => `${uid.slice(-6)}:${amt.toString()}`),
+    allActed,
+  });
+
   if (!allActed) {
-    logger.info('Betting NOT complete: not all players acted', {
-      activePlayers: numActivePlayers,
-      playersWhoActed: playersWhoActed.size,
-      waiting: activePlayers.filter(p => !playersWhoActed.has(p.userId)).map(p => p.userId),
-    });
     return false;
   }
 
