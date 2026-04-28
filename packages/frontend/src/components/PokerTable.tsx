@@ -140,14 +140,14 @@ export function PokerTable({
   }
 
   // ── Turn countdown timer ──
-  const TURN_TOTAL = 17; // 12s normal + 5s warning
-  const WARNING_AT = 5;  // Last 5 seconds = warning
+  const TURN_TOTAL = 20; // 20 seconds total
+  const WARNING_AT = 10; // Last 10 seconds = warning
   const [timeLeft, setTimeLeft] = useState(TURN_TOTAL);
   const warningSoundPlayed = useRef(false);
 
   useEffect(() => {
     if (!turnStartedAt || status !== 'in_progress') {
-      setTimeLeft(15);
+      setTimeLeft(TURN_TOTAL);
       warningSoundPlayed.current = false;
       return;
     }

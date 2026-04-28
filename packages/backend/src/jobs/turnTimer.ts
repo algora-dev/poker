@@ -3,8 +3,8 @@ import { processAction } from '../services/pokerActions';
 import { emitGameEvent } from '../socket';
 import { logger } from '../utils/logger';
 
-const TURN_TIMEOUT_MS = 17_000; // 17 seconds total (12 + 5 warning)
-const WARNING_AT_MS = 12_000;   // Warning fires at 12 seconds
+const TURN_TIMEOUT_MS = 20_000; // 20 seconds total
+const WARNING_AT_MS = 10_000;   // Warning fires at 10 seconds (10s remaining)
 
 /**
  * Check for expired turns and auto-act.

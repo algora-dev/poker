@@ -181,8 +181,7 @@ export default function GameRoom() {
         raiseAmount: raiseAmt,
       });
 
-      // Game state will update via Socket.io
-      await loadGameState();
+      // Game state will update via Socket.io event — no need to manually reload
     } catch (err: any) {
       setError(err.response?.data?.message || `Failed to ${action}`);
       console.error('Action error:', err);
@@ -266,6 +265,30 @@ export default function GameRoom() {
           <button
             onClick={() => navigate('/lobby')}
             className="w-full px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
+          >
+            Back to Lobby
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Show eliminated state
+  if (gameState?.myPlayer.position === 'eliminated' && gameState?.status === 'in_progress') {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{background:'#262626'}}>
+        <div className="rounded-2xl p-8 max-w-md w-full mx-4 border border-white/10 text-center" style={{background:'rgba(255,255,255,0.03)'}}>
+          <div className="w-14 h-14 mx-auto rounded-full flex items-center justify-center mb-4" style={{background:'rgba(239,68,68,0.1)'}}>
+            <svg className="w-7 h-7 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">You've Been Eliminated</h2>
+          <p className="text-gray-400 text-sm mb-6">You ran out of chips. Better luck next time!</p>
+          <button
+            onClick={() => navigate('/lobby')}
+            className="w-full py-3 text-white font-semibold rounded-xl hover:opacity-90 transition"
+            style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
           >
             Back to Lobby
           </button>

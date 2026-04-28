@@ -264,8 +264,8 @@ export async function processAction(
     );
     const everyoneAllIn = activeNonAllIn.length <= 1 && allInPlayers.length >= 1;
 
-    if (everyoneAllIn && !bettingComplete) {
-      // Everyone is all-in (or only 1 player can still act) — fast-forward to showdown
+    if (everyoneAllIn && bettingComplete) {
+      // Everyone is all-in AND betting is complete — fast-forward to showdown
       logger.info('All players all-in — fast-forwarding to showdown', { gameId: game.id });
       
       let currentStage = currentHand.stage;
