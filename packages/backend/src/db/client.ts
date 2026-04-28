@@ -6,6 +6,10 @@ const prisma = new PrismaClient({
     { level: 'warn', emit: 'event' },
     { level: 'error', emit: 'event' },
   ],
+  transactionOptions: {
+    maxWait: 10000,  // 10s max wait for transaction to start
+    timeout: 30000,  // 30s max transaction duration
+  },
 });
 
 // Log Prisma warnings and errors via Winston
