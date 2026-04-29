@@ -14,6 +14,7 @@ const createGameSchema = z.object({
   name: z.string().min(1, 'Game name required').max(50, 'Name too long'),
   minBuyIn: z.number().min(0.01, 'Minimum buy-in must be at least 0.01'),
   maxBuyIn: z.number().min(0.01, 'Maximum buy-in must be at least 0.01'),
+  creatorBuyIn: z.number().min(0.01).optional(),
   smallBlind: z.number().min(0.01, 'Small blind must be at least 0.01').optional().default(0.5),
   bigBlind: z.number().min(0.01, 'Big blind must be at least 0.01').optional().default(1.0),
 });
@@ -33,6 +34,9 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         // Convert to BigInt (chips use 6 decimals like mUSD)
         const minBuyInChips = BigInt(Math.floor(data.minBuyIn * 1_000_000));
         const maxBuyInChips = BigInt(Math.floor(data.maxBuyIn * 1_000_000));
+        const creatorBuyInChips = data.creatorBuyIn
+          ? BigInt(Math.floor(data.creatorBuyIn * 1_000_000))
+          : minBuyInChips;
         const smallBlindChips = BigInt(Math.floor(data.smallBlind * 1_000_000));
         const bigBlindChips = BigInt(Math.floor(data.bigBlind * 1_000_000));
 
@@ -42,7 +46,8 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           minBuyInChips,
           maxBuyInChips,
           smallBlindChips,
-          bigBlindChips
+          bigBlindChips,
+          creatorBuyInChips
         );
 
         // Emit balance update to creator

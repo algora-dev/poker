@@ -37,6 +37,7 @@ export default function Lobby() {
   const [gameName, setGameName] = useState('');
   const [minBuyIn, setMinBuyIn] = useState('5');
   const [maxBuyIn, setMaxBuyIn] = useState('20');
+  const [creatorBuyIn, setCreatorBuyIn] = useState('5');
   const [smallBlind, setSmallBlind] = useState('0.10');
   const [bigBlind, setBigBlind] = useState('0.20');
 
@@ -103,6 +104,8 @@ export default function Lobby() {
       return;
     }
     
+    // Set default creator buy-in to min
+    setCreatorBuyIn(minBuyIn);
     // Show confirmation
     setShowCreateModal(false);
     setShowCreateConfirm(true);
@@ -117,6 +120,7 @@ export default function Lobby() {
         name: gameName,
         minBuyIn: parseFloat(minBuyIn),
         maxBuyIn: parseFloat(maxBuyIn),
+        creatorBuyIn: parseFloat(creatorBuyIn),
         smallBlind: parseFloat(smallBlind),
         bigBlind: parseFloat(bigBlind),
       });
@@ -482,12 +486,27 @@ export default function Lobby() {
                 </p>
                 <ul className="space-y-2 text-white">
                   <li>• <strong>Buy-in Range:</strong> {minBuyIn} - {maxBuyIn} chips</li>
-                  <li>• <strong>Small Blind:</strong> {smallBlind} chips</li>
-                  <li>• <strong>Big Blind:</strong> {bigBlind} chips</li>
+                  <li>• <strong>Blinds:</strong> {smallBlind} / {bigBlind}</li>
                 </ul>
-                <p className="text-yellow-400 mt-4 text-sm">
-                  Players will choose their buy-in amount when joining (within range).
-                </p>
+
+                {/* Creator buy-in selector */}
+                <div className="mt-4 pt-4 border-t border-white/10">
+                  <label className="block text-gray-300 mb-2 text-sm">Your buy-in ({minBuyIn} - {maxBuyIn} chips)</label>
+                  <input
+                    type="range"
+                    min={minBuyIn}
+                    max={maxBuyIn}
+                    step="0.5"
+                    value={creatorBuyIn}
+                    onChange={(e) => setCreatorBuyIn(e.target.value)}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between items-center mt-2">
+                    <span className="text-gray-400 text-xs">{minBuyIn}</span>
+                    <span className="text-white text-xl font-bold">{parseFloat(creatorBuyIn).toFixed(2)} chips</span>
+                    <span className="text-gray-400 text-xs">{maxBuyIn}</span>
+                  </div>
+                </div>
               </div>
 
               <p className="text-gray-300 mb-6">

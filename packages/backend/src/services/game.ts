@@ -10,8 +10,13 @@ export async function createGame(
   minBuyIn: bigint,
   maxBuyIn: bigint,
   smallBlind: bigint,
-  bigBlind: bigint
+  bigBlind: bigint,
+  creatorBuyIn?: bigint
 ) {
+  const buyIn = creatorBuyIn || minBuyIn;
+  if (buyIn < minBuyIn || buyIn > maxBuyIn) {
+    throw new Error('Creator buy-in must be within the min/max range');
+  }
   // Validate buy-in range
   if (minBuyIn <= 0) {
     throw new Error('Minimum buy-in must be greater than 0');
@@ -32,9 +37,9 @@ export async function createGame(
 
     // Note: Creator doesn't pay yet - will choose buy-in when starting game
     // Just validate they CAN afford minimum
-    if (chipBalance.chips < minBuyIn) {
+    if (chipBalance.chips < buyIn) {
       throw new Error(
-        `Insufficient chips. You have ${chipBalance.chips.toString()}, need at least ${minBuyIn.toString()}`
+        `Insufficient chips. You have ${chipBalance.chips.toString()}, need ${buyIn.toString()}`
       );
     }
 
@@ -52,10 +57,10 @@ export async function createGame(
       },
     });
 
-    // Deduct min buy-in from creator and add them as first player
+    // Deduct creator's chosen buy-in and add them as first player
     await tx.chipBalance.update({
       where: { userId },
-      data: { chips: { decrement: minBuyIn } },
+      data: { chips: { decrement: buyIn } },
     });
 
     await tx.gamePlayer.create({
@@ -63,7 +68,7 @@ export async function createGame(
         gameId: game.id,
         userId,
         seatIndex: 0,
-        chipStack: minBuyIn,
+        chipStack: buyIn,
         position: 'waiting',
       },
     });
@@ -72,9 +77,9 @@ export async function createGame(
       data: {
         userId,
         operation: 'game_join',
-        amountDelta: -minBuyIn,
+        amountDelta: -buyIn,
         balanceBefore: chipBalance.chips,
-        balanceAfter: chipBalance.chips - minBuyIn,
+        balanceAfter: chipBalance.chips - buyIn,
         reference: game.id,
         notes: `Created game: ${name}`,
       },
@@ -89,7 +94,7 @@ export async function createGame(
 
     return {
       game,
-      newBalance: (chipBalance.chips - minBuyIn).toString(),
+      newBalance: (chipBalance.chips - buyIn).toString(),
     };
   });
 }
