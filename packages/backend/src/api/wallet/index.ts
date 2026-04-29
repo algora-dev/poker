@@ -159,6 +159,11 @@ export default async function walletRoutes(fastify: FastifyInstance) {
     { preHandler: authMiddleware },
     async (request, reply) => {
       try {
+        // Withdrawals disabled during testing
+        if (process.env.DISABLE_WITHDRAWALS === 'true') {
+          return reply.code(400).send({ error: 'Withdrawals are temporarily disabled during testing' });
+        }
+
         const { amount } = z.object({
           amount: z.number().min(1, 'Minimum withdrawal is 1.00 mUSD'),
         }).parse(request.body);
