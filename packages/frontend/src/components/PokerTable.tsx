@@ -140,8 +140,8 @@ export function PokerTable({
   }
 
   // ── Turn countdown timer ──
-  const TURN_TOTAL = 20; // 20 seconds total
-  const WARNING_AT = 10; // Last 10 seconds = warning
+  const TURN_TOTAL = 9999; // Timer disabled
+  
   const [timeLeft, setTimeLeft] = useState(TURN_TOTAL);
   const warningSoundPlayed = useRef(false);
 
@@ -180,7 +180,7 @@ export function PokerTable({
     warningSoundPlayed.current = false;
   }, [activePlayerUserId]);
 
-  const isWarning = timeLeft <= WARNING_AT && timeLeft > 0;
+  const isWarning = false; // Timer disabled
 
   // ── Stage label ──
   const stageLabel: Record<string, string> = {
@@ -350,8 +350,8 @@ export function PokerTable({
                 {isEliminated && <div className="text-[9px] text-gray-500 font-bold">ELIMINATED</div>}
                 {isAllIn && <div className="text-[9px] text-purple-400 font-bold animate-pulse">ALL IN</div>}
 
-                {/* Timer bar */}
-                {isActive && status === 'in_progress' && (
+                {/* Timer bar - HIDDEN */}
+                {false && (
                   <div className="mt-1">
                     <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
                       <div

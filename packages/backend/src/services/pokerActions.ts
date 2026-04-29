@@ -88,13 +88,18 @@ export async function processAction(
             stage: currentHand.stage,
           },
         });
-        // Check how many active players remain
-        const activePlayers = game.players.filter(
-          (p: any) => p.userId !== userId && p.position !== 'folded' && p.position !== 'eliminated'
+        // Read FRESH player positions from DB (not stale game.players)
+        const freshPlayers = await tx.gamePlayer.findMany({
+          where: { gameId },
+          orderBy: { seatIndex: 'asc' },
+          include: { user: { select: { id: true, username: true } } },
+        });
+        const remainingActive = freshPlayers.filter(
+          p => p.position !== 'folded' && p.position !== 'eliminated'
         );
-        if (activePlayers.length === 1) {
-          // Only one player left — they win
-          const winner = activePlayers[0];
+
+        if (remainingActive.length === 1) {
+          const winner = remainingActive[0];
           await handleFoldWin(tx, game, currentHand, winner);
           return {
             action: 'fold',
@@ -106,18 +111,18 @@ export async function processAction(
             },
           };
         }
-        // Multiple players still active — continue play
-        // Find next active player
+
+        // Multiple players still active — find next active player
         {
-          const currentPlayerIndex = game.players.findIndex((p: any) => p.userId === userId);
-          const numPlayers = game.players.length;
+          const currentPlayerIndex = freshPlayers.findIndex(p => p.userId === userId);
+          const numPlayers = freshPlayers.length;
           let nextIdx = (currentPlayerIndex + 1) % numPlayers;
           let safety = 0;
           while (
             safety < numPlayers &&
-            (game.players[nextIdx].position === 'folded' ||
-             game.players[nextIdx].position === 'eliminated' ||
-             game.players[nextIdx].userId === userId)
+            (freshPlayers[nextIdx].position === 'folded' ||
+             freshPlayers[nextIdx].position === 'eliminated' ||
+             freshPlayers[nextIdx].userId === userId)
           ) {
             nextIdx = (nextIdx + 1) % numPlayers;
             safety++;
@@ -128,10 +133,9 @@ export async function processAction(
               pot: newPot,
               currentBet: newCurrentBet,
               activePlayerIndex: nextIdx,
-              turnStartedAt: new Date(),
             },
           });
-          return { action: 'fold', nextPlayer: game.players[nextIdx].userId };
+          return { action: 'fold', nextPlayer: freshPlayers[nextIdx].userId };
         }
 
       case 'all-in':
