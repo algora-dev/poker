@@ -92,7 +92,16 @@ async function cleanupFinishedGames() {
     for (const game of inProgressGames) {
       const latestHand = game.hands[0];
       const hasActiveHand = latestHand && latestHand.stage !== 'completed';
-      if (hasActiveHand) continue; // Game still has a live hand
+      
+      // Even if there's an active hand, clean up if no action for 5+ minutes
+      if (hasActiveHand && latestHand) {
+        const handAge = Date.now() - new Date(latestHand.createdAt).getTime();
+        if (handAge < 5 * 60 * 1000) continue; // Hand is less than 5 min old, still active
+        // Hand is 5+ minutes old with no completion — stale, fall through to cleanup
+        logger.info('Stale active hand detected', { gameId: game.id, handAge: Math.round(handAge/1000) });
+      } else if (hasActiveHand) {
+        continue;
+      }
 
       // No active hand — check how long since last hand completed (or game started)
       const lastActivity = latestHand?.completedAt || latestHand?.createdAt || game.startedAt || game.createdAt;

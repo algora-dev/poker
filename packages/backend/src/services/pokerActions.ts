@@ -14,7 +14,9 @@ export async function processAction(
   action: ActionType,
   raiseAmount?: number
 ) {
+  const txStart = Date.now();
   return await prisma.$transaction(async (tx) => {
+    const t0 = Date.now();
     // Get game with current hand
     const game = await tx.game.findUnique({
       where: { id: gameId },
@@ -35,6 +37,7 @@ export async function processAction(
       },
     });
 
+    const t1 = Date.now();
     if (!game) {
       throw new Error('Game not found');
     }
@@ -252,8 +255,10 @@ export async function processAction(
       },
     });
 
+    const t2 = Date.now();
     // Determine next state
     const bettingComplete = await checkBettingComplete(tx, currentHand.id, game.players);
+    const t3 = Date.now();
 
     if (bettingComplete && playerPosition !== 'folded') {
       // Check if all remaining players are all-in (fast-forward to showdown)
@@ -393,6 +398,8 @@ export async function processAction(
         currentBet: newCurrentBet.toString(),
       });
 
+      const tEnd = Date.now();
+      logger.info(`TIMING: query=${t1-t0}ms action=${t2-t1}ms betting=${t3-t2}ms turnSwitch=${tEnd-t3}ms TOTAL=${tEnd-t0}ms txWait=${t0-txStart}ms`);
       return {
         action,
         nextPlayer: freshTurnPlayers[nextPlayerIndex].userId,
@@ -657,13 +664,10 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
   // Count real actions (not blinds)
   const realActions = stageActions.filter(a => a.action !== 'blind');
   
-  logger.info('Checking betting complete', {
-    handId,
-    stage: hand.stage,
-    totalActions: stageActions.length,
-    realActions: realActions.length,
-    playerLastActionSize: playerLastAction.size,
-  });
+  // Detailed logging for debugging
+  const actedList = Array.from(playerLastAction.entries()).map(([uid, act]) => `${uid.slice(-6)}:${act}`);
+  const betsList = Array.from(playerBets.entries()).map(([uid, amt]) => `${uid.slice(-6)}:${(Number(amt)/1e6).toFixed(2)}`);
+  logger.info(`BETTING: stage=${hand.stage} actions=${realActions.length} acted=[${actedList}] bets=[${betsList}]`);
   
   // Build list of players who are still in the hand
   // Use FRESH position data from database, not stale game.players
@@ -693,13 +697,9 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
   const playersWhoActed = new Set(Array.from(playerLastAction.keys()));
   const allActed = activePlayers.every(p => playersWhoActed.has(p.userId));
 
-  logger.info('Betting check details', {
-    stage: hand.stage,
-    activePlayers: activePlayers.map(p => p.userId.slice(-6)),
-    acted: Array.from(playerLastAction.entries()).map(([uid, act]) => `${uid.slice(-6)}:${act}`),
-    bets: Array.from(playerBets.entries()).map(([uid, amt]) => `${uid.slice(-6)}:${amt.toString()}`),
-    allActed,
-  });
+  const activeIds = activePlayers.map(p => p.userId.slice(-6));
+  const waiting = activePlayers.filter(p => !playersWhoActed.has(p.userId)).map(p => p.userId.slice(-6));
+  logger.info(`BETTING_CHECK: active=[${activeIds}] acted=[${Array.from(playersWhoActed).map(u=>u.slice(-6))}] waiting=[${waiting}] allActed=${allActed}`);
 
   if (!allActed) {
     return false;
