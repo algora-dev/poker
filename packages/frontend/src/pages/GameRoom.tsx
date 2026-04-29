@@ -94,6 +94,15 @@ export default function GameRoom() {
     }
   };
 
+  // FALLBACK POLLING: if socket fails, poll every 5 seconds to prevent freezes
+  useEffect(() => {
+    if (!gameId || !gameState || gameState.status !== 'in_progress') return;
+    const interval = setInterval(() => {
+      loadGameState();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [gameId, gameState?.status]);
+
   useEffect(() => {
     loadGameState(true); // Show loader on initial load only
     

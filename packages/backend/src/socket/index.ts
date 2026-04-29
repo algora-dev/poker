@@ -73,7 +73,15 @@ export function emitBalanceUpdate(userId: string, chips: string) {
 export function emitGameEvent(gameId: string, event: string, data: any) {
   if (!io) return;
   
+  // Log how many sockets are in this room
+  const room = io.sockets.adapter.rooms.get(`game:${gameId}`);
+  const roomSize = room ? room.size : 0;
+  
   io.to(`game:${gameId}`).emit(event, data);
+  
+  if (event === 'game:action') {
+    logger.info(`SOCKET: ${event} to game:${gameId} (${roomSize} clients in room) next=${data?.nextPlayer?.slice(-6) || 'none'}`);
+  }
 }
 
 /**
