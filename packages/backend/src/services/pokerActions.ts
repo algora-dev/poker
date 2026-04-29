@@ -710,9 +710,10 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
     return false;
   }
 
-  // Check if all active players have acted in this stage (blinds don't count)
+  // Check if all players who CAN act have acted in this stage (blinds don't count, all-in players don't need to act)
   const playersWhoActed = new Set(Array.from(playerLastAction.keys()));
-  const allActed = activePlayers.every(p => playersWhoActed.has(p.userId));
+  const playersWhoNeedToAct = activePlayers.filter(p => p.position === 'active'); // exclude all-in
+  const allActed = playersWhoNeedToAct.every(p => playersWhoActed.has(p.userId));
 
   const activeIds = activePlayers.map(p => p.userId.slice(-6));
   const waiting = activePlayers.filter(p => !playersWhoActed.has(p.userId)).map(p => p.userId.slice(-6));
@@ -724,15 +725,23 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
 
   // All active players have acted. Check if bets are settled.
 
-  // Check if all active players checked
-  const allChecked = activePlayers.every(p => playerLastAction.get(p.userId) === 'check');
+  // Check if all players who can act checked
+  const allChecked = playersWhoNeedToAct.every(p => playerLastAction.get(p.userId) === 'check');
   if (allChecked) {
     logger.info('Betting complete: all checked');
     return true;
   }
 
-  // Check if bets are equal for all active players
-  const betAmounts = activePlayers.map(p => playerBets.get(p.userId) || BigInt(0));
+  // Check if bets are equal for players who CAN still act (exclude all-in)
+  const playersWhoCanAct = activePlayers.filter(p => p.position === 'active');
+  
+  // If no one can act (all remaining are all-in), betting is complete
+  if (playersWhoCanAct.length === 0) {
+    logger.info('Betting complete: all remaining players are all-in');
+    return true;
+  }
+  
+  const betAmounts = playersWhoCanAct.map(p => playerBets.get(p.userId) || BigInt(0));
   const maxBet = betAmounts.reduce((max, bet) => bet > max ? bet : max, BigInt(0));
   const allBetsEqual = betAmounts.every(bet => bet === maxBet);
 
