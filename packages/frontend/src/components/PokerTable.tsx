@@ -83,7 +83,7 @@ function CardFace({ card, small }: { card: any; small?: boolean }) {
     <div className={`relative bg-white rounded-md shadow-md select-none border border-gray-200 overflow-hidden ${w}`}>
       <div className={`absolute top-0.5 left-0.5 leading-tight ${color}`}>
         <div className="text-[10px] sm:text-[11px] font-bold">{rank}</div>
-        <div className="text-[9px] sm:text-[10px] -mt-0.5">{symbol}</div>
+        <div className="text-[11px] sm:text-xs -mt-0.5">{symbol}</div>
       </div>
       <div className={`absolute inset-0 flex items-center justify-center text-lg sm:text-2xl ${color}`}>
         {symbol}
@@ -294,18 +294,18 @@ export function PokerTable({
               <div className="relative">
               {/* Position badge (D/SB/BB) */}
               {player.seatIndex === dealerSeatIndex && !isEliminated && (
-                <div className="absolute -top-1 -right-1 w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[8px] sm:text-[9px] font-bold text-black z-10" style={{background:'#ffffff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>D</div>
+                <div className="absolute -top-1 -right-1 w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-black z-10" style={{background:'#ffffff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>D</div>
               )}
               {player.seatIndex === sbSeatIndex && player.seatIndex !== dealerSeatIndex && !isEliminated && (
-                <div className="absolute -top-1 -left-1 w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[8px] sm:text-[9px] font-bold text-white z-10" style={{background:'#12ceec', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>SB</div>
+                <div className="absolute -top-1 -left-1 w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white z-10" style={{background:'#12ceec', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>SB</div>
               )}
               {player.seatIndex === bbSeatIndex && !isEliminated && (
-                <div className="absolute -top-1 -left-1 w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-[8px] sm:text-[9px] font-bold text-white z-10" style={{background:'#9c51ff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>BB</div>
+                <div className="absolute -top-1 -left-1 w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white z-10" style={{background:'#9c51ff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>BB</div>
               )}
 
               {/* Avatar circle */}
               <div className={`
-                w-9 h-9 sm:w-12 sm:h-12 rounded-full flex items-center justify-center text-sm sm:text-lg font-bold shadow-lg overflow-hidden
+                w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center text-sm sm:text-lg font-bold shadow-lg overflow-hidden
                 ${isActive && isWarning ? 'animate-pulse' : ''}
                 ${isActive ? 'ring-[3px] ring-yellow-400 shadow-yellow-400/50' :
                   isMe ? 'ring-2 ring-green-400' :
@@ -328,12 +328,12 @@ export function PokerTable({
 
               {/* Name + chips plate */}
               <div className={`
-                mt-1 rounded-lg px-2 sm:px-3 py-1 text-center min-w-[80px] sm:min-w-[110px]
+                mt-1.5 rounded-lg px-3 sm:px-4 py-1.5 text-center min-w-[120px] sm:min-w-[160px]
                 ${isActive ? 'bg-yellow-900/80 border border-yellow-500/50' :
                   isMe ? 'bg-green-900/80 border border-green-600/40' :
                   'bg-gray-900/80 border border-gray-700/40'}
               `}>
-                <div className={`text-[10px] sm:text-xs font-semibold truncate max-w-[65px] sm:max-w-[100px] ${
+                <div className={`text-xs sm:text-sm font-semibold truncate max-w-[90px] sm:max-w-[140px] ${
                   isActive ? 'text-yellow-200' :
                   isMe ? 'text-green-300' :
                   isFolded ? 'text-gray-500' :
@@ -341,7 +341,7 @@ export function PokerTable({
                 }`}>
                   {player.username}{isMe ? ' (You)' : ''}
                 </div>
-                <div className={`text-[9px] sm:text-[10px] ${isEliminated ? 'text-gray-600' : 'text-yellow-400/80'}`}>
+                <div className={`text-[11px] sm:text-xs ${isEliminated ? 'text-gray-600' : 'text-yellow-400/80'}`}>
                   {formatChips(player.chipStack)}
                 </div>
 
