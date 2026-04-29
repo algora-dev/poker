@@ -175,6 +175,8 @@ export function PokerTable({
   }, [turnStartedAt, status, isMyTurn]);
 
   useEffect(() => {
+    // Immediately reset timer when active player changes
+    setTimeLeft(TURN_TOTAL);
     warningSoundPlayed.current = false;
   }, [activePlayerUserId]);
 

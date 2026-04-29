@@ -108,9 +108,21 @@ export default function GameRoom() {
     // Join game room
     socket.emit('join:game', gameId);
 
-    // Listen for game updates
+    // Listen for game updates — update immediately with socket data, then lazy refresh
     socket.on('game:updated', (data: any) => {
       if (data?.action === 'check') playCheckSound();
+      
+      // Immediately update active player for fast timer reset
+      if (data?.nextPlayer && gameState) {
+        setGameState(prev => prev ? ({
+          ...prev,
+          activePlayerUserId: data.nextPlayer,
+          turnStartedAt: data.turnStartedAt || new Date().toISOString(),
+          isMyTurn: data.nextPlayer === user?.id,
+        }) : prev);
+      }
+      
+      // Background refresh for full state (pot, bets, etc)
       loadGameState();
     });
 

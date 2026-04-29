@@ -344,25 +344,25 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           },
         });
 
-        // Initialize first hand
-        await initializeHand(id);
-
-        // Emit game started event
-        emitGameEvent(id, 'game:started', {
-          gameId: id,
-          playerCount: game.players.length,
-        });
-
         logger.info('Game started by creator', {
           gameId: id,
           creatorId: request.user!.id,
           playerCount: game.players.length,
         });
 
-        return reply.send({
-          success: true,
-          message: 'Game started!',
-        });
+        // Respond immediately, initialize hand in background
+        reply.send({ success: true, message: 'Game started!' });
+
+        // Initialize first hand and emit event (non-blocking)
+        try {
+          await initializeHand(id);
+          emitGameEvent(id, 'game:started', {
+            gameId: id,
+            playerCount: game.players.length,
+          });
+        } catch (err) {
+          logger.error('Failed to initialize first hand', { gameId: id, error: err });
+        }
       } catch (error) {
         logger.error('Start game failed', { 
           error,
@@ -577,11 +577,13 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             }
           }, 8000); // 8 seconds after fold
         } else {
-          // Normal action, game continues
+          // Normal action, game continues — include next player info so clients can update fast
           emitGameEvent(id, 'game:updated', {
             gameId: id,
             action,
             userId: request.user!.id,
+            nextPlayer: result.nextPlayer || null,
+            turnStartedAt: new Date().toISOString(),
           });
         }
 
