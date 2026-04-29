@@ -39,7 +39,22 @@ async function checkExpiredTurns() {
 
       const activePlayer = game.players[hand.activePlayerIndex];
       if (!activePlayer) continue;
-      if (activePlayer.position === 'folded' || activePlayer.position === 'eliminated') continue;
+      if (activePlayer.position === 'folded' || activePlayer.position === 'eliminated' || activePlayer.position === 'all_in') continue;
+
+      // Check if player already acted this turn (race condition with slow DB commits)
+      const recentAction = await prisma.handAction.findFirst({
+        where: {
+          handId: hand.id,
+          userId: activePlayer.userId,
+          stage: hand.stage,
+          action: { not: 'blind' },
+          timestamp: { gt: hand.turnStartedAt || new Date(0) },
+        },
+      });
+      if (recentAction) {
+        logger.info('Timer: player already acted, skipping', { userId: activePlayer.userId.slice(-6) });
+        continue;
+      }
 
       // Auto-action: check if possible, otherwise fold
       const hasActiveBet = hand.currentBet > BigInt(0);

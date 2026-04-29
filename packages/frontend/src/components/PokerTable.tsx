@@ -419,7 +419,7 @@ export function PokerTable({
       })}
 
       {/* ── Action Buttons ── */}
-      {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && (
+      {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && (
         <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-full pt-4 sm:pt-6 z-20 w-full px-2 sm:w-auto sm:px-0">
           <div className="flex gap-1.5 sm:gap-2 rounded-2xl p-2 sm:p-3 border border-white/5 shadow-2xl justify-center" style={{background:'rgba(38,38,38,0.95)', backdropFilter:'blur(8px)'}}>
             <button

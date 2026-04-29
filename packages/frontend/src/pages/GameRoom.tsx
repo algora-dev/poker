@@ -191,16 +191,20 @@ export default function GameRoom() {
     setActionLoading(true);
     setError('');
 
+    // Immediately mark as not-my-turn so buttons hide instantly
+    setGameState(prev => prev ? ({ ...prev, isMyTurn: false }) : prev);
+
     try {
       await api.post(`/api/games/${gameId}/action`, {
         action,
         raiseAmount: raiseAmt,
       });
-
-      // Game state will update via Socket.io event — no need to manually reload
+      // Socket.io will handle state updates
     } catch (err: any) {
       setError(err.response?.data?.message || `Failed to ${action}`);
       console.error('Action error:', err);
+      // Restore turn if action failed
+      loadGameState();
     } finally {
       setActionLoading(false);
     }
@@ -638,6 +642,23 @@ export default function GameRoom() {
                   </p>
                 </div>
               )}
+
+              {/* Action buttons */}
+              <div className="flex gap-3 mt-4">
+                <button
+                  onClick={() => { setFoldWinData(null); loadGameState(); }}
+                  className="flex-1 py-2.5 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition"
+                  style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
+                >
+                  Play Next Hand
+                </button>
+                <button
+                  onClick={() => navigate('/lobby')}
+                  className="flex-1 py-2.5 text-gray-400 text-sm rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition"
+                >
+                  Leave
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -660,9 +681,25 @@ export default function GameRoom() {
               loadGameState();
             }}
           />
+          {/* Buttons overlay */}
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[60] flex gap-3">
+            <button
+              onClick={() => { setShowdownData(null); setGameCompleted(false); loadGameState(); }}
+              className="px-5 py-2.5 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition"
+              style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
+            >
+              Play Next Hand
+            </button>
+            <button
+              onClick={() => navigate('/lobby')}
+              className="px-5 py-2.5 text-gray-400 text-sm rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition"
+            >
+              Back to Lobby
+            </button>
+          </div>
           {/* Next hand countdown overlay */}
           {nextHandCountdown !== null && nextHandCountdown > 0 && (
-            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[60] backdrop-blur-sm rounded-full px-6 py-3 border" style={{background:'rgba(0,0,0,0.8)', borderColor:'rgba(18,206,236,0.3)'}}>
+            <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[60] backdrop-blur-sm rounded-full px-6 py-2 border" style={{background:'rgba(0,0,0,0.8)', borderColor:'rgba(18,206,236,0.3)'}}>
               <p className="text-white text-center text-sm">
                 Next hand in <span className="font-bold text-lg" style={{color:'#12ceec'}}>{nextHandCountdown}s</span>
               </p>
