@@ -146,6 +146,44 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   });
 
   /**
+   * GET /api/admin/logs
+   * Get recent app logs
+   */
+  fastify.get('/logs', async (request, reply) => {
+    try {
+      const query = request.query as any;
+      if (query.secret !== CONFIG.ADMIN_SECRET) {
+        return reply.code(403).send({ error: 'Invalid admin secret' });
+      }
+
+      const level = query.level || undefined;
+      const category = query.category || undefined;
+      const gameId = query.gameId || undefined;
+      const limit = parseInt(query.limit || '50');
+
+      const logs = await prisma.appLog.findMany({
+        where: {
+          ...(level && { level }),
+          ...(category && { category }),
+          ...(gameId && { gameId }),
+        },
+        orderBy: { createdAt: 'desc' },
+        take: Math.min(limit, 200),
+      });
+
+      return reply.send({
+        count: logs.length,
+        logs: logs.map(l => ({
+          ...l,
+          details: l.details ? JSON.parse(l.details) : null,
+        })),
+      });
+    } catch (error) {
+      return reply.code(500).send({ error: 'Failed to get logs' });
+    }
+  });
+
+  /**
    * POST /api/admin/add-chips
    * Add chips to a user by email
    */

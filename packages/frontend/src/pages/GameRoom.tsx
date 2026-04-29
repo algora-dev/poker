@@ -83,8 +83,12 @@ export default function GameRoom() {
       
       previousTurn.current = isNowMyTurn;
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to load game');
       console.error('Load game state error:', err);
+      // Only show error if we don't have any game state yet (initial load)
+      // Don't kick player out for transient refresh errors
+      if (!gameState) {
+        setError(err.response?.data?.message || 'Failed to load game');
+      }
     } finally {
       setLoading(false);
     }

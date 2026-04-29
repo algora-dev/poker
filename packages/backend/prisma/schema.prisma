@@ -207,3 +207,21 @@ model SidePot {
   @@unique([handId, potNumber])
   @@index([handId])
 }
+
+// Error and event logging for debugging
+model AppLog {
+  id        String   @id @default(cuid())
+  level     String   // error, warn, info
+  category  String   // action, game, auth, system
+  message   String
+  details   String?  // JSON string with extra context
+  userId    String?
+  gameId    String?
+  handId    String?
+  createdAt DateTime @default(now())
+
+  @@index([level])
+  @@index([category])
+  @@index([gameId])
+  @@index([createdAt])
+}

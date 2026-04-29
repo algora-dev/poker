@@ -509,6 +509,9 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           })
           .parse(request.body);
 
+        const { appLog, logError } = await import('../../services/appLogger');
+        await appLog('info', 'action', `Player ${action}`, { action, raiseAmount, userId: request.user!.id.slice(-6) }, { userId: request.user!.id, gameId: id });
+
         const result = await processAction(id, request.user!.id, action, raiseAmount);
 
         // Emit appropriate events
@@ -607,19 +610,16 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         }
 
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-        const errorStack = error instanceof Error ? error.stack : undefined;
         
-        logger.error('Action failed', {
-          error: errorMsg,
-          stack: errorStack,
-        });
-        
-        console.error('ACTION ERROR:', errorMsg);
-        console.error('STACK:', errorStack);
+        // Log to DB for persistent debugging
+        try {
+          const { logError } = await import('../../services/appLogger');
+          await logError('action', `Action ${action} failed`, error, { userId: request.user!.id, gameId: id });
+        } catch (_) {}
         
         return reply.code(500).send({
           error: 'Internal server error',
-          message: 'Failed to process action',
+          message: errorMsg,
         });
       }
     }
