@@ -356,10 +356,11 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         // Initialize first hand and emit event (non-blocking)
         try {
           await initializeHand(id);
-          emitGameEvent(id, 'game:started', {
-            gameId: id,
-            playerCount: game.players.length,
-          });
+          emitGameEvent(id, 'game:started', { gameId: id });
+          // Broadcast full state to all players
+          const { broadcastGameState: bgs } = await import('../../socket');
+          const pIds = game.players.map((p: any) => p.userId);
+          bgs(id, pIds).catch(() => {});
         } catch (err) {
           logger.error('Failed to initialize first hand', { gameId: id, error: err });
         }
@@ -514,6 +515,17 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
 
         const result = await processAction(id, request.user!.id, action, raiseAmount);
 
+        // Get all player IDs for state broadcast
+        const { broadcastGameState } = await import('../../socket');
+        const gamePlayers = await prisma.game.findUnique({
+          where: { id },
+          select: { players: { select: { userId: true } } },
+        });
+        const playerIds = gamePlayers?.players.map(p => p.userId) || [];
+
+        // Broadcast full game state to all players (replaces loadGameState API calls)
+        broadcastGameState(id, playerIds).catch(() => {});
+
         // Emit appropriate events
         if (result.showdownResults) {
           // Hand completed via showdown - emit results
@@ -532,9 +544,10 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
               if (game && game.status === 'in_progress') {
                 await initializeHand(id);
                 emitGameEvent(id, 'game:new-hand', { gameId: id });
-                logger.info('Next hand started', { gameId: id });
-              } else {
-                logger.info('Game no longer in progress, skipping next hand', { gameId: id, status: game?.status });
+                // Broadcast full state
+                const gp = await prisma.game.findUnique({ where: { id }, select: { players: { select: { userId: true } } } });
+                const { broadcastGameState: bgs2 } = await import('../../socket');
+                bgs2(id, gp?.players.map(p => p.userId) || []).catch(() => {});
               }
             } catch (err: any) {
               logger.error('Failed to start next hand', {
@@ -567,6 +580,9 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
               if (game && game.status === 'in_progress') {
                 await initializeHand(id);
                 emitGameEvent(id, 'game:new-hand', { gameId: id });
+                const gp2 = await prisma.game.findUnique({ where: { id }, select: { players: { select: { userId: true } } } });
+                const { broadcastGameState: bgs3 } = await import('../../socket');
+                bgs3(id, gp2?.players.map(p => p.userId) || []).catch(() => {});
               }
             } catch (err) {
               logger.error('Failed to start next hand after fold', {

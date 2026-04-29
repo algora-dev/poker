@@ -74,5 +74,30 @@ export function emitGameEvent(gameId: string, event: string, data: any) {
   if (!io) return;
   
   io.to(`game:${gameId}`).emit(event, data);
-  logger.info('Emitted game event', { gameId, event, data });
+}
+
+/**
+ * Emit personalized game state to each player in a game.
+ * Each player gets their own view (their cards visible, others hidden).
+ */
+export async function broadcastGameState(gameId: string, playerUserIds: string[]) {
+  if (!io) return;
+
+  try {
+    const { getGameState } = await import('../services/holdemGame');
+    
+    // Send personalized state to each player in parallel
+    await Promise.all(
+      playerUserIds.map(async (userId) => {
+        try {
+          const state = await getGameState(gameId, userId);
+          io!.to(`user:${userId}`).emit('game:state', state);
+        } catch (err) {
+          // Player might have left — skip silently
+        }
+      })
+    );
+  } catch (err) {
+    logger.error('Failed to broadcast game state', { gameId, error: err });
+  }
 }

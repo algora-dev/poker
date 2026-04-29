@@ -108,30 +108,25 @@ export default function GameRoom() {
     // Join game room
     socket.emit('join:game', gameId);
 
-    // Listen for game updates — update immediately with socket data, then lazy refresh
+    // Listen for game updates — play sounds only
     socket.on('game:updated', (data: any) => {
       if (data?.action === 'check') playCheckSound();
-      
-      // Immediately update active player for fast timer reset
-      if (data?.nextPlayer && gameState) {
-        setGameState(prev => prev ? ({
-          ...prev,
-          activePlayerUserId: data.nextPlayer,
-          turnStartedAt: data.turnStartedAt || new Date().toISOString(),
-          isMyTurn: data.nextPlayer === user?.id,
-        }) : prev);
+    });
+
+    // Listen for full game state pushed by server (no API call needed)
+    socket.on('game:state', (state: any) => {
+      if (state) {
+        setGameState(state);
+        setLoading(false);
       }
-      
-      // Background refresh for full state (pot, bets, etc)
-      loadGameState();
     });
 
     socket.on('game:started', () => {
-      loadGameState();
+      loadGameState(); // Initial hand setup — need full load
     });
 
     socket.on('player:joined', () => {
-      loadGameState();
+      loadGameState(); // Player count changed — need full load
     });
 
     socket.on('game:showdown', (data: any) => {
@@ -158,7 +153,7 @@ export default function GameRoom() {
       setFoldWinData(null);
       setGameCompleted(false);
       setNextHandCountdown(null);
-      loadGameState();
+      // State will come via game:state event from broadcastGameState
     });
 
     socket.on('game:turn-warning', () => {
@@ -167,6 +162,7 @@ export default function GameRoom() {
 
     return () => {
       socket.off('game:updated');
+      socket.off('game:state');
       socket.off('game:started');
       socket.off('player:joined');
       socket.off('game:fold-win');
