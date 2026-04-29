@@ -108,17 +108,30 @@ export default function GameRoom() {
     // Join game room
     socket.emit('join:game', gameId);
 
-    // Listen for game updates — play sounds only
-    socket.on('game:updated', (data: any) => {
+    // Instant action event — switch turns immediately
+    socket.on('game:action', (data: any) => {
       if (data?.action === 'check') playCheckSound();
+      // Instantly update whose turn it is
+      if (data?.nextPlayer) {
+        setGameState(prev => prev ? ({
+          ...prev,
+          isMyTurn: data.nextPlayer === user?.id,
+          activePlayerUserId: data.nextPlayer,
+        }) : prev);
+      }
     });
 
-    // Listen for full game state pushed by server (no API call needed)
+    // Full game state pushed by server (pot, bets, cards, etc)
     socket.on('game:state', (state: any) => {
       if (state) {
         setGameState(state);
         setLoading(false);
       }
+    });
+
+    // Legacy event (keep for backward compat)
+    socket.on('game:updated', (data: any) => {
+      if (data?.action === 'check') playCheckSound();
     });
 
     socket.on('game:started', () => {
@@ -161,6 +174,7 @@ export default function GameRoom() {
     });
 
     return () => {
+      socket.off('game:action');
       socket.off('game:updated');
       socket.off('game:state');
       socket.off('game:started');

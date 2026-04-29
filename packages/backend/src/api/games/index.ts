@@ -515,18 +515,27 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
 
         const result = await processAction(id, request.user!.id, action, raiseAmount);
 
-        // Get all player IDs for state broadcast
+        // IMMEDIATELY emit event so clients know something changed
+        // Include nextPlayer so clients can switch turns instantly
+        emitGameEvent(id, 'game:action', {
+          gameId: id,
+          action,
+          userId: request.user!.id,
+          nextPlayer: result.nextPlayer || null,
+          timestamp: Date.now(),
+        });
+
+        // Then broadcast full state in background (non-blocking)
         const { broadcastGameState } = await import('../../socket');
-        const gamePlayers = await prisma.game.findUnique({
+        // Get player IDs from a quick query
+        prisma.game.findUnique({
           where: { id },
           select: { players: { select: { userId: true } } },
-        });
-        const playerIds = gamePlayers?.players.map(p => p.userId) || [];
+        }).then(g => {
+          if (g) broadcastGameState(id, g.players.map(p => p.userId)).catch(() => {});
+        }).catch(() => {});
 
-        // Broadcast full game state to all players (replaces loadGameState API calls)
-        broadcastGameState(id, playerIds).catch(() => {});
-
-        // Emit appropriate events
+        // Emit specific events
         if (result.showdownResults) {
           // Hand completed via showdown - emit results
           emitGameEvent(id, 'game:showdown', {
@@ -593,14 +602,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             }
           }, 8000); // 8 seconds after fold
         } else {
-          // Normal action, game continues — include next player info so clients can update fast
-          emitGameEvent(id, 'game:updated', {
-            gameId: id,
-            action,
-            userId: request.user!.id,
-            nextPlayer: result.nextPlayer || null,
-            turnStartedAt: new Date().toISOString(),
-          });
+          // Normal action — game:action already emitted above
         }
 
         logger.info('Player action processed', {
