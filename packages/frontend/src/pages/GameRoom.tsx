@@ -108,6 +108,13 @@ export default function GameRoom() {
     // Join game room
     socket.emit('join:game', gameId);
 
+    // On reconnect, rejoin room and reload state
+    const onReconnect = () => {
+      socket.emit('join:game', gameId);
+      loadGameState();
+    };
+    socket.on('connect', onReconnect);
+
     // Instant action event — update everything from socket data directly
     socket.on('game:action', (data: any) => {
       if (data?.action === 'check') playCheckSound();
@@ -196,6 +203,7 @@ export default function GameRoom() {
     });
 
     return () => {
+      socket.off('connect');
       socket.off('game:action');
       socket.off('game:updated');
       socket.off('game:state');

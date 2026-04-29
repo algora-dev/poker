@@ -399,7 +399,13 @@ export async function processAction(
       });
 
       const tEnd = Date.now();
-      logger.info(`TIMING: query=${t1-t0}ms action=${t2-t1}ms betting=${t3-t2}ms turnSwitch=${tEnd-t3}ms TOTAL=${tEnd-t0}ms txWait=${t0-txStart}ms`);
+      const timing = `query=${t1-t0}ms action=${t2-t1}ms betting=${t3-t2}ms turn=${tEnd-t3}ms TOTAL=${tEnd-t0}ms wait=${t0-txStart}ms`;
+      logger.info(`TIMING: ${timing}`);
+      // Also log to DB
+      try {
+        const { appLog } = await import('./appLogger');
+        await appLog('info', 'system', `TIMING: ${timing}`, { query: t1-t0, action: t2-t1, betting: t3-t2, turn: tEnd-t3, total: tEnd-t0, wait: t0-txStart }, { gameId, userId });
+      } catch(_) {}
       return {
         action,
         nextPlayer: freshTurnPlayers[nextPlayerIndex].userId,
