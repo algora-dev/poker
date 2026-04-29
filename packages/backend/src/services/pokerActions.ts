@@ -327,21 +327,51 @@ export async function processAction(
       const currentPlayerIndex = game.players.findIndex(p => p.userId === userId);
       const numPlayers = game.players.length;
       
-      // Find next active player (skip folded/eliminated)
+      // Find next ACTIVE player (skip folded/eliminated/all_in)
       let nextPlayerIndex = (currentPlayerIndex + 1) % numPlayers;
       let attempts = 0;
       
+      // Read fresh positions
+      const freshTurnPlayers = await tx.gamePlayer.findMany({
+        where: { gameId },
+        orderBy: { seatIndex: 'asc' },
+      });
+      
       while (
         attempts < numPlayers && 
-        (game.players[nextPlayerIndex].position === 'folded' || 
-         game.players[nextPlayerIndex].position === 'eliminated')
+        (freshTurnPlayers[nextPlayerIndex].position === 'folded' || 
+         freshTurnPlayers[nextPlayerIndex].position === 'eliminated' ||
+         freshTurnPlayers[nextPlayerIndex].position === 'all_in')
       ) {
         nextPlayerIndex = (nextPlayerIndex + 1) % numPlayers;
         attempts++;
       }
       
-      // Safety check
+      // Safety check — if no active players can act, everyone is all-in → showdown
       if (attempts >= numPlayers) {
+        // All remaining players are all-in — fast forward to showdown
+        const canAct = freshTurnPlayers.filter(p => p.position === 'active');
+        if (canAct.length === 0) {
+          // Everyone is all-in or folded — deal remaining cards and showdown
+          let stage = currentHand.stage;
+          let board = JSON.parse(currentHand.board);
+          const deck = JSON.parse(currentHand.deck);
+          let deckIdx = 0;
+          while (stage !== 'river') {
+            const next = getNextStage(stage);
+            if (next === 'showdown') break;
+            const cards = next === 'flop' ? 3 : 1;
+            board = [...board, ...deck.slice(deckIdx, deckIdx + cards)];
+            deckIdx += cards;
+            stage = next;
+          }
+          await tx.hand.update({
+            where: { id: currentHand.id },
+            data: { board: JSON.stringify(board), deck: JSON.stringify(deck.slice(deckIdx)), pot: newPot, stage: 'river' },
+          });
+          const showdownResults = await handleShowdown(tx, game, { ...currentHand, board: JSON.stringify(board), pot: newPot });
+          return { action, gameOver: true, showdownResults };
+        }
         throw new Error('No active players found for next turn');
       }
 
@@ -358,12 +388,12 @@ export async function processAction(
       logger.info('Turn switched', {
         handId: currentHand.id,
         from: userId,
-        to: game.players[nextPlayerIndex].userId,
+        to: freshTurnPlayers[nextPlayerIndex].userId,
         pot: newPot.toString(),
         currentBet: newCurrentBet.toString(),
       });
 
-      return { action, nextPlayer: game.players[nextPlayerIndex].userId };
+      return { action, nextPlayer: freshTurnPlayers[nextPlayerIndex].userId };
     }
   });
 }
@@ -721,7 +751,7 @@ function getPostFlopFirstToAct(game: any): number {
   for (let offset = 1; offset <= numPlayers; offset++) {
     const idx = (dealerIndex + offset) % numPlayers;
     const p = game.players[idx];
-    if (p.position !== 'folded' && p.position !== 'eliminated') {
+    if (p.position !== 'folded' && p.position !== 'eliminated' && p.position !== 'all_in') {
       return idx;
     }
   }
