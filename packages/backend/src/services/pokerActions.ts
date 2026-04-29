@@ -15,6 +15,7 @@ export async function processAction(
   raiseAmount?: number
 ) {
   const txStart = Date.now();
+  try {
   return await prisma.$transaction(async (tx) => {
     const t0 = Date.now();
     // Get game with current hand
@@ -417,6 +418,16 @@ export async function processAction(
       };
     }
   });
+  } catch (err: any) {
+    // Log ALL errors to database
+    try {
+      const { logError } = await import('./appLogger');
+      await logError('action', `processAction FAILED: ${action}`, err, { gameId, userId });
+    } catch (_) {
+      console.error('PROCESS_ACTION_FATAL:', err?.message, err?.stack);
+    }
+    throw err; // Re-throw so API handler catches it
+  }
 }
 
 /**
