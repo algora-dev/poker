@@ -108,30 +108,52 @@ export default function GameRoom() {
     // Join game room
     socket.emit('join:game', gameId);
 
-    // Instant action event — switch turns immediately
+    // Instant action event — update everything from socket data directly
     socket.on('game:action', (data: any) => {
       if (data?.action === 'check') playCheckSound();
-      // Instantly update whose turn it is
-      if (data?.nextPlayer) {
-        setGameState(prev => prev ? ({
+      
+      setGameState(prev => {
+        if (!prev) return prev;
+        
+        // Update opponents' last action
+        const updatedOpponents = prev.opponents?.map((o: any) => ({
+          ...o,
+          lastAction: o.userId === data.userId ? data.action : o.lastAction,
+          currentStageBet: o.userId === data.userId && data.actionAmount
+            ? String(parseInt(o.currentStageBet || '0') + parseInt(data.actionAmount || '0'))
+            : o.currentStageBet,
+        })) || [];
+
+        // Update my player's last action if I was the one who acted
+        const updatedMyPlayer = data.userId === prev.myPlayer.userId
+          ? { ...prev.myPlayer, lastAction: data.action }
+          : prev.myPlayer;
+
+        return {
           ...prev,
           isMyTurn: data.nextPlayer === user?.id,
-          activePlayerUserId: data.nextPlayer,
-        }) : prev);
-      }
+          activePlayerUserId: data.nextPlayer || prev.activePlayerUserId,
+          pot: data.pot || prev.pot,
+          currentBet: data.currentBet || prev.currentBet,
+          amountToCall: data.nextPlayer === user?.id
+            ? String(Math.max(0, parseInt(data.currentBet || '0') - parseInt(updatedMyPlayer.currentStageBet || '0')))
+            : prev.amountToCall,
+          stage: data.stage || prev.stage,
+          myPlayer: updatedMyPlayer,
+          opponents: updatedOpponents,
+        };
+      });
+
+      // Background: refresh full state for accuracy (non-blocking)
+      setTimeout(() => loadGameState(), 500);
     });
 
-    // Full game state pushed by server (pot, bets, cards, etc)
+    // Full game state from server
     socket.on('game:state', (state: any) => {
       if (state) {
         setGameState(state);
         setLoading(false);
       }
-    });
-
-    // Legacy event (keep for backward compat)
-    socket.on('game:updated', (data: any) => {
-      if (data?.action === 'check') playCheckSound();
     });
 
     socket.on('game:started', () => {

@@ -393,7 +393,15 @@ export async function processAction(
         currentBet: newCurrentBet.toString(),
       });
 
-      return { action, nextPlayer: freshTurnPlayers[nextPlayerIndex].userId };
+      return {
+        action,
+        nextPlayer: freshTurnPlayers[nextPlayerIndex].userId,
+        pot: newPot.toString(),
+        currentBet: newCurrentBet.toString(),
+        stage: currentHand.stage,
+        actionBy: userId,
+        actionAmount: actionAmount.toString(),
+      };
     }
   });
 }

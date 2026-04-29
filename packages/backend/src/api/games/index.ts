@@ -520,25 +520,18 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
 
         const result = await processAction(id, request.user!.id, action, raiseAmount);
 
-        // IMMEDIATELY emit event so clients know something changed
-        // Include nextPlayer so clients can switch turns instantly
+        // IMMEDIATELY emit action event with ALL data clients need
         emitGameEvent(id, 'game:action', {
           gameId: id,
           action,
           userId: request.user!.id,
           nextPlayer: result.nextPlayer || null,
+          pot: result.pot || null,
+          currentBet: result.currentBet || null,
+          stage: result.stage || null,
+          actionAmount: result.actionAmount || null,
           timestamp: Date.now(),
         });
-
-        // Then broadcast full state in background (non-blocking)
-        const { broadcastGameState } = await import('../../socket');
-        // Get player IDs from a quick query
-        prisma.game.findUnique({
-          where: { id },
-          select: { players: { select: { userId: true } } },
-        }).then(g => {
-          if (g) broadcastGameState(id, g.players.map(p => p.userId)).catch(() => {});
-        }).catch(() => {});
 
         // Emit specific events
         if (result.showdownResults) {
