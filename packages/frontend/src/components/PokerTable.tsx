@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { getAvatarSrc } from '../utils/avatars';
 
 interface Player {
@@ -139,48 +139,7 @@ export function PokerTable({
     seatToPlayer.set(p.seatIndex, p);
   }
 
-  // ── Turn countdown timer ──
-  const TURN_TOTAL = 9999; // Timer disabled
-  
-  const [timeLeft, setTimeLeft] = useState(TURN_TOTAL);
-  const warningSoundPlayed = useRef(false);
 
-  useEffect(() => {
-    if (!turnStartedAt || status !== 'in_progress') {
-      setTimeLeft(TURN_TOTAL);
-      warningSoundPlayed.current = false;
-      return;
-    }
-    const interval = setInterval(() => {
-      const elapsed = (Date.now() - new Date(turnStartedAt).getTime()) / 1000;
-      const remaining = Math.max(0, Math.ceil(TURN_TOTAL - elapsed));
-      setTimeLeft(remaining);
-
-      if (remaining <= WARNING_AT && remaining > 0 && isMyTurn && !warningSoundPlayed.current) {
-        warningSoundPlayed.current = true;
-        try {
-          const ctx = new AudioContext();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.frequency.value = 880;
-          gain.gain.value = 0.3;
-          osc.start();
-          osc.stop(ctx.currentTime + 0.2);
-        } catch (_) {}
-      }
-    }, 200);
-    return () => clearInterval(interval);
-  }, [turnStartedAt, status, isMyTurn]);
-
-  useEffect(() => {
-    // Immediately reset timer when active player changes
-    setTimeLeft(TURN_TOTAL);
-    warningSoundPlayed.current = false;
-  }, [activePlayerUserId]);
-
-  const isWarning = false; // Timer disabled
 
   // ── Stage label ──
   const stageLabel: Record<string, string> = {
@@ -306,7 +265,7 @@ export function PokerTable({
               {/* Avatar circle */}
               <div className={`
                 w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center text-sm sm:text-lg font-bold shadow-lg overflow-hidden
-                ${isActive && isWarning ? 'animate-pulse' : ''}
+                
                 ${isActive ? 'ring-[3px] ring-yellow-400 shadow-yellow-400/50' :
                   isMe ? 'ring-2 ring-green-400' :
                   isAllIn ? 'ring-2 ring-purple-500' :
@@ -350,24 +309,7 @@ export function PokerTable({
                 {isEliminated && <div className="text-[9px] text-gray-500 font-bold">ELIMINATED</div>}
                 {isAllIn && <div className="text-[9px] text-purple-400 font-bold animate-pulse">ALL IN</div>}
 
-                {/* Timer bar - HIDDEN */}
-                {false && (
-                  <div className="mt-1">
-                    <div className="h-1 bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-200 ${
-                          isWarning ? 'bg-red-500 animate-pulse' : 'bg-green-400'
-                        }`}
-                        style={{ width: `${(timeLeft / TURN_TOTAL) * 100}%` }}
-                      />
-                    </div>
-                    <div className={`text-[9px] text-center mt-0.5 font-mono ${
-                      isWarning ? 'text-red-400' : 'text-gray-500'
-                    }`}>
-                      {timeLeft}s
-                    </div>
-                  </div>
-                )}
+
               </div>
 
               {/* Cards */}
