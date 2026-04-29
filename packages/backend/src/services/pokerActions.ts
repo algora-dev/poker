@@ -680,11 +680,26 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
 
   // Count real actions (not blinds)
   const realActions = stageActions.filter(a => a.action !== 'blind');
+
+  // Track the last raiser/bettor — the round ends when action returns to them
+  let lastAggressorId: string | null = null;
+  let actedSinceLastRaise = new Set<string>();
   
-  // Detailed logging for debugging
+  for (const action of stageActions) {
+    if (action.action === 'blind') continue;
+    
+    if (action.action === 'raise' || action.action === 'all-in') {
+      // Check if all-in is actually a raise (more than current required)
+      lastAggressorId = action.userId;
+      actedSinceLastRaise = new Set([action.userId]);
+    } else {
+      actedSinceLastRaise.add(action.userId);
+    }
+  }
+  
   const actedList = Array.from(playerLastAction.entries()).map(([uid, act]) => `${uid.slice(-6)}:${act}`);
   const betsList = Array.from(playerBets.entries()).map(([uid, amt]) => `${uid.slice(-6)}:${(Number(amt)/1e6).toFixed(2)}`);
-  logger.info(`BETTING: stage=${hand.stage} actions=${realActions.length} acted=[${actedList}] bets=[${betsList}]`);
+  logger.info(`BETTING: stage=${hand.stage} actions=${realActions.length} lastAggressor=${lastAggressorId?.slice(-6)||'none'} acted=[${actedList}] bets=[${betsList}]`);
   
   // Build list of players who are still in the hand
   // Use FRESH position data from database, not stale game.players
@@ -710,29 +725,7 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
     return false;
   }
 
-  // Check if all players who CAN act have acted in this stage (blinds don't count, all-in players don't need to act)
-  const playersWhoActed = new Set(Array.from(playerLastAction.keys()));
-  const playersWhoNeedToAct = activePlayers.filter(p => p.position === 'active'); // exclude all-in
-  const allActed = playersWhoNeedToAct.every(p => playersWhoActed.has(p.userId));
-
-  const activeIds = activePlayers.map(p => p.userId.slice(-6));
-  const waiting = activePlayers.filter(p => !playersWhoActed.has(p.userId)).map(p => p.userId.slice(-6));
-  logger.info(`BETTING_CHECK: active=[${activeIds}] acted=[${Array.from(playersWhoActed).map(u=>u.slice(-6))}] waiting=[${waiting}] allActed=${allActed}`);
-
-  if (!allActed) {
-    return false;
-  }
-
-  // All active players have acted. Check if bets are settled.
-
-  // Check if all players who can act checked
-  const allChecked = playersWhoNeedToAct.every(p => playerLastAction.get(p.userId) === 'check');
-  if (allChecked) {
-    logger.info('Betting complete: all checked');
-    return true;
-  }
-
-  // Check if bets are equal for players who CAN still act (exclude all-in)
+  // Players who can still make decisions (not folded, eliminated, or all-in)
   const playersWhoCanAct = activePlayers.filter(p => p.position === 'active');
   
   // If no one can act (all remaining are all-in), betting is complete
@@ -740,7 +733,39 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
     logger.info('Betting complete: all remaining players are all-in');
     return true;
   }
+
+  // CORE RULE: If there was a raise, everyone who can act must have acted SINCE that raise
+  if (lastAggressorId) {
+    const allRespondedToRaise = playersWhoCanAct.every(p => actedSinceLastRaise.has(p.userId));
+    const betsOfActors = playersWhoCanAct.map(p => playerBets.get(p.userId) || BigInt(0));
+    const maxBetAct = betsOfActors.reduce((max, b) => b > max ? b : max, BigInt(0));
+    const betsMatch = betsOfActors.every(b => b === maxBetAct);
+    
+    logger.info(`BETTING_CHECK: aggressor=${lastAggressorId.slice(-6)} responded=${allRespondedToRaise} betsMatch=${betsMatch} canAct=${playersWhoCanAct.map(p=>p.userId.slice(-6))}`);
+    
+    if (allRespondedToRaise && betsMatch) {
+      logger.info('Betting complete: all responded to last raise, bets matched');
+      return true;
+    }
+    return false;
+  }
   
+  // No raise happened — check if everyone who can act has acted
+  const playersWhoActed = new Set(Array.from(playerLastAction.keys()));
+  const allActed = playersWhoCanAct.every(p => playersWhoActed.has(p.userId));
+  
+  if (!allActed) {
+    logger.info(`BETTING_CHECK: no raise, waiting for: ${playersWhoCanAct.filter(p => !playersWhoActed.has(p.userId)).map(p=>p.userId.slice(-6))}`);
+    return false;
+  }
+
+  // Everyone acted, no raise — check if all checked or all bets equal
+  const allChecked = playersWhoCanAct.every(p => playerLastAction.get(p.userId) === 'check');
+  if (allChecked) {
+    logger.info('Betting complete: all checked');
+    return true;
+  }
+
   const betAmounts = playersWhoCanAct.map(p => playerBets.get(p.userId) || BigInt(0));
   const maxBet = betAmounts.reduce((max, bet) => bet > max ? bet : max, BigInt(0));
   const allBetsEqual = betAmounts.every(bet => bet === maxBet);
