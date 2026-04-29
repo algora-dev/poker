@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 interface Card {
@@ -34,205 +33,117 @@ interface ShowdownModalProps {
   onClose: () => void;
 }
 
+const SUIT_SYM: Record<string, string> = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
+const SUIT_CLR: Record<string, string> = { hearts: 'text-red-500', diamonds: 'text-red-500', clubs: 'text-gray-900', spades: 'text-gray-900' };
+
+function MiniCard({ card, highlight }: { card: Card; highlight?: boolean }) {
+  const color = SUIT_CLR[card.suit] || 'text-gray-900';
+  return (
+    <div className={`bg-white rounded w-8 h-11 flex flex-col items-center justify-center text-xs font-bold shadow ${highlight ? 'ring-2 ring-yellow-400' : ''}`}>
+      <span className={color}>{card.rank}</span>
+      <span className={`${color} text-[10px] -mt-0.5`}>{SUIT_SYM[card.suit]}</span>
+    </div>
+  );
+}
+
 export function ShowdownModal({
-  isOpen,
-  pot,
-  sidePots = [],
-  communityCards,
-  players,
-  winnerIds,
-  currentUserId,
-  onClose,
+  isOpen, pot, sidePots, communityCards, players, winnerIds, currentUserId, onClose,
 }: ShowdownModalProps) {
   const navigate = useNavigate();
+  const formatChips = (c: string) => (parseInt(c) / 1_000_000).toFixed(2);
 
-  const formatChips = (chips: string) => {
-    return (parseInt(chips) / 1_000_000).toFixed(2);
-  };
-
-  const getSuitSymbol = (suit: string) => {
-    const symbols: Record<string, string> = {
-      hearts: '♥',
-      diamonds: '♦',
-      clubs: '♣',
-      spades: '♠',
-    };
-    return symbols[suit] || suit;
-  };
-
-  const getSuitColor = (suit: string) => {
-    return suit === 'hearts' || suit === 'diamonds' ? 'text-red-500' : 'text-gray-900';
-  };
-
-  const renderCard = (card: Card, isHighlighted: boolean = false) => {
-    return (
-      <div
-        className={`
-          relative inline-block w-16 h-24 bg-white rounded-lg shadow-lg border-2 mx-1
-          ${isHighlighted ? 'border-yellow-400 ring-4 ring-yellow-300' : 'border-gray-300'}
-        `}
-      >
-        <div className="absolute top-1 left-2 text-lg font-bold">
-          <div className={getSuitColor(card.suit)}>{card.rank}</div>
-        </div>
-        <div className="absolute top-7 left-1/2 transform -translate-x-1/2 text-3xl">
-          <span className={getSuitColor(card.suit)}>{getSuitSymbol(card.suit)}</span>
-        </div>
-        <div className="absolute bottom-1 right-2 text-lg font-bold rotate-180">
-          <div className={getSuitColor(card.suit)}>{card.rank}</div>
-        </div>
-      </div>
-    );
-  };
-
-  const currentPlayer = players.find(p => p.userId === currentUserId);
-  const opponent = players.find(p => p.userId !== currentUserId);
   const winner = players.find(p => p.isWinner);
-  const isCurrentPlayerWinner = currentPlayer?.isWinner || false;
+  const losers = players.filter(p => !p.isWinner);
+  const isCurrentPlayerWinner = winnerIds.includes(currentUserId);
   const isTie = winnerIds.length > 1;
 
-  // Check if a card is in the best 5
-  const isCardInBest5 = (card: Card, bestCards: Card[]) => {
-    return bestCards.some(bc => bc.rank === card.rank && bc.suit === card.suit);
-  };
+  const isInBest5 = (card: Card, best: Card[]) => best.some(b => b.rank === card.rank && b.suit === card.suit);
 
-  if (!isOpen || !currentPlayer || !opponent) return null;
+  if (!isOpen || !winner) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto border border-white/10" style={{background:'#262626'}}>
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-2">
+      <div className="rounded-2xl border border-white/10 shadow-2xl w-full max-w-3xl" style={{background:'#262626'}}>
         {/* Header */}
-        <div className="p-6 rounded-t-xl" style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}>
-          <h2 className="text-3xl font-bold text-center text-white">
-            {isTie ? 'TIE' : 'HAND COMPLETE'}
+        <div className="py-3 px-6 rounded-t-2xl flex items-center justify-between" style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}>
+          <h2 className="text-xl font-bold text-white">
+            {isTie ? 'TIE' : isCurrentPlayerWinner ? 'YOU WIN!' : `${winner.username} Wins!`}
           </h2>
+          <div className="flex items-center gap-2">
+            <img src="/assets/musd-chip.png" alt="" className="w-5 h-5" />
+            <span className="text-white font-bold text-lg">{formatChips(pot)}</span>
+          </div>
         </div>
 
-        <div className="p-8 space-y-6">
-          {/* Pot Display - Side Pots or Single Pot */}
-          {sidePots && sidePots.length > 1 ? (
-            <div className="rounded-xl border border-white/5 p-5 space-y-3" style={{background:'rgba(255,255,255,0.02)'}}>
-              <h3 className="text-base font-bold text-white text-center">Multiple Pots Awarded</h3>
-              {sidePots.map((sp, idx) => (
-                <div key={idx} className="rounded-lg p-3 border border-white/5 flex justify-between items-center" style={{background:'rgba(255,255,255,0.03)'}}>
+        <div className="p-5">
+          {/* Main layout: community cards + players side by side */}
+          <div className="flex gap-5">
+            {/* Left: Community cards + winning hand */}
+            <div className="flex-1">
+              {/* Community Cards */}
+              <div className="mb-3">
+                <p className="text-gray-500 text-xs mb-1.5">Community Cards</p>
+                <div className="flex gap-1.5">
+                  {communityCards.map((card, i) => (
+                    <MiniCard key={i} card={card} highlight={isInBest5(card, winner.bestCards)} />
+                  ))}
+                </div>
+              </div>
+
+              {/* Winning hand info */}
+              <div className="rounded-lg p-3 border" style={{background:'rgba(18,206,236,0.06)', borderColor:'rgba(18,206,236,0.2)'}}>
+                <p className="text-xs font-bold mb-1.5" style={{color:'#12ceec'}}>{winner.handName}</p>
+                <div className="flex gap-1.5">
+                  {winner.holeCards.map((card, i) => (
+                    <MiniCard key={i} card={card} highlight={isInBest5(card, winner.bestCards)} />
+                  ))}
+                </div>
+                <p className="text-gray-500 text-[10px] mt-1">{winner.username}'s cards</p>
+              </div>
+            </div>
+
+            {/* Right: All players' hands */}
+            <div className="flex-1 space-y-2">
+              <p className="text-gray-500 text-xs mb-1">All Hands</p>
+              {players.map(p => (
+                <div key={p.userId} className={`rounded-lg p-2.5 flex items-center justify-between border ${
+                  p.isWinner ? 'border-cyan-500/30' : 'border-white/5'
+                }`} style={{background:'rgba(255,255,255,0.03)'}}>
                   <div className="flex items-center gap-2">
-                    <img src="/assets/musd-chip.png" alt="" className="w-5 h-5" />
+                    <div className="flex gap-1">
+                      {p.holeCards.map((card, i) => (
+                        <MiniCard key={i} card={card} />
+                      ))}
+                    </div>
                     <div>
-                      <span className="text-white font-semibold text-sm">
-                        {sp.potNumber === 0 ? 'Main Pot' : `Side Pot ${sp.potNumber}`}
-                      </span>
-                      <p className="text-[10px] text-gray-500">
-                        Won by: {sp.winnerNames.join(', ')}
+                      <p className={`text-sm font-medium ${p.isWinner ? 'text-white' : 'text-gray-400'}`}>
+                        {p.username}{p.userId === currentUserId ? ' (You)' : ''}
+                      </p>
+                      <p className={`text-[10px] ${p.isWinner ? 'text-cyan-400' : 'text-gray-600'}`}>
+                        {p.handName}
                       </p>
                     </div>
                   </div>
-                  <span className="text-white font-bold" style={{color:'#12ceec'}}>
-                    {formatChips(sp.amount)}
-                  </span>
+                  {p.isWinner && (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{background:'rgba(18,206,236,0.15)', color:'#12ceec'}}>
+                      Winner
+                    </span>
+                  )}
                 </div>
               ))}
-              <div className="text-center text-gray-400 text-xs pt-2 border-t border-white/5">
-                Total: {formatChips(pot)}
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-white/5 p-5 text-center" style={{background:'rgba(255,255,255,0.02)'}}>
-              <p className="text-gray-500 text-sm mb-1">Total Pot</p>
-              <div className="flex items-center justify-center gap-2">
-                <img src="/assets/musd-chip.png" alt="" className="w-7 h-7" />
-                <p className="text-3xl font-bold text-white">{formatChips(pot)}</p>
-              </div>
-            </div>
-          )}
 
-          {/* Winner Announcement */}
-          <div className="text-center space-y-2">
-            {isTie ? (
-              <>
-                <p className="text-2xl font-bold text-cyan-400">TIE! POT SPLIT</p>
-                <p className="text-xl text-white">Split among {winnerIds.length} winners</p>
-              </>
-            ) : (
-              <>
-                <p className="text-3xl font-bold text-cyan-400">
-                  {isCurrentPlayerWinner ? 'YOU WIN!' : `${winner?.username} WINS!`}
-                </p>
-                <p className="text-2xl text-white">
-                  Won {formatChips(pot)} chips
-                </p>
-              </>
-            )}
-            <p className="text-xl text-yellow-300 font-semibold mt-4">
-              ✨ {winner?.handName.toUpperCase()} ✨
-            </p>
-          </div>
-
-          {/* Community Cards */}
-          <div className="bg-green-950 bg-opacity-50 rounded-xl p-6">
-            <h3 className="text-lg font-semibold text-cyan-400 mb-3 text-center">Community Cards</h3>
-            <div className="flex justify-center flex-wrap gap-2">
-              {communityCards.map((card, idx) => (
-                <div key={idx}>
-                  {renderCard(card, isCardInBest5(card, winner?.bestCards || []))}
+              {/* Side pots */}
+              {sidePots && sidePots.length > 1 && (
+                <div className="pt-2 border-t border-white/5 space-y-1">
+                  {sidePots.map((sp, i) => (
+                    <div key={i} className="flex justify-between text-xs text-gray-400">
+                      <span>{sp.potNumber === 0 ? 'Main' : `Side ${sp.potNumber}`}: {sp.winnerNames.join(', ')}</span>
+                      <span style={{color:'#12ceec'}}>{formatChips(sp.amount)}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
-          </div>
-
-          {/* Winner's Hand */}
-          <div className="bg-yellow-900 bg-opacity-30 rounded-xl p-6 border border-white/10">
-            <h3 className="text-lg font-semibold text-cyan-400 mb-3 text-center">
-              {winner?.username}'s Hand {winner?.isWinner && '👑'}
-            </h3>
-            <div className="flex justify-center flex-wrap gap-2 mb-4">
-              {winner?.holeCards.map((card, idx) => (
-                <div key={idx}>
-                  {renderCard(card, isCardInBest5(card, winner.bestCards))}
-                </div>
-              ))}
-            </div>
-            <div className="text-center">
-              <p className="text-white font-semibold">Best 5 Cards:</p>
-              <div className="flex justify-center flex-wrap gap-1 mt-2">
-                {winner?.bestCards.map((card, idx) => (
-                  <span key={idx} className="text-yellow-300 font-mono">
-                    {card.rank}{getSuitSymbol(card.suit)}
-                    {idx < (winner.bestCards.length - 1) && ', '}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Loser's Hand (if not tie) */}
-          {!isTie && (
-            <div className="bg-gray-800 bg-opacity-30 rounded-xl p-6 border-2 border-gray-600">
-              <h3 className="text-lg font-semibold text-gray-400 mb-3 text-center">
-                {players.find(p => !p.isWinner)?.username}'s Hand
-              </h3>
-              <div className="flex justify-center flex-wrap gap-2 mb-4">
-                {players.find(p => !p.isWinner)?.holeCards.map((card, idx) => (
-                  <div key={idx}>
-                    {renderCard(card, false)}
-                  </div>
-                ))}
-              </div>
-              <div className="text-center">
-                <p className="text-gray-400 text-sm">
-                  {players.find(p => !p.isWinner)?.handName}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Action Buttons */}
-          <div className="flex gap-4 justify-center pt-4">
-            <button
-              onClick={() => navigate('/lobby')}
-              className="px-8 py-4 bg-blue-600 text-white text-lg font-bold rounded-lg hover:bg-blue-700 transition shadow-lg"
-            >
-              Return to Lobby
-            </button>
           </div>
         </div>
       </div>
