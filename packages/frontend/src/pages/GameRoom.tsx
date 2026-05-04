@@ -94,12 +94,12 @@ export default function GameRoom() {
     }
   };
 
-  // FALLBACK POLLING: if socket fails, poll every 5 seconds to prevent freezes
+  // FALLBACK POLLING: if socket fails, poll every 15 seconds as safety net
   useEffect(() => {
     if (!gameId || !gameState || gameState.status !== 'in_progress') return;
     const interval = setInterval(() => {
       loadGameState();
-    }, 5000);
+    }, 15000);
     return () => clearInterval(interval);
   }, [gameId, gameState?.status]);
 
@@ -160,8 +160,7 @@ export default function GameRoom() {
         };
       });
 
-      // Background: refresh full state for accuracy (non-blocking)
-      setTimeout(() => loadGameState(), 500);
+      // Full state refresh handled by game:state broadcast from server
     });
 
     // Full game state from server

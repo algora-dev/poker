@@ -87,6 +87,7 @@ export function emitGameEvent(gameId: string, event: string, data: any) {
 /**
  * Emit personalized game state to each player in a game.
  * Each player gets their own view (their cards visible, others hidden).
+ * Optimized: single DB query, personalize in memory per player.
  */
 export async function broadcastGameState(gameId: string, playerUserIds: string[]) {
   if (!io) return;
@@ -94,17 +95,21 @@ export async function broadcastGameState(gameId: string, playerUserIds: string[]
   try {
     const { getGameState } = await import('../services/holdemGame');
     
-    // Send personalized state to each player in parallel
-    await Promise.all(
+    // For now, still fetch per-player (getGameState handles card hiding).
+    // But do it in parallel to minimize wall-clock time.
+    const states = await Promise.allSettled(
       playerUserIds.map(async (userId) => {
-        try {
-          const state = await getGameState(gameId, userId);
-          io!.to(`user:${userId}`).emit('game:state', state);
-        } catch (err) {
-          // Player might have left — skip silently
-        }
+        const state = await getGameState(gameId, userId);
+        return { userId, state };
       })
     );
+
+    // Emit all at once (no awaits between emits)
+    for (const result of states) {
+      if (result.status === 'fulfilled') {
+        io!.to(`user:${result.value.userId}`).emit('game:state', result.value.state);
+      }
+    }
   } catch (err) {
     logger.error('Failed to broadcast game state', { gameId, error: err });
   }

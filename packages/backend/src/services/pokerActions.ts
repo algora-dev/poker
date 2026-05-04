@@ -142,18 +142,33 @@ export async function processAction(
           return { action: 'fold', nextPlayer: freshPlayers[nextIdx].userId };
         }
 
-      case 'all-in':
+      case 'all-in': {
+        // Calculate previous contribution in this stage
+        const allInContribution = await tx.handAction.aggregate({
+          where: {
+            handId: currentHand.id,
+            userId,
+            stage: currentHand.stage,
+          },
+          _sum: { amount: true },
+        });
+        const allInAlreadyIn = allInContribution._sum.amount || BigInt(0);
+        
         // Push all remaining chips
         actionAmount = playerChipStack;
         playerPosition = 'all_in';
         playerChipStack = BigInt(0);
         newPot += actionAmount;
         
-        // Update current bet if this is a raise
-        if (actionAmount > currentHand.currentBet) {
-          newCurrentBet = actionAmount;
+        // Total contribution this stage = previous + new
+        const allInTotal = allInAlreadyIn + actionAmount;
+        
+        // Update current bet if this is effectively a raise
+        if (allInTotal > currentHand.currentBet) {
+          newCurrentBet = allInTotal;
         }
         break;
+      }
 
       case 'check':
         // Calculate contribution in CURRENT stage only
@@ -507,17 +522,17 @@ async function checkGameContinuation(tx: any, game: any) {
     orderBy: { seatIndex: 'asc' },
   });
 
-  // Eliminate players who can't cover the big blind
+  // Eliminate players with zero chips
   for (const player of players) {
     if (
       player.position !== 'eliminated' &&
-      player.chipStack < game.bigBlind
+      player.chipStack <= BigInt(0)
     ) {
       await tx.gamePlayer.update({
         where: { id: player.id },
         data: { position: 'eliminated' },
       });
-      logger.info('Player eliminated', {
+      logger.info('Player eliminated (zero chips)', {
         gameId: game.id,
         userId: player.userId,
         chipStack: player.chipStack.toString(),
@@ -527,7 +542,7 @@ async function checkGameContinuation(tx: any, game: any) {
 
   // Count remaining (non-eliminated) players
   const remaining = players.filter(
-    (p: any) => p.position !== 'eliminated' && p.chipStack >= game.bigBlind
+    (p: any) => p.position !== 'eliminated' && p.chipStack > BigInt(0)
   );
 
   if (remaining.length <= 1) {
@@ -785,11 +800,11 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
     return true;
   }
 
-  // Check if anyone is all-in (and bets are as equal as possible)
+  // Check if anyone is all-in — only complete if all active players have acted
+  // and their bets match or exceed the highest active bet
   const allInPlayers = activePlayers.filter(p => p.position === 'all_in');
-  if (allInPlayers.length > 0) {
-    // If someone is all-in and everyone else has matched or exceeded, betting is complete
-    logger.info('Betting complete: all-in player(s) present');
+  if (allInPlayers.length > 0 && allBetsEqual) {
+    logger.info('Betting complete: all-in player(s) present and active bets matched');
     return true;
   }
 
@@ -863,11 +878,17 @@ async function advanceToNextStage(tx: any, hand: any, nextStage: string) {
 async function handleShowdown(tx: any, game: any, hand: any) {
   const { calculateSidePots, storeSidePots, getSidePots } = await import('./sidePots');
   
-  const players = game.players.filter((p: any) => p.position !== 'folded');
+  // Re-fetch fresh player positions (game.players may be stale within transaction)
+  const freshShowdownPlayers = await tx.gamePlayer.findMany({
+    where: { gameId: game.id },
+    orderBy: { seatIndex: 'asc' },
+    include: { user: { select: { id: true, username: true } } },
+  });
+  const players = freshShowdownPlayers.filter((p: any) => p.position !== 'folded' && p.position !== 'eliminated');
   const board = JSON.parse(hand.board);
 
-  // Calculate and store side pots
-  const sidePots = await calculateSidePots(tx, hand.id, game.players);
+  // Calculate and store side pots (use fresh players for accurate positions)
+  const sidePots = await calculateSidePots(tx, hand.id, freshShowdownPlayers);
   await storeSidePots(tx, hand.id, sidePots);
 
   // Evaluate all active players' hands
@@ -927,7 +948,7 @@ async function handleShowdown(tx: any, game: any, hand: any) {
 
     // Award chips to pot winners
     for (const winnerId of potWinnerIds) {
-      const winner = game.players.find((p: any) => p.userId === winnerId);
+      const winner = freshShowdownPlayers.find((p: any) => p.userId === winnerId);
       if (winner) {
         // Update game player chip stack
         await tx.gamePlayer.update({

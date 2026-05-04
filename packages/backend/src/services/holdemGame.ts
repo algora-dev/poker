@@ -92,8 +92,10 @@ export async function initializeHand(gameId: string) {
     // Create new hand
     const handNumber = await tx.hand.count({ where: { gameId } }) + 1;
 
+    // Preflop: in heads-up, dealer/SB acts first.
+    // In 3+ players, first to act is left of BB (UTG).
     const firstToActIndex = isHeadsUp 
-      ? bigBlindIndex 
+      ? smallBlindIndex 
       : nextActive(bigBlindIndex);
 
     const hand = await tx.hand.create({

@@ -1,3 +1,5 @@
+import { randomInt } from 'crypto';
+
 export type Suit = 'hearts' | 'diamonds' | 'clubs' | 'spades';
 export type Rank = '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | 'A';
 
@@ -36,12 +38,13 @@ export function createDeck(): Card[] {
 }
 
 /**
- * Shuffle a deck using Fisher-Yates algorithm
+ * Shuffle a deck using Fisher-Yates algorithm with crypto-secure RNG.
+ * Math.random() is NOT suitable for real-money games.
  */
 export function shuffleDeck(deck: Card[]): Card[] {
   const shuffled = [...deck];
   for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = randomInt(0, i + 1); // crypto-secure uniform random
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
   return shuffled;

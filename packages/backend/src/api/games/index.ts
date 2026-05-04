@@ -533,6 +533,15 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           timestamp: Date.now(),
         });
 
+        // Broadcast full personalized state to all players (replaces client-side refetch)
+        if (!result.gameOver) {
+          const gPlayers = await prisma.game.findUnique({ where: { id }, select: { players: { select: { userId: true } } } });
+          if (gPlayers) {
+            const { broadcastGameState: bgsAction } = await import('../../socket');
+            bgsAction(id, gPlayers.players.map(p => p.userId)).catch(() => {});
+          }
+        }
+
         // Emit specific events
         if (result.showdownResults) {
           // Hand completed via showdown - emit results
@@ -541,12 +550,12 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             ...result.showdownResults,
           });
 
-          // After showdown — 25 second countdown before next hand
-          logger.info('Starting 25s countdown before next hand', { gameId: id });
-          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 25 });
+          // After showdown — 5 second countdown before next hand
+          logger.info('Starting 5s countdown before next hand', { gameId: id });
+          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 5 });
           setTimeout(async () => {
             try {
-              logger.info('25s countdown finished, starting next hand', { gameId: id });
+              logger.info('5s countdown finished, starting next hand', { gameId: id });
               const game = await prisma.game.findUnique({ where: { id } });
               if (game && game.status === 'in_progress') {
                 await initializeHand(id);
@@ -563,7 +572,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
                 stack: err?.stack,
               });
             }
-          }, 25000); // 25 seconds for players to review results
+          }, 5000); // 5 seconds for players to review results
         } else if (result.gameOver) {
           // Hand completed via fold
           if (result.foldWinResult) {
@@ -579,8 +588,8 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             userId: request.user!.id,
           });
 
-          // Start next hand after fold — shorter delay
-          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 8 });
+          // Start next hand after fold — short delay
+          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 3 });
           setTimeout(async () => {
             try {
               const game = await prisma.game.findUnique({ where: { id } });
@@ -598,7 +607,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
                 stack: (err as any)?.stack,
               });
             }
-          }, 8000); // 8 seconds after fold
+          }, 3000); // 3 seconds after fold
         } else {
           // Normal action — game:action already emitted above
         }
