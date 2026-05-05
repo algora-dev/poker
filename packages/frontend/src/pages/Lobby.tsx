@@ -193,37 +193,6 @@ export default function Lobby() {
     setSelectedGame(null);
   };
 
-  const handlePlayGame = async (gameId: string) => {
-    try {
-      const response = await api.post(`/api/games/${gameId}/play`, {});
-      
-      const p1 = response.data.player1;
-      const p2 = response.data.player2;
-      const community = response.data.communityCards.join(' ');
-      
-      // Show result
-      alert(
-        `🎮 Texas Hold'em Complete!\n\n` +
-        `Community: ${community}\n\n` +
-        `${p1.username}:\n` +
-        `  Hole: ${p1.holeCards.join(' ')}\n` +
-        `  Hand: ${p1.hand}\n` +
-        `  Best: ${p1.bestCards.join(' ')}\n\n` +
-        `${p2.username}:\n` +
-        `  Hole: ${p2.holeCards.join(' ')}\n` +
-        `  Hand: ${p2.hand}\n` +
-        `  Best: ${p2.bestCards.join(' ')}\n\n` +
-        `🏆 Winner: ${response.data.winner}`
-      );
-      
-      await loadGames();
-    } catch (err: any) {
-      setError(
-        err.response?.data?.message || 'Failed to play game'
-      );
-    }
-  };
-
   const handleLogout = async () => {
     try {
       await logout();

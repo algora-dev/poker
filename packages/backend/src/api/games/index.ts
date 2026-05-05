@@ -2,7 +2,6 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../middleware/auth';
 import { createGame, getGame, getActiveGames, getCompletedGames, joinGame, cancelGameBeforeStart } from '../../services/game';
-import { playTexasHoldem } from '../../services/texasHoldem';
 import { initializeHand, getGameState } from '../../services/holdemGame';
 import { processAction } from '../../services/pokerActions';
 import { emitBalanceUpdate, emitGameEvent } from '../../socket';
@@ -377,88 +376,6 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         return reply.code(500).send({
           error: 'Internal server error',
           message: error instanceof Error ? error.message : 'Failed to start game',
-        });
-      }
-    }
-  );
-
-  /**
-   * POST /api/games/:id/play
-   * Play Texas Hold'em (auto-resolves - no betting yet)
-   */
-  fastify.post(
-    '/:id/play',
-    { preHandler: authMiddleware },
-    async (request, reply) => {
-      try {
-        const { id } = z.object({ id: z.string() }).parse(request.params);
-
-        const result = await playTexasHoldem(id);
-
-        // Emit balance updates to both players
-        emitBalanceUpdate(result.player1.userId, result.player1.newBalance);
-        emitBalanceUpdate(result.player2.userId, result.player2.newBalance);
-
-        // Emit game completed event
-        emitGameEvent(id, 'game:completed', {
-          gameId: id,
-          result: result.result,
-          card1: result.card1,
-          card2: result.card2,
-          winnerId: 'winnerId' in result ? result.winnerId : null,
-        });
-
-        logger.info('Game played', {
-          gameId: id,
-          result: result.result,
-        });
-
-        return reply.send({
-          success: true,
-          result: result.result,
-          player1: {
-            username: result.player1.username,
-            holeCards: result.player1.holeCards,
-            hand: result.player1.hand,
-            bestCards: result.player1.bestCards,
-            newBalance: result.player1.newBalance,
-          },
-          player2: {
-            username: result.player2.username,
-            holeCards: result.player2.holeCards,
-            hand: result.player2.hand,
-            bestCards: result.player2.bestCards,
-            newBalance: result.player2.newBalance,
-          },
-          communityCards: result.communityCards,
-          winner:
-            result.result === 'tie'
-              ? 'Tie!'
-              : result.result === 'player1'
-              ? result.player1.username
-              : result.player2.username,
-        });
-      } catch (error) {
-        if (error instanceof Error) {
-          if (
-            error.message.includes('not found') ||
-            error.message.includes('not in progress')
-          ) {
-            return reply.code(400).send({
-              error: 'Bad request',
-              message: error.message,
-            });
-          }
-        }
-
-        logger.error('Play game failed', {
-          error,
-          errorMessage: error instanceof Error ? error.message : 'Unknown error',
-          stack: error instanceof Error ? error.stack : undefined,
-        });
-        return reply.code(500).send({
-          error: 'Internal server error',
-          message: 'Failed to play game',
         });
       }
     }
