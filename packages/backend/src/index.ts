@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
+import rateLimit from '@fastify/rate-limit';
 import { CONFIG } from './config';
 import { logger } from './utils/logger';
 import { startBlockchainListener, stopBlockchainListener } from './blockchain/listener';
@@ -55,6 +56,16 @@ async function start() {
   });
 
   await app.register(jwt, { secret: CONFIG.JWT_SECRET });
+
+  // Global rate limit (generous default to absorb bursts; tighter limits are
+  // applied per-route via { config: { rateLimit: { ... } } }).
+  await app.register(rateLimit, {
+    global: true,
+    max: 300,                // 300 req/min/IP across all routes
+    timeWindow: '1 minute',
+    allowList: [],
+    keyGenerator: (req) => (req.ip || 'unknown'),
+  });
 
   app.get('/health', async () => ({ status: 'ok' }));
 

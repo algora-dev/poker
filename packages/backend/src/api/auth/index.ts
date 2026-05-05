@@ -28,12 +28,33 @@ const linkWalletSchema = z.object({
   walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'Invalid wallet address'),
 });
 
+// Per-route rate limit: tight on credential endpoints.
+// keyed by IP + provided email so attackers can't easily rotate one axis.
+const credKey = (req: any) => {
+  const ip = req.ip || 'unknown';
+  const email = (req.body && (req.body as any).email) || '';
+  return `${ip}|${String(email).toLowerCase()}`;
+};
+const credentialLimit = {
+  rateLimit: {
+    max: 10,                  // 10 attempts/min per (IP, email)
+    timeWindow: '1 minute',
+    keyGenerator: credKey,
+  },
+};
+const signupLimit = {
+  rateLimit: {
+    max: 5,                   // 5 signups/hour per IP
+    timeWindow: '1 hour',
+  },
+};
+
 export default async function authRoutes(fastify: FastifyInstance) {
   /**
    * POST /api/auth/signup
    * Register a new user
    */
-  fastify.post('/signup', async (request, reply) => {
+  fastify.post('/signup', { config: signupLimit }, async (request, reply) => {
     try {
       // Validate request body
       const data = signupSchema.parse(request.body);
@@ -96,7 +117,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
    * POST /api/auth/login
    * Authenticate a user
    */
-  fastify.post('/login', async (request, reply) => {
+  fastify.post('/login', { config: credentialLimit }, async (request, reply) => {
     try {
       // Validate request body
       const data = loginSchema.parse(request.body);
@@ -154,7 +175,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
    * POST /api/auth/refresh
    * Refresh access token using refresh token
    */
-  fastify.post('/refresh', async (request, reply) => {
+  fastify.post('/refresh', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     try {
       // Verify refresh token
       await request.jwtVerify();

@@ -500,10 +500,23 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
   /**
    * POST /api/games/:id/action
    * Perform a poker action (fold, check, call, raise)
+   *
+   * Rate limit: per authenticated user, since this endpoint is auth-required.
+   * Real poker decisions take seconds; 60/min is a generous human ceiling and
+   * blocks scripted spam without ever triggering on legitimate play.
    */
   fastify.post(
     '/:id/action',
-    { preHandler: authMiddleware },
+    {
+      preHandler: authMiddleware,
+      config: {
+        rateLimit: {
+          max: 60,
+          timeWindow: '1 minute',
+          keyGenerator: (req: any) => (req.user?.id ? `u:${req.user.id}` : `ip:${req.ip}`),
+        },
+      },
+    },
     async (request, reply) => {
       try {
         const { id } = z.object({ id: z.string() }).parse(request.params);
