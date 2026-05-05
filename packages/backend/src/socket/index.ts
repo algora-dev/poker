@@ -1,7 +1,38 @@
-import { Server as SocketServer } from 'socket.io';
+import { Server as SocketServer, Socket } from 'socket.io';
+import { createVerifier } from 'fast-jwt';
+import { CONFIG } from '../config';
 import { logger } from '../utils/logger';
 
+// Use fast-jwt (already a transitive dependency via @fastify/jwt) to verify
+// tokens with the SAME secret as the HTTP API. Tokens carry { userId }.
+const verifyJwt = createVerifier({ key: CONFIG.JWT_SECRET });
+
 let io: SocketServer | null = null;
+
+// Track authenticated user id per socket so other modules can use it.
+declare module 'socket.io' {
+  interface Socket {
+    userId?: string;
+  }
+}
+
+function extractToken(socket: Socket): string | null {
+  // Preferred: socket.io auth handshake
+  const authToken = (socket.handshake.auth as any)?.token;
+  if (typeof authToken === 'string' && authToken.length > 0) return authToken;
+
+  // Fallback: query string ?token=...
+  const queryToken = socket.handshake.query?.token;
+  if (typeof queryToken === 'string' && queryToken.length > 0) return queryToken;
+
+  // Fallback: Authorization: Bearer <token>
+  const authHeader = socket.handshake.headers?.authorization;
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    return authHeader.slice('Bearer '.length).trim();
+  }
+
+  return null;
+}
 
 /**
  * Initialize Socket.io server
@@ -16,34 +47,64 @@ export function initializeSocketServer(server: any) {
     transports: ['websocket', 'polling'],
   });
 
+  // Auth middleware: every connection must present a valid JWT.
+  // The verified userId is bound to the socket and is the ONLY identity
+  // we trust for room joins (clients can no longer self-claim a userId).
+  io.use((socket, next) => {
+    const token = extractToken(socket);
+    if (!token) {
+      logger.warn('Socket auth rejected: no token', { socketId: socket.id });
+      return next(new Error('Unauthorized: missing token'));
+    }
+    try {
+      const payload = verifyJwt(token) as { userId?: string };
+      if (!payload?.userId) {
+        return next(new Error('Unauthorized: invalid token payload'));
+      }
+      socket.userId = payload.userId;
+      return next();
+    } catch (err) {
+      logger.warn('Socket auth rejected: bad token', { socketId: socket.id });
+      return next(new Error('Unauthorized: invalid or expired token'));
+    }
+  });
+
   // Handle connections
   io.on('connection', (socket) => {
-    logger.info('Client connected', { socketId: socket.id });
+    const userId = socket.userId!;
+    logger.info('Client connected', { socketId: socket.id, userId });
 
-    // Join user room (for user-specific events)
-    socket.on('join:user', (userId: string) => {
+    // Always auto-join the authenticated user's private room.
+    // Clients can no longer choose which user room they sit in.
+    socket.join(`user:${userId}`);
+
+    // Kept for backward compatibility, but the supplied userId is IGNORED.
+    // We always use the authenticated socket.userId.
+    socket.on('join:user', () => {
       socket.join(`user:${userId}`);
-      logger.info('User joined room', { userId, socketId: socket.id });
+      logger.info('User re-joined own room', { userId, socketId: socket.id });
     });
 
     // Join game room
     socket.on('join:game', (gameId: string) => {
+      if (typeof gameId !== 'string' || !gameId) return;
       socket.join(`game:${gameId}`);
-      logger.info('Player joined game room', { gameId, socketId: socket.id });
+      logger.info('Player joined game room', { gameId, socketId: socket.id, userId });
     });
 
     // Leave game room
     socket.on('leave:game', (gameId: string) => {
+      if (typeof gameId !== 'string' || !gameId) return;
       socket.leave(`game:${gameId}`);
-      logger.info('Player left game room', { gameId, socketId: socket.id });
+      logger.info('Player left game room', { gameId, socketId: socket.id, userId });
     });
 
     socket.on('disconnect', () => {
-      logger.info('Client disconnected', { socketId: socket.id });
+      logger.info('Client disconnected', { socketId: socket.id, userId });
     });
   });
 
-  logger.info('Socket.io initialized');
+  logger.info('Socket.io initialized (JWT auth required)');
   return io;
 }
 

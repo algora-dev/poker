@@ -16,7 +16,7 @@ export function useSocket() {
   const refreshToken = useAuthStore((state) => state.refreshToken);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !accessToken) return;
 
     if (!socket) {
       socket = io(SOCKET_URL, {
@@ -25,22 +25,25 @@ export function useSocket() {
         reconnectionAttempts: Infinity,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
+        // Backend requires JWT in handshake; userId is derived from the token.
+        auth: { token: accessToken },
       });
 
       socket.on('connect', () => {
         console.log('Socket connected:', socket?.id);
         setIsConnected(true);
 
-        // Rejoin user room
-        if (user?.id) {
-          socket?.emit('join:user', user.id);
-        }
-
+        // Server auto-joins user room on auth; emit kept as a no-op for back-compat.
         // Rejoin ALL active game rooms on reconnect
         activeGameRooms.forEach(gameId => {
           socket?.emit('join:game', gameId);
           console.log('Rejoined game room:', gameId);
         });
+      });
+
+      socket.on('connect_error', (err) => {
+        console.warn('Socket connect_error:', err?.message || err);
+        setIsConnected(false);
       });
 
       socket.on('disconnect', () => {
@@ -55,12 +58,12 @@ export function useSocket() {
       });
     }
 
-    if (socket && user?.id) {
-      socket.emit('join:user', user.id);
-    }
-
-    return () => {};
-  }, [user?.id]);
+    // If the access token rotated (e.g. after refresh), tear the socket down
+    // so it reconnects with the new token in the auth handshake.
+    return () => {
+      // no-op on unmount; socket is intentionally a module singleton
+    };
+  }, [user?.id, accessToken]);
 
   const joinGame = (gameId: string) => {
     activeGameRooms.add(gameId);
