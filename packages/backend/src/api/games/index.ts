@@ -518,14 +518,18 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
       },
     },
     async (request, reply) => {
+      // Declared at outer scope so the catch block (which logs them) can see them.
+      let id: string | undefined;
+      let action: 'fold' | 'check' | 'call' | 'raise' | 'all-in' | undefined;
       try {
-        const { id } = z.object({ id: z.string() }).parse(request.params);
-        const { action, raiseAmount } = z
+        ({ id } = z.object({ id: z.string() }).parse(request.params));
+        let raiseAmount: number | undefined;
+        ({ action, raiseAmount } = z
           .object({
             action: z.enum(['fold', 'check', 'call', 'raise', 'all-in']),
             raiseAmount: z.number().optional(),
           })
-          .parse(request.body);
+          .parse(request.body));
 
         const { appLog, logError } = await import('../../services/appLogger');
         await appLog('info', 'action', `Player ${action}`, { action, raiseAmount, userId: request.user!.id.slice(-6) }, { userId: request.user!.id, gameId: id });

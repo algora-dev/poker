@@ -233,7 +233,10 @@ export async function getGameState(gameId: string, userId: string) {
       },
     });
 
-    const contributed = myContribution._sum.amount || BigInt(0);
+    // Prisma's BigInt aggregate sum can be typed as `bigint | number | null`
+    // in some setups; coerce explicitly so the arithmetic stays in bigint.
+    const sumAmount = myContribution._sum.amount;
+    const contributed: bigint = sumAmount == null ? BigInt(0) : BigInt(sumAmount);
     amountToCall = currentHand.currentBet - contributed;
     
     if (amountToCall < BigInt(0)) {

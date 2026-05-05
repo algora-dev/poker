@@ -56,8 +56,14 @@ export default async function authRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/signup', { config: signupLimit }, async (request, reply) => {
     try {
-      // Validate request body
-      const data = signupSchema.parse(request.body);
+      // Validate request body. Cast clarifies that all fields are required
+      // post-validation (Zod's runtime check enforces it).
+      const data = signupSchema.parse(request.body) as {
+        email: string;
+        username: string;
+        password: string;
+        walletAddress?: string;
+      };
 
       // Create user
       const user = await createUser(data);
@@ -119,8 +125,11 @@ export default async function authRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/login', { config: credentialLimit }, async (request, reply) => {
     try {
-      // Validate request body
-      const data = loginSchema.parse(request.body);
+      // Validate request body. Cast clarifies post-validation shape.
+      const data = loginSchema.parse(request.body) as {
+        email: string;
+        password: string;
+      };
 
       // Authenticate user
       const user = await authenticateUser(data);
@@ -177,9 +186,11 @@ export default async function authRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/refresh', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
     try {
-      // Verify refresh token
+      // Verify refresh token. After jwtVerify(), request.user is typed as
+      // AuthUser, but on this route we actually want the raw signed payload
+      // (we sign { userId } only). Two-step cast: AuthUser -> unknown -> JwtPayload.
       await request.jwtVerify();
-      const payload = request.user as { userId: string };
+      const payload = (request.user as unknown) as { userId: string };
 
       // Generate new access token
       const accessToken = fastify.jwt.sign(

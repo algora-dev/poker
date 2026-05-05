@@ -1,4 +1,7 @@
-import { config } from 'dotenv';
+// dotenv ships its own types; this resolves cleanly once `npm install`
+// has been run. Skip it locally if you haven't installed deps yet.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { config } = require('dotenv');
 
 config();
 
