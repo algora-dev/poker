@@ -1,10 +1,30 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { timingSafeEqual } from 'crypto';
 import { authMiddleware } from '../../middleware/auth';
 import { cleanupStuckGames, cancelGame } from '../../services/admin';
 import { logger } from '../../utils/logger';
 import { CONFIG } from '../../config';
 import { prisma } from '../../db/client';
+
+/**
+ * Constant-time admin secret check that ALSO refuses to authenticate if
+ * the configured secret is empty (otherwise a deploy without ADMIN_SECRET
+ * set would let any caller in by sending an empty `secret`).
+ */
+function isAdminSecretValid(provided: unknown): boolean {
+  if (typeof provided !== 'string' || provided.length === 0) return false;
+  const expected = CONFIG.ADMIN_SECRET;
+  if (!expected) return false;
+  // timingSafeEqual requires equal-length buffers; pad/compare via SHA digest
+  // would be overkill here, so length-mismatch returns false explicitly.
+  if (provided.length !== expected.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
 
 export default async function adminRoutes(fastify: FastifyInstance) {
   /**
@@ -21,7 +41,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         })
         .parse(request.body);
 
-      if (secret !== CONFIG.ADMIN_SECRET) {
+      if (!isAdminSecretValid(secret)) {
         return reply.code(403).send({
           error: 'Forbidden',
           message: 'Invalid admin secret',
@@ -60,7 +80,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         })
         .parse(request.body);
 
-      if (secret !== CONFIG.ADMIN_SECRET) {
+      if (!isAdminSecretValid(secret)) {
         return reply.code(403).send({
           error: 'Forbidden',
           message: 'Invalid admin secret',
@@ -99,7 +119,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         .object({ secret: z.string() })
         .parse(request.query);
 
-      if (secret !== CONFIG.ADMIN_SECRET) {
+      if (!isAdminSecretValid(secret)) {
         return reply.code(403).send({
           error: 'Forbidden',
           message: 'Invalid admin secret',
@@ -152,7 +172,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   fastify.get('/logs', async (request, reply) => {
     try {
       const query = request.query as any;
-      if (query.secret !== CONFIG.ADMIN_SECRET) {
+      if (!isAdminSecretValid(query.secret)) {
         return reply.code(403).send({ error: 'Invalid admin secret' });
       }
 
@@ -195,7 +215,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         amount: z.number().min(0.01),
       }).parse(request.body);
 
-      if (secret !== CONFIG.ADMIN_SECRET) {
+      if (!isAdminSecretValid(secret)) {
         return reply.code(403).send({ error: 'Invalid admin secret' });
       }
 

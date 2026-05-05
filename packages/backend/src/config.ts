@@ -27,8 +27,9 @@ export const CONFIG = {
   // Withdrawal
   WITHDRAWAL_MODE: (process.env.WITHDRAWAL_MODE || 'manual') as 'manual' | 'auto',
   
-  // Admin
-  ADMIN_SECRET: process.env.ADMIN_SECRET || 'change-me-in-production',
+  // Admin secret: REQUIRED in production (validated below). Empty default so
+  // a forgotten env var is loud-fail at startup, not a trivially bypassable auth.
+  ADMIN_SECRET: process.env.ADMIN_SECRET || '',
   
   // CORS allowlist: comma-separated list of allowed origins.
   // Empty/unset in development => reflect any origin (back-compat for local dev).
@@ -56,6 +57,19 @@ const requiredVars = [
 for (const varName of requiredVars) {
   if (!CONFIG[varName as keyof typeof CONFIG]) {
     throw new Error(`Missing required environment variable: ${varName}`);
+  }
+}
+
+// Admin secret hardening: required and strong in production.
+if (CONFIG.NODE_ENV === 'production') {
+  if (!CONFIG.ADMIN_SECRET) {
+    throw new Error('ADMIN_SECRET is required in production');
+  }
+  if (CONFIG.ADMIN_SECRET.length < 32) {
+    throw new Error('ADMIN_SECRET must be at least 32 characters in production');
+  }
+  if (CONFIG.ADMIN_SECRET === 'change-me-in-production') {
+    throw new Error('ADMIN_SECRET still set to the default placeholder; change it');
   }
 }
 
