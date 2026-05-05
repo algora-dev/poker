@@ -217,7 +217,7 @@ export async function processAction(
         newPot += actionAmount;
         break;
 
-      case 'raise':
+      case 'raise': {
         if (!raiseAmount || raiseAmount <= 0) {
           throw new Error('Invalid raise amount');
         }
@@ -225,6 +225,36 @@ export async function processAction(
         if (raiseTotalBigInt <= currentHand.currentBet) {
           throw new Error('Raise must be higher than current bet');
         }
+
+        // Calculate minimum raise increment for this stage.
+        // Rule: a raise must increase the current bet by at least the size of
+        // the previous raise/bet in this round, or the big blind if none.
+        // Walk this stage's actions to find the last full raise increment.
+        const stageActionsForRaise = await tx.handAction.findMany({
+          where: { handId: currentHand.id, stage: currentHand.stage },
+          orderBy: { timestamp: 'asc' },
+        });
+        const stageBetsByUser = new Map<string, bigint>();
+        let runningBet = BigInt(0);
+        let lastRaiseIncrement = game.bigBlind;
+        for (const a of stageActionsForRaise) {
+          if (!a.amount) continue;
+          const prior = stageBetsByUser.get(a.userId) || BigInt(0);
+          const newTotal = prior + a.amount;
+          stageBetsByUser.set(a.userId, newTotal);
+          // Treat any action that pushes the high-water bet as a (possibly partial) raise.
+          // Only count it as setting the new minimum increment if it's a FULL raise
+          // (>= previous lastRaiseIncrement). A short all-in does not reopen action.
+          if (newTotal > runningBet) {
+            const increment = newTotal - runningBet;
+            if (a.action === 'raise' || (a.action === 'all-in' && increment >= lastRaiseIncrement)) {
+              lastRaiseIncrement = increment;
+            }
+            runningBet = newTotal;
+          }
+        }
+        const minRaiseTotal = currentHand.currentBet + lastRaiseIncrement;
+
         // Calculate how much MORE the player needs to put in this stage
         const raiseContribution = await tx.handAction.aggregate({
           where: {
@@ -239,15 +269,27 @@ export async function processAction(
         if (actionAmount <= BigInt(0)) {
           throw new Error('Raise amount must exceed your current contribution');
         }
+
+        // Min-raise enforcement: reject under-min raises UNLESS the player is
+        // going all-in for less (short stack is always allowed to shove).
+        const isAllInShove = actionAmount >= playerChipStack;
+        if (!isAllInShove && raiseTotalBigInt < minRaiseTotal) {
+          const minDisplay = (Number(minRaiseTotal) / 1_000_000).toFixed(2);
+          throw new Error(`Raise must be at least ${minDisplay} (min-raise rule)`);
+        }
+
         if (actionAmount > playerChipStack) {
           // All-in
           actionAmount = playerChipStack;
+          playerPosition = 'all_in';
+        } else if (isAllInShove) {
           playerPosition = 'all_in';
         }
         playerChipStack -= actionAmount;
         newPot += actionAmount;
         newCurrentBet = raiseTotalBigInt;
         break;
+      }
 
     }
 
