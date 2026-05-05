@@ -2,7 +2,6 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../middleware/auth';
 import { createGame, getGame, getActiveGames, getCompletedGames, joinGame, cancelGameBeforeStart } from '../../services/game';
-import { playSimpleGame } from '../../services/simpleGame';
 import { playTexasHoldem } from '../../services/texasHoldem';
 import { initializeHand, getGameState } from '../../services/holdemGame';
 import { processAction } from '../../services/pokerActions';
