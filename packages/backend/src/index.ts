@@ -19,8 +19,36 @@ async function start() {
     trustProxy: true,
   });
 
+  // CORS: explicit allowlist in production, permissive in dev for convenience.
+  // Entries beginning with '*.' act as suffix matches (covers Vercel preview URLs).
+  const allowedOrigins = CONFIG.CORS_ORIGINS
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const isProd = CONFIG.NODE_ENV === 'production';
+  const isAllowedOrigin = (origin: string): boolean => {
+    for (const entry of allowedOrigins) {
+      if (entry === origin) return true;
+      if (entry.startsWith('*.')) {
+        const suffix = entry.slice(1); // ".foo.com"
+        try {
+          const host = new URL(origin).host;
+          if (host.endsWith(suffix.slice(1)) || host === suffix.slice(2)) return true;
+        } catch { /* malformed origin -> reject */ }
+      }
+    }
+    return false;
+  };
+  if (isProd && allowedOrigins.length === 0) {
+    console.warn('[STARTUP] CORS_ORIGINS is empty in production — cross-origin requests will be rejected');
+  }
   await app.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+      // Same-origin / non-browser callers (curl, server-side) have no Origin header
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.length === 0) return cb(null, !isProd);
+      return cb(null, isAllowedOrigin(origin));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],

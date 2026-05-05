@@ -30,6 +30,11 @@ export const CONFIG = {
   // Admin
   ADMIN_SECRET: process.env.ADMIN_SECRET || 'change-me-in-production',
   
+  // CORS allowlist: comma-separated list of allowed origins.
+  // Empty/unset in development => reflect any origin (back-compat for local dev).
+  // In production => MUST be set explicitly; otherwise no cross-origin requests allowed.
+  CORS_ORIGINS: process.env.CORS_ORIGINS || '',
+
   // Optional
   REDIS_URL: process.env.REDIS_URL,
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',

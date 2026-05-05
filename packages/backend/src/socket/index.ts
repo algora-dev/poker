@@ -38,9 +38,34 @@ function extractToken(socket: Socket): string | null {
  * Initialize Socket.io server
  */
 export function initializeSocketServer(server: any) {
+  // CORS: same allowlist semantics as the HTTP API. Entries starting with
+  // '*.' act as suffix matches (covers Vercel preview URLs).
+  const allowedOrigins = CONFIG.CORS_ORIGINS
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  const isProd = CONFIG.NODE_ENV === 'production';
+  const isAllowedOrigin = (origin: string): boolean => {
+    for (const entry of allowedOrigins) {
+      if (entry === origin) return true;
+      if (entry.startsWith('*.')) {
+        const suffix = entry.slice(1);
+        try {
+          const host = new URL(origin).host;
+          if (host.endsWith(suffix.slice(1)) || host === suffix.slice(2)) return true;
+        } catch { /* malformed origin -> reject */ }
+      }
+    }
+    return false;
+  };
   io = new SocketServer(server, {
     cors: {
-      origin: true,
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true);
+        if (allowedOrigins.length === 0) return cb(null, !isProd);
+        if (isAllowedOrigin(origin)) return cb(null, true);
+        return cb(new Error('CORS rejected'), false);
+      },
       credentials: true,
       methods: ['GET', 'POST'],
     },
