@@ -290,7 +290,15 @@ export async function processAction(
         }
         playerChipStack -= actionAmount;
         newPot += actionAmount;
-        newCurrentBet = raiseTotalBigInt;
+
+        // PHASE 2 [H-01]: currentBet must reflect ACTUAL contribution after
+        // stack capping, never the requested raise target. A short all-in
+        // can only push currentBet to what the player actually paid.
+        // See audits/t3-poker/06-dave-fix-prompt.md Phase 2.
+        const actualTotalContribution = raiseAlreadyIn + actionAmount;
+        if (actualTotalContribution > currentHand.currentBet) {
+          newCurrentBet = actualTotalContribution;
+        }
         break;
       }
 
@@ -683,8 +691,9 @@ async function checkGameContinuation(tx: any, game: any) {
 /**
  * Check if betting round is complete
  * Now with stage tracking, this is much simpler and more accurate!
+ * Exported for tests (Phase 2 raise/all-in correctness).
  */
-async function checkBettingComplete(tx: any, handId: string, players: any[]): Promise<boolean> {
+export async function checkBettingComplete(tx: any, handId: string, players: any[]): Promise<boolean> {
   const hand = await tx.hand.findUnique({ 
     where: { id: handId },
   });
@@ -724,17 +733,60 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
   // Count real actions (not blinds)
   const realActions = stageActions.filter(a => a.action !== 'blind');
 
-  // Track the last raiser/bettor — the round ends when action returns to them
+  // Track the last raiser/bettor — the round ends when action returns to them.
+  //
+  // PHASE 2 [M-01]: a short all-in (one whose increment over the current
+  // high-water bet is LESS than the last legal raise increment) is treated
+  // as a call for action-reopening purposes. It still moves chips into the
+  // pot, but it does NOT reset the action — the original aggressor cannot
+  // be forced to re-respond. See audits/t3-poker/06-dave-fix-prompt.md
+  // Phase 2 and Hold'em short-all-in rules.
   let lastAggressorId: string | null = null;
   let actedSinceLastRaise = new Set<string>();
-  
+  // Re-fetch the game's bigBlind for the default minimum increment.
+  const handGame = await tx.game.findUnique({ where: { id: hand.gameId } });
+  const bigBlind: bigint = handGame?.bigBlind ?? BigInt(0);
+  let runningHighBet = BigInt(0);
+  let lastRaiseIncrement: bigint = bigBlind;
+  const cumulativeBetByUser = new Map<string, bigint>();
+
   for (const action of stageActions) {
-    if (action.action === 'blind') continue;
-    
-    if (action.action === 'raise' || action.action === 'all-in') {
-      // Check if all-in is actually a raise (more than current required)
+    if (action.action === 'blind') {
+      // Blinds set the initial high-water bet but do not count as "acting".
+      const prior = cumulativeBetByUser.get(action.userId) || BigInt(0);
+      const newCum = prior + (action.amount || BigInt(0));
+      cumulativeBetByUser.set(action.userId, newCum);
+      if (newCum > runningHighBet) runningHighBet = newCum;
+      continue;
+    }
+
+    const prior = cumulativeBetByUser.get(action.userId) || BigInt(0);
+    const newCum = prior + (action.amount || BigInt(0));
+    cumulativeBetByUser.set(action.userId, newCum);
+
+    if (action.action === 'raise') {
+      // A normal 'raise' must (per the raise branch's min-raise check) be a
+      // full legal raise. Always treat it as the aggressor.
+      if (newCum > runningHighBet) {
+        lastRaiseIncrement = newCum - runningHighBet;
+        runningHighBet = newCum;
+      }
       lastAggressorId = action.userId;
       actedSinceLastRaise = new Set([action.userId]);
+    } else if (action.action === 'all-in') {
+      // Short-all-in test: only reopen action if the increment over the
+      // current high-water bet is at least the last legal raise increment.
+      const increment = newCum > runningHighBet ? newCum - runningHighBet : BigInt(0);
+      const reopens = increment >= lastRaiseIncrement && increment > BigInt(0);
+      if (newCum > runningHighBet) runningHighBet = newCum;
+      if (reopens) {
+        lastRaiseIncrement = increment;
+        lastAggressorId = action.userId;
+        actedSinceLastRaise = new Set([action.userId]);
+      } else {
+        // Short all-in: counts as a response but does NOT reopen action.
+        actedSinceLastRaise.add(action.userId);
+      }
     } else {
       actedSinceLastRaise.add(action.userId);
     }
