@@ -2,6 +2,7 @@ import { Server as SocketServer, Socket } from 'socket.io';
 import { createVerifier } from 'fast-jwt';
 import { CONFIG } from '../config';
 import { logger } from '../utils/logger';
+import { prisma } from '../db/client';
 
 // Use fast-jwt (already a transitive dependency via @fastify/jwt) to verify
 // tokens with the SAME secret as the HTTP API. Tokens carry { userId }.
@@ -110,11 +111,31 @@ export function initializeSocketServer(server: any) {
       logger.info('User re-joined own room', { userId, socketId: socket.id });
     });
 
-    // Join game room
-    socket.on('join:game', (gameId: string) => {
-      if (typeof gameId !== 'string' || !gameId) return;
-      socket.join(`game:${gameId}`);
-      logger.info('Player joined game room', { gameId, socketId: socket.id, userId });
+    // Join game room.
+    // PHASE 4 [H-03]: only seated GamePlayer rows for this game may join the
+    // private game room. Non-participants must not subscribe to private hand
+    // events (hole cards, action streams) or be able to spy on tables.
+    // See audits/t3-poker/06-dave-fix-prompt.md Phase 4.
+    socket.on('join:game', async (gameId: string, ack?: (resp: any) => void) => {
+      const respond = (ok: boolean, code?: string, message?: string) => {
+        if (typeof ack === 'function') {
+          try { ack({ ok, code, message }); } catch { /* ignore ack errors */ }
+        }
+      };
+      const verdict = await checkGameRoomJoin(prisma, userId, gameId);
+      if (verdict.ok === true) {
+        socket.join(`game:${gameId}`);
+        logger.info('Player joined game room', { gameId, socketId: socket.id, userId });
+        return respond(true);
+      } else {
+        logger.warn('join:game rejected', {
+          gameId,
+          socketId: socket.id,
+          userId,
+          code: verdict.code,
+        });
+        return respond(false, verdict.code, verdict.message);
+      }
     });
 
     // Leave game room
@@ -131,6 +152,43 @@ export function initializeSocketServer(server: any) {
 
   logger.info('Socket.io initialized (JWT auth required)');
   return io;
+}
+
+/**
+ * Decide whether a user is allowed to join a game's private socket room.
+ * Pure function (no socket dependency) so it can be unit-tested.
+ *
+ * Rules:
+ *  - gameId must be a non-empty string
+ *  - userId must be a non-empty string
+ *  - There must be a GamePlayer row binding (userId, gameId)
+ *
+ * Returns { ok: true } on accept, { ok: false, code, message } on reject.
+ * Server errors return { ok: false, code: 'server_error' }.
+ */
+export async function checkGameRoomJoin(
+  db: { gamePlayer: { findFirst: (args: any) => Promise<any> } },
+  userId: string | undefined,
+  gameId: string | undefined
+): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
+  if (typeof userId !== 'string' || !userId) {
+    return { ok: false, code: 'unauthenticated', message: 'Not authenticated' };
+  }
+  if (typeof gameId !== 'string' || !gameId) {
+    return { ok: false, code: 'invalid_game_id', message: 'Invalid game id' };
+  }
+  try {
+    const seat = await db.gamePlayer.findFirst({
+      where: { gameId, userId },
+      select: { id: true, position: true },
+    });
+    if (!seat) {
+      return { ok: false, code: 'not_seated', message: 'Not a seated player in this game' };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, code: 'server_error', message: 'Failed to verify seat' };
+  }
 }
 
 /**
