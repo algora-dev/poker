@@ -492,9 +492,13 @@ export async function processAction(
 
 /**
  * Handle fold win - last remaining player takes the pot
+ * Exported for tests (Phase 1 chip-conservation invariants).
  */
-async function handleFoldWin(tx: any, game: any, hand: any, winner: any) {
-  // Award pot to winner's game stack
+export async function handleFoldWin(tx: any, game: any, hand: any, winner: any) {
+  // PHASE 1: Award pot to winner's in-table stack ONLY.
+  // Off-table withdrawable balance (ChipBalance) MUST NOT change here.
+  // ChipBalance is only credited at game-end refund / leave-table cashout.
+  // See audits/t3-poker/06-dave-fix-prompt.md Phase 1.
   await tx.gamePlayer.update({
     where: { id: winner.id },
     data: {
@@ -503,35 +507,6 @@ async function handleFoldWin(tx: any, game: any, hand: any, winner: any) {
       },
     },
   });
-
-  // Award pot to winner's chip balance
-  const winnerBalance = await tx.chipBalance.findUnique({
-    where: { userId: winner.userId },
-  });
-
-  if (winnerBalance) {
-    const newBalance = await tx.chipBalance.update({
-      where: { userId: winner.userId },
-      data: {
-        chips: {
-          increment: hand.pot,
-        },
-      },
-    });
-
-    // Audit log
-    await tx.chipAudit.create({
-      data: {
-        userId: winner.userId,
-        operation: 'game_win',
-        amountDelta: hand.pot,
-        balanceBefore: winnerBalance.chips,
-        balanceAfter: newBalance.chips,
-        reference: game.id,
-        notes: `Won hand by fold in game: ${game.name}`,
-      },
-    });
-  }
 
   // Mark hand as completed
   await tx.hand.update({
@@ -600,22 +575,30 @@ async function checkGameContinuation(tx: any, game: any) {
       },
     });
 
-    // Refund remaining chip stacks back to balances for all players
+    // PHASE 1: end-of-game cashout. Move each remaining player's in-table
+    // chipStack into their off-table ChipBalance and zero the chipStack.
+    // This is a single chip-mass move, not a credit — total chips conserved.
     for (const player of players) {
       if (player.chipStack > BigInt(0)) {
+        const stackToCashOut = player.chipStack;
         const balance = await tx.chipBalance.findUnique({
           where: { userId: player.userId },
         });
         if (balance) {
           const newBal = await tx.chipBalance.update({
             where: { userId: player.userId },
-            data: { chips: { increment: player.chipStack } },
+            data: { chips: { increment: stackToCashOut } },
+          });
+          // Zero the in-table stack so chips are not held in two places.
+          await tx.gamePlayer.update({
+            where: { id: player.id },
+            data: { chipStack: BigInt(0) },
           });
           await tx.chipAudit.create({
             data: {
               userId: player.userId,
               operation: 'game_cashout',
-              amountDelta: player.chipStack,
+              amountDelta: stackToCashOut,
               balanceBefore: balance.chips,
               balanceAfter: newBal.chips,
               reference: game.id,
@@ -920,7 +903,8 @@ async function advanceToNextStage(tx: any, hand: any, nextStage: string) {
 /**
  * Handle showdown - evaluate hands and award pot(s)
  */
-async function handleShowdown(tx: any, game: any, hand: any) {
+// Exported for tests (Phase 1 chip-conservation invariants).
+export async function handleShowdown(tx: any, game: any, hand: any) {
   const { calculateSidePots, storeSidePots, getSidePots } = await import('./sidePots');
   
   // Re-fetch fresh player positions (game.players may be stale within transaction)
@@ -991,11 +975,13 @@ async function handleShowdown(tx: any, game: any, hand: any) {
     // Track all winners
     potWinnerIds.forEach(id => allWinnerIds.add(id));
 
-    // Award chips to pot winners
+    // PHASE 1: Award pot share to winner's in-table stack ONLY.
+    // Off-table withdrawable balance (ChipBalance) MUST NOT change here.
+    // ChipBalance is only credited at game-end refund / leave-table cashout.
+    // See audits/t3-poker/06-dave-fix-prompt.md Phase 1.
     for (const winnerId of potWinnerIds) {
       const winner = freshShowdownPlayers.find((p: any) => p.userId === winnerId);
       if (winner) {
-        // Update game player chip stack
         await tx.gamePlayer.update({
           where: { id: winner.id },
           data: {
@@ -1004,35 +990,6 @@ async function handleShowdown(tx: any, game: any, hand: any) {
             },
           },
         });
-        
-        // Update user's chip balance
-        const chipBalance = await tx.chipBalance.findUnique({
-          where: { userId: winnerId },
-        });
-        
-        if (chipBalance) {
-          const newBalance = await tx.chipBalance.update({
-            where: { userId: winnerId },
-            data: {
-              chips: {
-                increment: potShare,
-              },
-            },
-          });
-          
-          // Audit log
-          await tx.chipAudit.create({
-            data: {
-              userId: winnerId,
-              operation: 'game_win',
-              amountDelta: potShare,
-              balanceBefore: chipBalance.chips,
-              balanceAfter: newBalance.chips,
-              reference: game.id,
-              notes: `Won pot ${pot.potNumber} in game: ${game.name}`,
-            },
-          });
-        }
       }
     }
 
