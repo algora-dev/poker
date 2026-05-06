@@ -67,6 +67,26 @@ export async function processAction(
       throw new Error('Player not found in game');
     }
 
+    // PHASE 3 [H-02]: optimistic concurrency guard.
+    // Atomically claim the right to advance this turn before any state
+    // mutation. The guard requires the same hand id, active player index,
+    // stage, AND version we read above. If 0 rows match, another concurrent
+    // request already advanced the turn (or the stage/version moved) and
+    // this request is stale -> reject with a clear, retry-safe error.
+    // See audits/t3-poker/06-dave-fix-prompt.md Phase 3.
+    const guard = await tx.hand.updateMany({
+      where: {
+        id: currentHand.id,
+        activePlayerIndex: currentHand.activePlayerIndex,
+        stage: currentHand.stage,
+        version: currentHand.version,
+      },
+      data: { version: { increment: 1 } },
+    });
+    if (guard.count === 0) {
+      throw new Error('Stale action - turn already advanced');
+    }
+
     let actionAmount = BigInt(0);
     let newPot = currentHand.pot;
     let newCurrentBet = currentHand.currentBet;

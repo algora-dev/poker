@@ -128,6 +128,10 @@ model Hand {
   currentBet BigInt   @default(0) // Current bet to call
   activePlayerIndex Int @default(0) // Whose turn it is
   turnStartedAt DateTime? // When current player's turn began
+  // Optimistic-concurrency counter. Incremented atomically each time an
+  // action is applied so duplicate/parallel requests cannot double-apply.
+  // See audits/t3-poker/06-dave-fix-prompt.md Phase 3.
+  version    Int      @default(0)
   winnerIds  String   @default("[]") // JSON array of user IDs
   stage      String   @default("preflop") // preflop, flop, turn, river, showdown, completed
   createdAt  DateTime @default(now())

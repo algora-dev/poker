@@ -263,6 +263,22 @@ function buildProcessActionTx(opts: {
         storedHand = { ...storedHand, ...args.data };
         return storedHand;
       }),
+      // Phase 3 guard support: optimistic-concurrency updateMany. Match
+      // {id, activePlayerIndex, stage, version} like real Postgres would.
+      updateMany: vi.fn(async (args: any) => {
+        calls.push({ model: 'hand', method: 'updateMany', args });
+        const w = args.where;
+        const matches =
+          w.id === storedHand.id &&
+          w.activePlayerIndex === storedHand.activePlayerIndex &&
+          w.stage === storedHand.stage &&
+          w.version === storedHand.version;
+        if (!matches) return { count: 0 };
+        if (args.data?.version?.increment != null) {
+          storedHand.version += args.data.version.increment;
+        }
+        return { count: 1 };
+      }),
     },
     handAction: {
       findMany: vi.fn(async ({ where }: any) =>
@@ -332,6 +348,7 @@ describe('Phase 2 [H-01] — raise branch: currentBet reflects actual contributi
         pot: 3_000_000n, // SB+BB
         currentBet: 2_000_000n, // BB level
         activePlayerIndex: 0,
+        version: 0,
         board: '[]',
         deck: '[]',
       },
@@ -405,6 +422,7 @@ describe('Phase 2 [H-01] — raise branch: currentBet reflects actual contributi
         pot: 3_000_000n,
         currentBet: 2_000_000n,
         activePlayerIndex: 0,
+        version: 0,
         board: '[]',
         deck: '[]',
       },
@@ -463,6 +481,7 @@ describe('Phase 2 [H-01] — raise branch: currentBet reflects actual contributi
         pot: 3_000_000n,
         currentBet: 2_000_000n,
         activePlayerIndex: 0,
+        version: 0,
         board: '[]',
         deck: '[]',
       },
