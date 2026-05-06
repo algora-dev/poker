@@ -152,6 +152,34 @@ function buildMockTx(initial: {
         return args.data;
       }),
     },
+    // Phase 7 [M-05]: handEvent ledger stub. Sequence numbering matches the
+    // real Postgres unique index (gameId, handId, sequenceNumber).
+    handEvent: {
+      findFirst: vi.fn(async (args: any) => {
+        const w = args.where;
+        const matches = audits
+          .filter((_e) => false) // audits is for chipAudit; ledger uses its own list
+          .map(() => null);
+        // ledger events are tracked via the calls list; reconstruct max-seq.
+        const ledgerCalls = calls.filter(
+          (c) =>
+            c.model === 'handEvent' &&
+            c.method === 'create' &&
+            c.args.data.gameId === w.gameId &&
+            (c.args.data.handId ?? null) === (w.handId ?? null)
+        );
+        if (!ledgerCalls.length) return null;
+        const maxSeq = ledgerCalls.reduce(
+          (m, c) => Math.max(m, c.args.data.sequenceNumber),
+          0
+        );
+        return { sequenceNumber: maxSeq };
+      }),
+      create: vi.fn(async (args: any) => {
+        calls.push({ model: 'handEvent', method: 'create', args });
+        return { id: 'he', sequenceNumber: args.data.sequenceNumber };
+      }),
+    },
   };
 
   return { tx, players, balances, audits, calls };

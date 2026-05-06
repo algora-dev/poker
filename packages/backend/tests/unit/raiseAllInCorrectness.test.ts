@@ -301,6 +301,29 @@ function buildProcessActionTx(opts: {
         return args.data;
       }),
     },
+    // Phase 7 [M-05]: handEvent ledger stub.
+    handEvent: {
+      findFirst: vi.fn(async (args: any) => {
+        const w = args.where;
+        const ledgerCalls = calls.filter(
+          (c) =>
+            c.model === 'handEvent' &&
+            c.method === 'create' &&
+            c.args.data.gameId === w.gameId &&
+            (c.args.data.handId ?? null) === (w.handId ?? null)
+        );
+        if (!ledgerCalls.length) return null;
+        const maxSeq = ledgerCalls.reduce(
+          (m, c) => Math.max(m, c.args.data.sequenceNumber),
+          0
+        );
+        return { sequenceNumber: maxSeq };
+      }),
+      create: vi.fn(async (args: any) => {
+        calls.push({ model: 'handEvent', method: 'create', args });
+        return { id: 'he', sequenceNumber: args.data.sequenceNumber };
+      }),
+    },
   };
 
   // processAction does prisma.$transaction(async (tx) => ...) on the real

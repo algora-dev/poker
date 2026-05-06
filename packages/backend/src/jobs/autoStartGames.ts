@@ -10,10 +10,13 @@ export async function autoStartWaitingGames() {
   try {
     const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
 
-    // Find games waiting for > 2 minutes with at least 2 players
+    // Phase 6 [M-04]: opt-in auto-start. Hosts must explicitly set autoStart
+    // when creating the game. Default off so a host running a money table
+    // is not surprised by the cron starting their game.
     const waitingGames = await prisma.game.findMany({
       where: {
         status: 'waiting',
+        autoStart: true,
         createdAt: {
           lt: twoMinutesAgo,
         },

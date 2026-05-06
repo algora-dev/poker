@@ -138,6 +138,28 @@ function buildGuardedTx(initialHand: any, initialPlayer: any, opts: { game: any;
         return args.data;
       }),
     },
+    handEvent: {
+      findFirst: vi.fn(async (args: any) => {
+        const w = args.where;
+        const ledgerCalls = calls.filter(
+          (c) =>
+            c.model === 'handEvent' &&
+            c.method === 'create' &&
+            c.args.data.gameId === w.gameId &&
+            (c.args.data.handId ?? null) === (w.handId ?? null)
+        );
+        if (!ledgerCalls.length) return null;
+        const maxSeq = ledgerCalls.reduce(
+          (m, c) => Math.max(m, c.args.data.sequenceNumber),
+          0
+        );
+        return { sequenceNumber: maxSeq };
+      }),
+      create: vi.fn(async (args: any) => {
+        calls.push({ model: 'handEvent', method: 'create', args });
+        return { id: 'he', sequenceNumber: args.data.sequenceNumber };
+      }),
+    },
   };
 
   return {
@@ -353,6 +375,28 @@ describe('Phase 3 [H-02] — optimistic concurrency guard', () => {
           create: vi.fn(async (args: any) => {
             calls.push({ model: 'handAction', method: 'create', args });
             return args.data;
+          }),
+        },
+        handEvent: {
+          findFirst: vi.fn(async (args: any) => {
+            const w = args.where;
+            const ledgerCalls = calls.filter(
+              (c) =>
+                c.model === 'handEvent' &&
+                c.method === 'create' &&
+                c.args.data.gameId === w.gameId &&
+                (c.args.data.handId ?? null) === (w.handId ?? null)
+            );
+            if (!ledgerCalls.length) return null;
+            const maxSeq = ledgerCalls.reduce(
+              (m, c) => Math.max(m, c.args.data.sequenceNumber),
+              0
+            );
+            return { sequenceNumber: maxSeq };
+          }),
+          create: vi.fn(async (args: any) => {
+            calls.push({ model: 'handEvent', method: 'create', args });
+            return { id: 'he', sequenceNumber: args.data.sequenceNumber };
           }),
         },
       };

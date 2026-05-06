@@ -2,6 +2,7 @@ import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { evaluateHand, compareHands } from './poker/handEvaluator';
 import { dealCards } from './poker/deck';
+import { recordHandEvent } from './handLedger';
 
 type ActionType = 'fold' | 'check' | 'call' | 'raise' | 'all-in';
 
@@ -335,6 +336,10 @@ export async function processAction(
       },
     });
 
+    // Capture before-state for the ledger event before we mutate the player.
+    const stackBefore = player.chipStack;
+    const potBefore = currentHand.pot;
+
     // Update player
     await tx.gamePlayer.update({
       where: { id: player.id },
@@ -342,6 +347,28 @@ export async function processAction(
         chipStack: playerChipStack,
         position: playerPosition,
       },
+    });
+
+    // Phase 7 [M-05]: action_applied ledger event with before/after state.
+    // No private cards in this payload — ledger privacy gate enforces it.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      handId: currentHand.id,
+      userId,
+      eventType: 'action_applied',
+      payload: {
+        action,
+        amount: actionAmount.toString(),
+        stage: currentHand.stage,
+        activePlayerIndex: currentHand.activePlayerIndex,
+        stackBefore: stackBefore.toString(),
+        stackAfter: playerChipStack.toString(),
+        potBefore: potBefore.toString(),
+        potAfter: newPot.toString(),
+        currentBetAfter: newCurrentBet.toString(),
+        positionAfter: playerPosition,
+      },
+      correlationId: `act:${currentHand.id}:${currentHand.version + 1}`,
     });
 
     const t2 = Date.now();
@@ -384,6 +411,20 @@ export async function processAction(
           data: { board: JSON.stringify(board), deck: JSON.stringify(deck.slice(deckIdx)), pot: newPot, stage: 'river' },
         });
 
+        // Phase 7 [M-05]: ledger event for the fast-forward to river.
+        // Board cards are public once revealed, so they may appear here.
+        await recordHandEvent(tx, {
+          gameId: game.id,
+          handId: currentHand.id,
+          eventType: 'street_advanced',
+          payload: {
+            fromStage: currentHand.stage,
+            toStage: 'river',
+            allInFastForward: true,
+            board,
+          },
+        });
+
         const showdownResults = await handleShowdown(tx, game, { ...currentHand, board: JSON.stringify(board), pot: newPot });
         return { action, gameOver: true, showdownResults };
       }
@@ -411,6 +452,21 @@ export async function processAction(
             activePlayerIndex: getPostFlopFirstToAct(game),
             turnStartedAt: new Date(),
             stage: nextStage,
+          },
+        });
+
+        // Phase 7 [M-05]: ledger event for the street advance.
+        // Re-read the freshly updated hand so the public board is captured.
+        const advancedHand = await tx.hand.findUnique({ where: { id: currentHand.id } });
+        await recordHandEvent(tx, {
+          gameId: game.id,
+          handId: currentHand.id,
+          eventType: 'street_advanced',
+          payload: {
+            fromStage: currentHand.stage,
+            toStage: nextStage,
+            board: advancedHand ? JSON.parse(advancedHand.board) : [],
+            potAfter: newPot.toString(),
           },
         });
 
@@ -546,6 +602,32 @@ export async function handleFoldWin(tx: any, game: any, hand: any, winner: any) 
     },
   });
 
+  // Phase 7 [M-05]: ledger trail for fold-win.
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    userId: winner.userId,
+    eventType: 'pot_awarded',
+    payload: {
+      reason: 'fold_win',
+      potNumber: 1,
+      amount: hand.pot.toString(),
+      winnerIds: [winner.userId],
+      shareEach: hand.pot.toString(),
+      remainder: '0',
+    },
+  });
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    eventType: 'hand_completed',
+    payload: {
+      reason: 'fold_win',
+      winnerIds: [winner.userId],
+      potTotal: hand.pot.toString(),
+    },
+  });
+
   // Check if game should end or continue
   await checkGameContinuation(tx, game);
 
@@ -641,6 +723,17 @@ async function checkGameContinuation(tx: any, game: any) {
       gameId: game.id,
       remainingPlayers: remaining.length,
       winner: remaining[0]?.userId,
+    });
+
+    // Phase 7 [M-05]: ledger event for game-level completion.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      userId: remaining[0]?.userId ?? null,
+      eventType: 'game_completed',
+      payload: {
+        winnerId: remaining[0]?.userId ?? null,
+        remainingPlayers: remaining.length,
+      },
     });
     return;
   }
@@ -992,6 +1085,22 @@ export async function handleShowdown(tx: any, game: any, hand: any) {
   const sidePots = await calculateSidePots(tx, hand.id, freshShowdownPlayers);
   await storeSidePots(tx, hand.id, sidePots);
 
+  // Phase 7 [M-05]: ledger event for side-pot construction (proof of
+  // eligibility/amounts even before evaluation runs).
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    eventType: 'side_pots_built',
+    payload: {
+      pots: sidePots.map((p: any) => ({
+        potNumber: p.potNumber,
+        amount: p.amount.toString(),
+        eligiblePlayerIds: p.eligiblePlayerIds,
+      })),
+      totalPot: hand.pot.toString(),
+    },
+  });
+
   // Evaluate all active players' hands
   const evaluations = players.map((p: any) => ({
     userId: p.userId,
@@ -999,6 +1108,26 @@ export async function handleShowdown(tx: any, game: any, hand: any) {
     holeCards: JSON.parse(p.holeCards),
     evaluation: evaluateHand(JSON.parse(p.holeCards), board),
   }));
+
+  // Phase 7 [M-05]: showdown_evaluated. The hand is over once we are here,
+  // so hole cards may appear in the ledger payload (privacy gate is scoped
+  // to mid-hand events).
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    eventType: 'showdown_evaluated',
+    payload: {
+      board,
+      evaluations: evaluations.map((e: any) => ({
+        userId: e.userId,
+        username: e.username,
+        holeCards: e.holeCards,
+        rank: e.evaluation.rank,
+        description: e.evaluation.description,
+        bestCards: e.evaluation.cards,
+      })),
+    },
+  });
 
   // Award each pot separately
   const allWinnerIds = new Set<string>();
@@ -1077,6 +1206,24 @@ export async function handleShowdown(tx: any, game: any, hand: any) {
         winnerId: potWinnerIds.length === 1 ? potWinnerIds[0] : null, // null if split
       },
     });
+
+    // Phase 7 [M-05]: pot_awarded with full allocation proof.
+    const remainder = pot.amount - potShare * BigInt(potWinnerIds.length);
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      handId: hand.id,
+      eventType: 'pot_awarded',
+      payload: {
+        potNumber: pot.potNumber,
+        amount: pot.amount.toString(),
+        eligiblePlayerIds: pot.eligiblePlayerIds,
+        winnerIds: potWinnerIds,
+        winningRank: bestHand.rank,
+        winningDescription: bestHand.description,
+        shareEach: potShare.toString(),
+        remainder: remainder.toString(),
+      },
+    });
   }
 
   const winnerIds = Array.from(allWinnerIds);
@@ -1088,6 +1235,19 @@ export async function handleShowdown(tx: any, game: any, hand: any) {
       stage: 'completed',
       winnerIds: JSON.stringify(winnerIds),
       completedAt: new Date(),
+    },
+  });
+
+  // Phase 7 [M-05]: hand_completed via showdown.
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    eventType: 'hand_completed',
+    payload: {
+      reason: 'showdown',
+      winnerIds,
+      potTotal: hand.pot.toString(),
+      numPots: sidePots.length,
     },
   });
 

@@ -1,6 +1,7 @@
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { createDeck, shuffleDeck, dealCards, Card } from './poker/deck';
+import { recordHandEvent, buildDeckCommitment } from './handLedger';
 
 /**
  * Initialize a new hand - deal cards, post blinds.
@@ -180,6 +181,59 @@ export async function initializeHand(gameId: string, parentTx?: any) {
     });
 
     logger.info(`HAND INIT #${handNumber}: pot=${hand.pot.toString()} bet=${bbAmount.toString()} dealer=${game.dealerIndex} sb=${smallBlindIndex}(${sbPlayer.userId.slice(-6)}) bb=${bigBlindIndex}(${bbPlayer.userId.slice(-6)}) first=${firstToActIndex} active=${numActive}`);
+
+    // Phase 7 [M-05]: ledger events for hand start, deck commitment, blinds.
+    // No private cards in any of these payloads (privacy gate enforces it).
+    const deckCommitment = await buildDeckCommitment(JSON.stringify(deck));
+    await recordHandEvent(tx, {
+      gameId,
+      handId: hand.id,
+      eventType: 'hand_started',
+      payload: {
+        handNumber,
+        dealerIndex: game.dealerIndex,
+        smallBlindSeat: smallBlindIndex,
+        bigBlindSeat: bigBlindIndex,
+        firstToActSeat: firstToActIndex,
+        activePlayers: numActive,
+      },
+    });
+    await recordHandEvent(tx, {
+      gameId,
+      handId: hand.id,
+      eventType: 'deck_committed',
+      payload: {
+        // Hash only — the actual deck order is committed in the DB and is
+        // verifiable post-hand by hashing the persisted Hand.deck again.
+        deckHash: deckCommitment,
+        algorithm: 'sha256',
+        deckCardCount: deck.length,
+      },
+    });
+    await recordHandEvent(tx, {
+      gameId,
+      handId: hand.id,
+      userId: sbPlayer.userId,
+      eventType: 'blinds_posted',
+      payload: {
+        seat: smallBlindIndex,
+        role: 'small_blind',
+        amount: sbAmount.toString(),
+        position: sbPosition,
+      },
+    });
+    await recordHandEvent(tx, {
+      gameId,
+      handId: hand.id,
+      userId: bbPlayer.userId,
+      eventType: 'blinds_posted',
+      payload: {
+        seat: bigBlindIndex,
+        role: 'big_blind',
+        amount: bbAmount.toString(),
+        position: bbPosition,
+      },
+    });
 
     return hand;
   };

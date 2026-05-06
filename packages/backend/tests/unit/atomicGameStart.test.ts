@@ -36,6 +36,7 @@ function buildMockPrisma(initial: {
   let players = initial.players.map((p) => ({ ...p }));
   let hands = (initial.hands || []).map((h) => ({ ...h }));
   let handActions: any[] = [];
+  let handEvents: any[] = [];
 
   const buildTx = () => ({
     game: {
@@ -92,6 +93,30 @@ function buildMockPrisma(initial: {
         return args.data;
       }),
     },
+    // Phase 7 [M-05]: handEvent ledger stub. Honors per-(gameId, handId)
+    // monotonic sequence assignment.
+    handEvent: {
+      findFirst: vi.fn(async (args: any) => {
+        const w = args.where;
+        const matches = handEvents.filter(
+          (e) =>
+            e.gameId === w.gameId &&
+            (e.handId ?? null) === (w.handId ?? null)
+        );
+        if (!matches.length) return null;
+        matches.sort((a, b) => b.sequenceNumber - a.sequenceNumber);
+        return { sequenceNumber: matches[0].sequenceNumber };
+      }),
+      create: vi.fn(async (args: any) => {
+        handEvents.push({
+          gameId: args.data.gameId,
+          handId: args.data.handId ?? null,
+          sequenceNumber: args.data.sequenceNumber,
+          eventType: args.data.eventType,
+        });
+        return { id: 'he_' + handEvents.length, sequenceNumber: args.data.sequenceNumber };
+      }),
+    },
   });
 
   const client = {
@@ -101,6 +126,7 @@ function buildMockPrisma(initial: {
       const playersSnap = players.map((p) => ({ ...p }));
       const handsSnap = hands.map((h) => ({ ...h }));
       const actionsSnap = handActions.slice();
+      const eventsSnap = handEvents.slice();
       try {
         return await fn(buildTx());
       } catch (err) {
@@ -109,6 +135,7 @@ function buildMockPrisma(initial: {
         players = playersSnap;
         hands = handsSnap;
         handActions = actionsSnap;
+        handEvents = eventsSnap;
         throw err;
       }
     }),
@@ -116,7 +143,7 @@ function buildMockPrisma(initial: {
 
   return {
     client,
-    state: () => ({ game, players, hands, handActions }),
+    state: () => ({ game, players, hands, handActions, handEvents }),
   };
 }
 

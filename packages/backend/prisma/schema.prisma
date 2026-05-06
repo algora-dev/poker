@@ -76,12 +76,17 @@ model Game {
   id          String    @id @default(cuid())
   name        String
   createdBy   String
-  maxPlayers  Int       @default(9)
+  // Phase 6 [M-03]: hard cap at 8 players. 9-handed support requires explicit
+  // testing of UX/turn logic and is not in scope for the alpha.
+  maxPlayers  Int       @default(8)
   minBuyIn    BigInt
   maxBuyIn    BigInt
   smallBlind  BigInt    @default(500000) // 0.5 chips in 6 decimals
   bigBlind    BigInt    @default(1000000) // 1.0 chips in 6 decimals
   status      String    @default("waiting") // waiting, in_progress, completed
+  // Phase 6 [M-04]: opt-in auto-start. Default off so a host has to explicitly
+  // enable it. The auto-start cron job only fires for games with autoStart=true.
+  autoStart   Boolean   @default(false)
   currentHandId String?   // Current active hand
   dealerIndex Int       @default(0) // Button position
   blindLevel  Int       @default(0) // Current blind level index
@@ -92,6 +97,7 @@ model Game {
 
   players GamePlayer[]
   hands   Hand[]
+  events  HandEvent[]
 
   @@index([status])
   @@index([createdAt])
@@ -142,6 +148,38 @@ model Hand {
 
   @@index([gameId])
   @@index([handNumber])
+}
+
+// Phase 7 [M-05]: append-only hand/game event ledger. Sufficient to
+// reconstruct any hand internally and explain why chips moved. Distinct from
+// AppLog (operational logs) and ChipAudit (off-table balance ledger).
+//
+// Rules:
+//  - Append-only: rows are inserted, never updated or deleted.
+//  - Sequence is per-(game, hand) and increments monotonically.
+//  - Public events (during an active hand) MUST NOT include private cards.
+//  - Hand-completion events MAY include hole cards once the hand is over.
+//  - payload is a JSON string (Postgres JSONB would be nicer but keeps the
+//    existing storage convention used elsewhere in this schema).
+//  - correlationId groups events from a single request/action so disputes
+//    can be replayed end-to-end.
+model HandEvent {
+  id             String   @id @default(cuid())
+  gameId         String
+  game           Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  handId         String?  // Null for game-level events (game_created, game_completed)
+  userId         String?  // Null for events not attributable to one player
+  sequenceNumber Int      // Monotonic per (gameId, handId)
+  eventType      String   // See PHASE7_EVENT_TYPES in src/services/handLedger.ts
+  payload        String   @default("{}") // JSON string
+  correlationId  String?  // Groups events from one request/action chain
+  serverTime     DateTime @default(now())
+
+  @@index([gameId])
+  @@index([handId])
+  @@index([eventType])
+  @@index([correlationId])
+  @@unique([gameId, handId, sequenceNumber])
 }
 
 // Player actions within a hand

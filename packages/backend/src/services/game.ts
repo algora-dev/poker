@@ -1,5 +1,13 @@
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
+import { recordHandEvent } from './handLedger';
+
+/**
+ * Hard cap on table size for the alpha. Per Phase 6 [M-03] and Gerald audit:
+ * 9-handed UX/turn logic has not been deliberately tested; reject creation
+ * attempts above this cap server-side regardless of client-side intent.
+ */
+export const MAX_TABLE_SIZE = 8;
 
 /**
  * Create a new game
@@ -11,8 +19,20 @@ export async function createGame(
   maxBuyIn: bigint,
   smallBlind: bigint,
   bigBlind: bigint,
-  creatorBuyIn?: bigint
+  creatorBuyIn?: bigint,
+  // Phase 6 [M-03][M-04]: optional max table size (clamped to MAX_TABLE_SIZE)
+  // and explicit auto-start opt-in (default false). Hosts must opt in.
+  options?: { maxPlayers?: number; autoStart?: boolean }
 ) {
+  // Validate maxPlayers up-front so we never persist an invalid table size.
+  const requestedMax = options?.maxPlayers ?? MAX_TABLE_SIZE;
+  if (!Number.isInteger(requestedMax) || requestedMax < 2) {
+    throw new Error('maxPlayers must be an integer >= 2');
+  }
+  if (requestedMax > MAX_TABLE_SIZE) {
+    throw new Error(`maxPlayers cannot exceed ${MAX_TABLE_SIZE}`);
+  }
+  const autoStart = options?.autoStart === true;
   const buyIn = creatorBuyIn || minBuyIn;
   if (buyIn < minBuyIn || buyIn > maxBuyIn) {
     throw new Error('Creator buy-in must be within the min/max range');
@@ -50,7 +70,10 @@ export async function createGame(
         createdBy: userId,
         smallBlind,
         bigBlind,
-        maxPlayers: 9,
+        // Phase 6 [M-03]: hard-capped at MAX_TABLE_SIZE (8) above.
+        maxPlayers: requestedMax,
+        // Phase 6 [M-04]: opt-in auto-start. Default off.
+        autoStart,
         minBuyIn,
         maxBuyIn,
         status: 'waiting',
@@ -90,6 +113,31 @@ export async function createGame(
       userId,
       minBuyIn: minBuyIn.toString(),
       maxBuyIn: maxBuyIn.toString(),
+    });
+
+    // Phase 7 [M-05]: ledger event for game lifecycle.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      userId,
+      eventType: 'game_created',
+      payload: {
+        name,
+        minBuyIn: minBuyIn.toString(),
+        maxBuyIn: maxBuyIn.toString(),
+        smallBlind: smallBlind.toString(),
+        bigBlind: bigBlind.toString(),
+        maxPlayers: requestedMax,
+        autoStart,
+      },
+    });
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      userId,
+      eventType: 'player_joined',
+      payload: {
+        seatIndex: 0,
+        buyIn: buyIn.toString(),
+      },
     });
 
     return {
@@ -379,6 +427,17 @@ export async function joinGame(userId: string, gameId: string, buyInAmount?: big
       userId,
       buyIn: buyIn.toString(),
       newBalance: updatedBalance.chips.toString(),
+    });
+
+    // Phase 7 [M-05]: ledger event for join.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      userId,
+      eventType: 'player_joined',
+      payload: {
+        seatIndex: game.players.length,
+        buyIn: buyIn.toString(),
+      },
     });
 
     return {
