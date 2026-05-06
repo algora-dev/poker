@@ -38,6 +38,8 @@ export async function cleanupStuckGames() {
     });
 
     // Find abandoned waiting games (> 24 hours old)
+    // Include `hands` (will be empty) so the union with stuckInProgressGames
+    // keeps a consistent type and TS does not narrow `hands` away.
     const abandonedWaitingGames = await tx.game.findMany({
       where: {
         status: 'waiting',
@@ -52,6 +54,10 @@ export async function cleanupStuckGames() {
               select: { id: true, username: true },
             },
           },
+        },
+        hands: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
         },
       },
     });

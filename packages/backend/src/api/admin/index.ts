@@ -126,6 +126,8 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         });
       }
 
+      // ChipAudit has no Prisma relation to User, so we resolve usernames in
+      // a single follow-up query keyed by userId.
       const refunds = await prisma.chipAudit.findMany({
         where: {
           operation: 'game_refund',
@@ -134,21 +136,22 @@ export default async function adminRoutes(fastify: FastifyInstance) {
           createdAt: 'desc',
         },
         take: 20,
-        include: {
-          user: {
-            select: {
-              id: true,
-              username: true,
-            },
-          },
-        },
       });
+
+      const userIds = Array.from(new Set(refunds.map((r) => r.userId)));
+      const users = userIds.length
+        ? await prisma.user.findMany({
+            where: { id: { in: userIds } },
+            select: { id: true, username: true },
+          })
+        : [];
+      const usernameById = new Map(users.map((u) => [u.id, u.username]));
 
       return reply.send({
         success: true,
         refunds: refunds.map((r) => ({
           userId: r.userId,
-          username: r.user.username,
+          username: usernameById.get(r.userId) ?? null,
           amount: r.amountDelta.toString(),
           balanceBefore: r.balanceBefore.toString(),
           balanceAfter: r.balanceAfter.toString(),
