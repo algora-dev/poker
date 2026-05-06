@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../middleware/auth';
 import { createGame, getGame, getActiveGames, getCompletedGames, joinGame, cancelGameBeforeStart } from '../../services/game';
-import { initializeHand, getGameState } from '../../services/holdemGame';
+import { initializeHand, getGameState, atomicStartGame } from '../../services/holdemGame';
 import { processAction } from '../../services/pokerActions';
 import { emitBalanceUpdate, emitGameEvent } from '../../socket';
 import { logger } from '../../utils/logger';
@@ -338,34 +338,50 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           });
         }
 
-        // Update game status
-        await prisma.game.update({
-          where: { id },
-          data: {
-            status: 'in_progress',
-            startedAt: new Date(),
-          },
-        });
+        // PHASE 5 [H-05]: atomic game start via atomicStartGame helper.
+        // Status flip and first-hand init happen in ONE transaction. If hand
+        // init throws, the transaction rolls back and status stays 'waiting'.
+        // Status guard makes concurrent start requests idempotent: only the
+        // first one transitions; subsequent calls get a clean 409.
+        // See audits/t3-poker/06-dave-fix-prompt.md Phase 5.
+        const startResult = await atomicStartGame(id);
+        if (startResult.ok !== true) {
+          if (startResult.code === 'already_started') {
+            return reply.code(409).send({
+              error: 'Conflict',
+              message: startResult.message,
+            });
+          }
+          logger.error('Atomic game start failed; rolled back', {
+            gameId: id,
+            error: startResult.message,
+          });
+          return reply.code(500).send({
+            error: 'Internal server error',
+            message: 'Failed to start game',
+          });
+        }
 
-        logger.info('Game started by creator', {
+        logger.info('Game started by creator (atomic)', {
           gameId: id,
           creatorId: request.user!.id,
           playerCount: game.players.length,
         });
 
-        // Respond immediately, initialize hand in background
+        // ONLY now respond success — the game truly has a first hand.
         reply.send({ success: true, message: 'Game started!' });
 
-        // Initialize first hand and emit event (non-blocking)
+        // Side effects (broadcasts) outside the transaction.
         try {
-          await initializeHand(id);
           emitGameEvent(id, 'game:started', { gameId: id });
-          // Broadcast full state to all players
           const { broadcastGameState: bgs } = await import('../../socket');
           const pIds = game.players.map((p: any) => p.userId);
           bgs(id, pIds).catch(() => {});
         } catch (err) {
-          logger.error('Failed to initialize first hand', { gameId: id, error: err });
+          logger.error('Post-start broadcast failed (game still started ok)', {
+            gameId: id,
+            error: (err as any)?.message || String(err),
+          });
         }
       } catch (error) {
         logger.error('Start game failed', { 

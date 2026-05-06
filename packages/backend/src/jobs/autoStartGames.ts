@@ -1,5 +1,5 @@
 import { prisma } from '../db/client';
-import { initializeHand } from '../services/holdemGame';
+import { atomicStartGame } from '../services/holdemGame';
 import { emitGameEvent } from '../socket';
 import { logger } from '../utils/logger';
 
@@ -40,26 +40,32 @@ export async function autoStartWaitingGames() {
         waitedMinutes: (Date.now() - game.createdAt.getTime()) / 60000,
       });
 
-      // Update game status
-      await prisma.game.update({
-        where: { id: game.id },
-        data: {
-          status: 'in_progress',
-          startedAt: new Date(),
-        },
-      });
+      // PHASE 5 [H-05]: atomic auto-start via atomicStartGame helper. Status
+      // flip + first-hand init in ONE transaction. Status guard makes manual
+      // start + auto-start mutually exclusive (loser gets already_started).
+      const result = await atomicStartGame(game.id);
+      if (result.ok !== true) {
+        if (result.code === 'already_started') {
+          logger.info('Auto-start skipped (lost race or already started)', {
+            gameId: game.id,
+          });
+        } else {
+          logger.error('Auto-start failed; rolled back', {
+            gameId: game.id,
+            error: result.message,
+          });
+        }
+        continue;
+      }
 
-      // Initialize first hand
-      await initializeHand(game.id);
-
-      // Emit game started event
+      // Emit game started event after the atomic commit.
       emitGameEvent(game.id, 'game:started', {
         gameId: game.id,
         playerCount: game.players.length,
         autoStarted: true,
       });
 
-      logger.info('Game auto-started successfully', {
+      logger.info('Game auto-started successfully (atomic)', {
         gameId: game.id,
         playerCount: game.players.length,
       });
