@@ -1157,13 +1157,39 @@ export async function handleShowdown(tx: any, game: any, hand: any) {
     const potWinnerIds = potWinners.map(w => w.userId);
     const potWinnerNames = potWinners.map(w => w.username);
 
-    // Split pot among winners
+    // Split pot among winners. PHASE 9 follow-up [L-01]: integer-division
+    // remainder must be allocated deterministically; otherwise odd-chip
+    // pots leak chip mass over time. Convention: first winning seat left
+    // of the dealer button receives the remainder. The simulator's chip-
+    // conservation invariant catches the leak if this is ever broken.
     const potShare = pot.amount / BigInt(potWinnerIds.length);
+    const remainder = pot.amount - potShare * BigInt(potWinnerIds.length);
+
+    // Determine the seat to receive any odd-chip remainder.
+    let remainderRecipientId: string | null = null;
+    if (remainder > 0n) {
+      const numSeats = freshShowdownPlayers.length;
+      const dealer = (game.dealerIndex ?? 0) % Math.max(numSeats, 1);
+      // Walk seats left-of-dealer, return the first one that's a pot winner.
+      for (let i = 1; i <= numSeats; i++) {
+        const seat = freshShowdownPlayers[(dealer + i) % numSeats];
+        if (seat && potWinnerIds.includes(seat.userId)) {
+          remainderRecipientId = seat.userId;
+          break;
+        }
+      }
+      // Fallback: deterministic by userId order so we never lose chips.
+      if (!remainderRecipientId) {
+        remainderRecipientId = potWinnerIds.slice().sort()[0];
+      }
+    }
 
     logger.info(`Pot ${pot.potNumber} awarded`, {
       amount: pot.amount.toString(),
       winners: potWinnerNames,
       shareEach: potShare.toString(),
+      remainder: remainder.toString(),
+      remainderRecipientId,
     });
 
     potResults.push({
@@ -1183,11 +1209,12 @@ export async function handleShowdown(tx: any, game: any, hand: any) {
     for (const winnerId of potWinnerIds) {
       const winner = freshShowdownPlayers.find((p: any) => p.userId === winnerId);
       if (winner) {
+        const extra = winnerId === remainderRecipientId ? remainder : 0n;
         await tx.gamePlayer.update({
           where: { id: winner.id },
           data: {
             chipStack: {
-              increment: potShare,
+              increment: potShare + extra,
             },
           },
         });
@@ -1208,7 +1235,6 @@ export async function handleShowdown(tx: any, game: any, hand: any) {
     });
 
     // Phase 7 [M-05]: pot_awarded with full allocation proof.
-    const remainder = pot.amount - potShare * BigInt(potWinnerIds.length);
     await recordHandEvent(tx, {
       gameId: game.id,
       handId: hand.id,
@@ -1222,6 +1248,8 @@ export async function handleShowdown(tx: any, game: any, hand: any) {
         winningDescription: bestHand.description,
         shareEach: potShare.toString(),
         remainder: remainder.toString(),
+        // Phase 9 follow-up [L-01]: explicit remainder allocation.
+        remainderRecipientId,
       },
     });
   }

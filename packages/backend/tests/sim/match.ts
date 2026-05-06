@@ -34,8 +34,33 @@ export interface MatchConfig {
    */
   maxActions?: number;
   gameName?: string;
-  /** Optional seed for any internal random choices. */
+  /** Optional seed (passed through to the report for repro). */
   seed?: number;
+  /** Friendly name for failure reporting. Optional. */
+  scenarioName?: string;
+  /**
+   * Phase 9 follow-up [item 5]: in strict mode, an illegal strategy action
+   * is a HARD failure (errored MatchReport). In non-strict (default for
+   * fuzzing), illegal actions silently fall back to check/fold so the
+   * match can continue.
+   */
+  strict?: boolean;
+}
+
+/**
+ * Phase 9 follow-up [item 5]: rich failure metadata so any sim failure can
+ * be reproduced from the report alone.
+ */
+export interface SimFailure {
+  scenarioName?: string;
+  seed?: number;
+  handNumber: number;
+  activeUserId?: string;
+  activeSeat?: number;
+  attemptedAction?: string;
+  attemptedRaiseTotal?: number;
+  reason: string;
+  underlyingError?: string;
 }
 
 export interface HandSummary {
@@ -54,6 +79,8 @@ export interface HandSummary {
 }
 
 export interface MatchReport {
+  scenarioName?: string;
+  seed?: number;
   handsPlayed: number;
   finalBalances: Array<{ userId: string; chips: bigint }>;
   finalStacks: Array<{ userId: string; chipStack: bigint }>;
@@ -75,6 +102,8 @@ export interface MatchReport {
   };
   endedReason: 'maxHands' | 'gameOver' | 'maxActions' | 'error';
   error?: string;
+  /** Phase 9 follow-up [item 5]: structured failure for repro. */
+  failure?: SimFailure;
 }
 
 const CHIP_UNIT = 1_000_000n;
@@ -87,6 +116,7 @@ export async function runMatch(cfg: MatchConfig): Promise<MatchReport> {
   if (cfg.seats.length < 2 || cfg.seats.length > 8) {
     throw new Error('seats must be 2-8');
   }
+  __activeCfg = cfg;
   const sb = toMicro(cfg.smallBlindChips ?? 0.5);
   const bb = toMicro(cfg.bigBlindChips ?? 1.0);
   const maxActions = cfg.maxActions ?? 2000;
@@ -117,11 +147,16 @@ export async function runMatch(cfg: MatchConfig): Promise<MatchReport> {
   const { processAction } = await import('../../src/services/pokerActions');
 
   // 2) Create game owned by seat 0, then seats 1..N join.
+  // Use the min/max buy-in across all seats so heterogeneous-stack scenarios
+  // can validate joinGame's buy-in range.
+  const buyIns = cfg.seats.map((s) => toMicro(s.buyInChips));
+  const minBuyIn = buyIns.reduce((m, v) => (v < m ? v : m), buyIns[0]);
+  const maxBuyIn = buyIns.reduce((m, v) => (v > m ? v : m), buyIns[0]);
   const created = await createGame(
     cfg.seats[0].userId,
     cfg.gameName ?? 'sim',
-    toMicro(cfg.seats[0].buyInChips),
-    toMicro(cfg.seats[0].buyInChips),
+    minBuyIn,
+    maxBuyIn,
     sb,
     bb,
     toMicro(cfg.seats[0].buyInChips),
@@ -216,9 +251,24 @@ export async function runMatch(cfg: MatchConfig): Promise<MatchReport> {
           stage: fresh.stage,
         });
       } catch (err: any) {
-        // A strategy may attempt an illegal action (e.g. raise below min).
-        // We don't crash the match — log it and have the player check/fold
-        // instead so the match can continue.
+        // Phase 9 follow-up [item 5]: in strict mode, fail hard with full
+        // metadata so the scenario can be reproduced. Otherwise fall back
+        // to check/fold so fuzz runs can continue.
+        const failure: SimFailure = {
+          scenarioName: cfg.scenarioName,
+          seed: cfg.seed,
+          handNumber: hand.handNumber,
+          activeUserId: activePlayer.userId,
+          activeSeat,
+          attemptedAction: actionName,
+          attemptedRaiseTotal: raiseTotal,
+          reason: 'illegal_action',
+          underlyingError: String(err?.message ?? err),
+        };
+        if (cfg.strict) {
+          endedReason = 'error';
+          return finalReportWithFailure(world, hands, endedReason, failure);
+        }
         const fallback = view.currentBet > view.alreadyInOnStreet ? 'fold' : 'check';
         try {
           await processAction(gameId, activePlayer.userId, fallback as any);
@@ -230,12 +280,11 @@ export async function runMatch(cfg: MatchConfig): Promise<MatchReport> {
           });
         } catch (innerErr: any) {
           endedReason = 'error';
-          return finalReport(
-            world,
-            hands,
-            endedReason,
-            `processAction failed: ${err?.message}; fallback also failed: ${innerErr?.message}`
-          );
+          return finalReportWithFailure(world, hands, endedReason, {
+            ...failure,
+            reason: 'illegal_action_and_fallback_failed',
+            underlyingError: `${failure.underlyingError}; fallback: ${String(innerErr?.message ?? innerErr)}`,
+          });
         }
       }
     }
@@ -295,6 +344,10 @@ export async function runMatch(cfg: MatchConfig): Promise<MatchReport> {
   return finalReport(world, hands, endedReason, undefined, conservationFailure);
 }
 
+// Module-scope reference to the active config so finalReport can attach
+// scenarioName/seed without threading them through every call site.
+let __activeCfg: MatchConfig | null = null;
+
 function finalReport(
   world: ReturnType<typeof buildSimWorld>,
   hands: HandSummary[],
@@ -304,6 +357,8 @@ function finalReport(
 ): MatchReport {
   const s = world.state();
   return {
+    scenarioName: __activeCfg?.scenarioName,
+    seed: __activeCfg?.seed,
     handsPlayed: hands.length,
     finalBalances: s.balances.map((b) => ({ userId: b.userId, chips: b.chips })),
     finalStacks: s.gamePlayers.map((p) => ({ userId: p.userId, chipStack: p.chipStack })),
@@ -323,6 +378,16 @@ function finalReport(
     endedReason,
     error,
   };
+}
+
+function finalReportWithFailure(
+  world: ReturnType<typeof buildSimWorld>,
+  hands: HandSummary[],
+  endedReason: MatchReport['endedReason'],
+  failure: SimFailure
+): MatchReport {
+  const r = finalReport(world, hands, endedReason, failure.underlyingError);
+  return { ...r, failure };
 }
 
 function safeJsonParse(s: string): any {

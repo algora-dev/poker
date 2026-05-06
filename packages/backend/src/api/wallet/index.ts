@@ -29,7 +29,7 @@ export default async function walletRoutes(fastify: FastifyInstance) {
           walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
         }).parse(request.body);
 
-        const message = generateDepositMessage(request.user!.id, walletAddress);
+        const message = await generateDepositMessage(request.user!.id, walletAddress);
 
         return reply.send({ message });
       } catch (error) {

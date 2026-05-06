@@ -24,6 +24,19 @@ import { CONFIG } from '../config';
 const AUTHORIZATION_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
+ * Server-side TTL hard cap. Even if a row were ever inserted with a longer
+ * expiry, storeDepositAuthorization() refuses to accept any challenge whose
+ * expiresAt is more than this far past issuedAt.
+ */
+const MAX_CHALLENGE_TTL_MS = AUTHORIZATION_DURATION_MS;
+
+/**
+ * Allowed clock skew between server time and signed timestamps. Defends
+ * against future-dated forgeries while tolerating normal rounding.
+ */
+const MAX_CLOCK_SKEW_MS = 30 * 1000; // 30 seconds
+
+/**
  * Action label baked into every challenge so the same signature cannot be
  * replayed against a different intent.
  */
@@ -71,23 +84,20 @@ export function generateNonce(): string {
 
 /**
  * Step 1 of the flow. The client calls this BEFORE signing.
- * Server returns the canonical challenge string + the nonce. Client signs
- * the challenge bytes and posts the signature back to createDepositAuthorization.
  *
- * Note: this only generates the challenge; nothing is persisted yet. A row
- * is only created when the signed challenge comes back in step 2. This
- * prevents nonce-spamming (only signed challenges land in the DB).
+ * Phase 9 follow-up [item 2]: server-issued challenges are now persisted
+ * IMMEDIATELY in PendingDepositChallenge. The signed-submit step REQUIRES
+ * a matching server-side row, so a client cannot forge a canonical
+ * challenge with an arbitrary nonce or far-future expiry.
  */
-export function createDepositChallenge(input: {
+export async function createDepositChallenge(input: {
   userId: string;
   walletAddress: string;
   amount?: bigint | null;
-  // Optional override for chainId/contractAddress (defaults from CONFIG).
   chainId?: number;
   contractAddress?: string;
-  // Optional issuedAt override (mainly for tests).
   now?: Date;
-}): {
+}): Promise<{
   challenge: string;
   nonce: string;
   issuedAt: Date;
@@ -95,7 +105,7 @@ export function createDepositChallenge(input: {
   chainId: number;
   contractAddress: string;
   amount: bigint | null;
-} {
+}> {
   if (!input.userId) throw new Error('userId required');
   if (!ethers.isAddress(input.walletAddress)) {
     throw new Error('Invalid wallet address');
@@ -107,6 +117,23 @@ export function createDepositChallenge(input: {
   const amount = input.amount == null ? null : BigInt(input.amount);
   const issuedAt = now;
   const expiresAt = new Date(now.getTime() + AUTHORIZATION_DURATION_MS);
+  const wallet = input.walletAddress.toLowerCase();
+
+  // Persist BEFORE returning to the client. From this point on, the only
+  // acceptable signed submit is one whose challenge matches a stored row.
+  await prisma.pendingDepositChallenge.create({
+    data: {
+      userId: input.userId,
+      walletAddress: wallet,
+      nonce,
+      chainId,
+      contractAddress,
+      amount,
+      issuedAt,
+      expiresAt,
+    },
+  });
+
   const challenge = buildDepositChallenge({
     userId: input.userId,
     walletAddress: input.walletAddress,
@@ -116,6 +143,13 @@ export function createDepositChallenge(input: {
     amount,
     issuedAt,
     expiresAt,
+  });
+  logger.info('Deposit challenge issued', {
+    userId: input.userId,
+    wallet,
+    nonce,
+    chainId,
+    expiresAt: expiresAt.toISOString(),
   });
   return { challenge, nonce, issuedAt, expiresAt, chainId, contractAddress, amount };
 }
@@ -214,7 +248,12 @@ export type StoreAuthorizationResult =
         | 'contract_mismatch'
         | 'expired'
         | 'invalid_signature'
-        | 'replay';
+        | 'replay'
+        // Phase 9 follow-up [item 2]
+        | 'unknown_challenge'
+        | 'ttl_exceeded'
+        | 'issued_in_future'
+        | 'binding_mismatch';
       message: string;
     };
 
@@ -255,16 +294,98 @@ export async function storeDepositAuthorization(input: {
   if (parsed.contractAddress.toLowerCase() !== expectedContract) {
     return { ok: false, code: 'contract_mismatch', message: 'Challenge contract does not match' };
   }
-  const now = (input.now ?? new Date()).getTime();
-  if (parsed.expiresAt.getTime() < now) {
+  const now = input.now ?? new Date();
+  const nowMs = now.getTime();
+  if (parsed.expiresAt.getTime() < nowMs) {
     return { ok: false, code: 'expired', message: 'Challenge has expired' };
   }
+  // Phase 9 follow-up [item 2]: cap TTL and reject future-dated issuedAt.
+  if (parsed.issuedAt.getTime() > nowMs + MAX_CLOCK_SKEW_MS) {
+    return {
+      ok: false,
+      code: 'issued_in_future',
+      message: 'Challenge issuedAt is in the future',
+    };
+  }
+  if (
+    parsed.expiresAt.getTime() >
+    parsed.issuedAt.getTime() + MAX_CHALLENGE_TTL_MS + MAX_CLOCK_SKEW_MS
+  ) {
+    return {
+      ok: false,
+      code: 'ttl_exceeded',
+      message: 'Challenge expiresAt exceeds maximum allowed TTL',
+    };
+  }
+
   if (!verifySignature(input.message, input.signature, input.walletAddress)) {
     return { ok: false, code: 'invalid_signature', message: 'Invalid signature' };
   }
 
-  // Persist. Nonce uniqueness is enforced at the DB level (unique index).
-  // A replay (same nonce) collides on insert and we surface 'replay'.
+  // Phase 9 follow-up [item 2]: require a server-issued pending row.
+  // Any challenge whose nonce was not generated by this server is rejected.
+  let pendingFound: any = null;
+  try {
+    pendingFound = await prisma.pendingDepositChallenge.findUnique({
+      where: { nonce: parsed.nonce },
+    });
+  } catch {
+    pendingFound = null;
+  }
+  if (!pendingFound) {
+    return {
+      ok: false,
+      code: 'unknown_challenge',
+      message: 'Nonce was not issued by this server',
+    };
+  }
+  if (pendingFound.used) {
+    return { ok: false, code: 'replay', message: 'Nonce already used' };
+  }
+  // Re-validate every binding against the persisted row.
+  if (
+    pendingFound.userId !== parsed.userId ||
+    pendingFound.walletAddress.toLowerCase() !== parsed.walletAddress.toLowerCase() ||
+    pendingFound.chainId !== parsed.chainId ||
+    pendingFound.contractAddress.toLowerCase() !== parsed.contractAddress.toLowerCase()
+  ) {
+    return {
+      ok: false,
+      code: 'binding_mismatch',
+      message: 'Challenge bindings differ from server-issued row',
+    };
+  }
+  const pendingAmount: bigint | null =
+    pendingFound.amount == null ? null : BigInt(pendingFound.amount);
+  if (pendingAmount === null ? parsed.amount !== null : parsed.amount !== pendingAmount) {
+    return {
+      ok: false,
+      code: 'binding_mismatch',
+      message: 'Challenge amount differs from server-issued row',
+    };
+  }
+  if (
+    Math.abs(pendingFound.issuedAt.getTime() - parsed.issuedAt.getTime()) >
+      MAX_CLOCK_SKEW_MS ||
+    Math.abs(pendingFound.expiresAt.getTime() - parsed.expiresAt.getTime()) >
+      MAX_CLOCK_SKEW_MS
+  ) {
+    return {
+      ok: false,
+      code: 'binding_mismatch',
+      message: 'Challenge timestamps differ from server-issued row',
+    };
+  }
+
+  // Atomically claim the pending row. Loser of a race sees count=0 -> replay.
+  const claim = await prisma.pendingDepositChallenge.updateMany({
+    where: { id: pendingFound.id, used: false },
+    data: { used: true, usedAt: now },
+  });
+  if (claim.count !== 1) {
+    return { ok: false, code: 'replay', message: 'Nonce already used' };
+  }
+
   try {
     const created = await prisma.depositAuthorization.create({
       data: {
@@ -291,7 +412,6 @@ export async function storeDepositAuthorization(input: {
     });
     return { ok: true, id: created.id };
   } catch (err: any) {
-    // Postgres unique-constraint violation on nonce -> replay.
     if (err?.code === 'P2002' || /Unique constraint/i.test(err?.message ?? '')) {
       logger.warn('Deposit authorization replay attempt', {
         userId: parsed.userId,
@@ -387,10 +507,12 @@ export async function cleanupExpiredAuthorizations() {
  *             instead. This entry point is kept temporarily so upstream
  *             callers compile while the API surface is migrated.
  */
-export function generateDepositMessage(userId: string, walletAddress: string): string {
-  // Returns a one-shot challenge that the caller can sign. It will only be
-  // accepted if posted back through storeDepositAuthorization().
-  return createDepositChallenge({ userId, walletAddress }).challenge;
+export async function generateDepositMessage(
+  userId: string,
+  walletAddress: string
+): Promise<string> {
+  const c = await createDepositChallenge({ userId, walletAddress });
+  return c.challenge;
 }
 
 /**

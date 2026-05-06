@@ -3,6 +3,7 @@ import { Wallet, Contract, JsonRpcProvider, parseUnits } from 'ethers';
 import { CONFIG } from '../config';
 import { logger } from '../utils/logger';
 import { emitBalanceUpdate } from '../socket';
+import { recordMoneyEvent } from './moneyLedger';
 
 const VAULT_ABI = [
   'function completeWithdrawal(address user, uint256 amount) external',
@@ -107,6 +108,21 @@ export async function processWithdrawal(
       },
     });
 
+    // Phase 9 follow-up [item 3]: ledger event for withdrawal request.
+    await recordMoneyEvent(tx as any, {
+      userId,
+      eventType: 'withdrawal_requested',
+      amount: -amountBigInt,
+      balanceBefore: balance.chips,
+      balanceAfter: newBalance.chips,
+      withdrawalId: withdrawal.id,
+      correlationId: `withdrawal:${withdrawal.id}`,
+      payload: {
+        wallet: user.walletAddress,
+        amountMicro: amountBigInt.toString(),
+      },
+    });
+
     logger.info('Withdrawal created — chips deducted', {
       withdrawalId: withdrawal.id,
       userId,
@@ -163,6 +179,16 @@ export async function processWithdrawal(
           completedAt: new Date(),
         },
       });
+      // Phase 9 follow-up [item 3]: ledger event for completion.
+      await recordMoneyEvent(prisma as any, {
+        userId,
+        eventType: 'withdrawal_completed',
+        amount: 0n,
+        withdrawalId: withdrawal.id,
+        txHash: tx.hash,
+        correlationId: `withdrawal:${withdrawal.id}`,
+        payload: { blockNumber: receipt.blockNumber },
+      });
 
       logger.info('Withdrawal completed', {
         withdrawalId: withdrawal.id,
@@ -207,6 +233,24 @@ export async function processWithdrawal(
           reference: withdrawal.id,
           notes: `Withdrawal failed — refunded. Error: ${error.message}`,
         },
+      });
+      // Phase 9 follow-up [item 3]: ledger events for failure + refund.
+      await recordMoneyEvent(tx as any, {
+        userId,
+        eventType: 'withdrawal_failed',
+        amount: 0n,
+        withdrawalId: withdrawal.id,
+        correlationId: `withdrawal:${withdrawal.id}`,
+        payload: { error: String(error?.message ?? error) },
+      });
+      await recordMoneyEvent(tx as any, {
+        userId,
+        eventType: 'withdrawal_refund',
+        amount: amountBigInt,
+        balanceBefore: balanceBefore - amountBigInt,
+        balanceAfter: balanceBefore,
+        withdrawalId: withdrawal.id,
+        correlationId: `withdrawal:${withdrawal.id}`,
       });
     });
 

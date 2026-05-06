@@ -82,11 +82,45 @@ export interface HandEventRow {
   gameId: string;
   handId: string | null;
   userId: string | null;
+  scopeId: string;
   sequenceNumber: number;
   eventType: string;
   payload: Json;
   correlationId: string | null;
   serverTime: Date;
+}
+
+export interface MoneyEventRow {
+  id: string;
+  userId: string;
+  eventType: string;
+  amount: bigint;
+  balanceBefore: bigint | null;
+  balanceAfter: bigint | null;
+  gameId: string | null;
+  handId: string | null;
+  txHash: string | null;
+  withdrawalId: string | null;
+  depositId: string | null;
+  authorizationId: string | null;
+  payload: Json;
+  correlationId: string | null;
+  serverTime: Date;
+}
+
+export interface PendingDepositChallengeRow {
+  id: string;
+  userId: string;
+  walletAddress: string;
+  nonce: string;
+  chainId: number;
+  contractAddress: string;
+  amount: bigint | null;
+  issuedAt: Date;
+  expiresAt: Date;
+  used: boolean;
+  usedAt: Date | null;
+  createdAt: Date;
 }
 export interface SidePotRow {
   id: string;
@@ -118,6 +152,8 @@ interface Snapshot {
   hands: HandRow[];
   handActions: HandActionRow[];
   handEvents: HandEventRow[];
+  moneyEvents: MoneyEventRow[];
+  pendingChallenges: PendingDepositChallengeRow[];
   sidePots: SidePotRow[];
   chipAudits: ChipAuditRow[];
 }
@@ -141,6 +177,8 @@ function snapshotState(s: Snapshot): Snapshot {
     hands: s.hands.map(deepCloneRow),
     handActions: s.handActions.map(deepCloneRow),
     handEvents: s.handEvents.map(deepCloneRow),
+    moneyEvents: s.moneyEvents.map(deepCloneRow),
+    pendingChallenges: s.pendingChallenges.map(deepCloneRow),
     sidePots: s.sidePots.map(deepCloneRow),
     chipAudits: s.chipAudits.map(deepCloneRow),
   };
@@ -200,6 +238,8 @@ export function buildSimWorld(initial?: Partial<Snapshot>) {
     hands: initial?.hands ?? [],
     handActions: initial?.handActions ?? [],
     handEvents: initial?.handEvents ?? [],
+    moneyEvents: initial?.moneyEvents ?? [],
+    pendingChallenges: initial?.pendingChallenges ?? [],
     sidePots: initial?.sidePots ?? [],
     chipAudits: initial?.chipAudits ?? [],
   };
@@ -518,11 +558,26 @@ export function buildSimWorld(initial?: Partial<Snapshot>) {
         return rows[0] ?? null;
       },
       create: async (args: any) => {
+        // Phase 9 follow-up [item 4]: enforce the (scopeId, sequenceNumber)
+        // unique index. The retry loop in recordHandEvent handles P2002.
+        const dup = state.handEvents.find(
+          (e) =>
+            e.scopeId === args.data.scopeId &&
+            e.sequenceNumber === args.data.sequenceNumber
+        );
+        if (dup) {
+          const err: any = new Error(
+            'Unique constraint failed on (scopeId, sequenceNumber)'
+          );
+          err.code = 'P2002';
+          throw err;
+        }
         const row: HandEventRow = {
           id: id('he'),
           gameId: args.data.gameId,
           handId: args.data.handId ?? null,
           userId: args.data.userId ?? null,
+          scopeId: args.data.scopeId,
           sequenceNumber: args.data.sequenceNumber,
           eventType: args.data.eventType,
           payload: args.data.payload ?? '{}',
@@ -531,6 +586,68 @@ export function buildSimWorld(initial?: Partial<Snapshot>) {
         };
         state.handEvents.push(row);
         return row;
+      },
+    },
+    moneyEvent: {
+      create: async (args: any) => {
+        const row: MoneyEventRow = {
+          id: id('me'),
+          userId: args.data.userId,
+          eventType: args.data.eventType,
+          amount: BigInt(args.data.amount),
+          balanceBefore: args.data.balanceBefore == null ? null : BigInt(args.data.balanceBefore),
+          balanceAfter: args.data.balanceAfter == null ? null : BigInt(args.data.balanceAfter),
+          gameId: args.data.gameId ?? null,
+          handId: args.data.handId ?? null,
+          txHash: args.data.txHash ?? null,
+          withdrawalId: args.data.withdrawalId ?? null,
+          depositId: args.data.depositId ?? null,
+          authorizationId: args.data.authorizationId ?? null,
+          payload: args.data.payload ?? '{}',
+          correlationId: args.data.correlationId ?? null,
+          serverTime: new Date(),
+        };
+        state.moneyEvents.push(row);
+        return row;
+      },
+      findMany: async (args: any) =>
+        state.moneyEvents.filter((r) => matchWhere(r, args?.where ?? {})),
+    },
+    pendingDepositChallenge: {
+      create: async (args: any) => {
+        if (state.pendingChallenges.some((p) => p.nonce === args.data.nonce)) {
+          const err: any = new Error('Unique constraint failed on nonce');
+          err.code = 'P2002';
+          throw err;
+        }
+        const row: PendingDepositChallengeRow = {
+          id: id('pdc'),
+          userId: args.data.userId,
+          walletAddress: args.data.walletAddress,
+          nonce: args.data.nonce,
+          chainId: args.data.chainId,
+          contractAddress: args.data.contractAddress,
+          amount: args.data.amount == null ? null : BigInt(args.data.amount),
+          issuedAt: args.data.issuedAt ?? new Date(),
+          expiresAt: args.data.expiresAt,
+          used: false,
+          usedAt: null,
+          createdAt: new Date(),
+        };
+        state.pendingChallenges.push(row);
+        return row;
+      },
+      findUnique: async (args: any) =>
+        state.pendingChallenges.find((r) => matchWhere(r, args.where)) ?? null,
+      updateMany: async (args: any) => {
+        let count = 0;
+        for (const r of state.pendingChallenges) {
+          if (!matchWhere(r, args.where)) continue;
+          if (args.data.used != null) r.used = args.data.used;
+          if (args.data.usedAt != null) r.usedAt = args.data.usedAt;
+          count++;
+        }
+        return { count };
       },
     },
     sidePot: {

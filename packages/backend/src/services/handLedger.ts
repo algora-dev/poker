@@ -95,14 +95,24 @@ export interface RecordHandEventInput {
 }
 
 /**
+ * Build the canonical scopeId used by the unique sequence index. Hand-scoped
+ * events live in `hand:<handId>`; game-level events live in `game:<gameId>`.
+ */
+export function handLedgerScopeId(input: { gameId: string; handId?: string | null }): string {
+  if (input.handId) return `hand:${input.handId}`;
+  return `game:${input.gameId}`;
+}
+
+/**
  * Append a single event to the HandEvent ledger. Caller passes a Prisma
  * transaction client (`tx`) so the event commits atomically with whatever
  * state mutation it describes.
  *
- * Sequence number assignment: per (gameId, handId) max + 1. Inside a
- * transaction this is race-safe because the Hand row is implicitly locked by
- * the action's other writes. For game-level events (handId=null) we still
- * use per-game ordering.
+ * Phase 9 follow-up [item 4]: sequence-number safety. We retry on the
+ * unique-constraint violation that the new (scopeId, sequenceNumber)
+ * unique index throws when two concurrent writers race. Each retry
+ * re-reads max(sequence) and inserts at max+1. Bounded retries keep this
+ * race-resilient without holding a long lock.
  *
  * Throws if a private-cards leak is detected for an in-flight event type.
  */
@@ -116,7 +126,6 @@ export async function recordHandEvent(
   if (!PHASE7_EVENT_TYPES.includes(input.eventType)) {
     throw new Error(`handLedger: unknown event type ${input.eventType}`);
   }
-  // Privacy gate: refuse to write hole cards in mid-hand events.
   if (
     PRIVATE_DURING_HAND.has(input.eventType) &&
     looksLikePrivateCards(input.payload)
@@ -127,40 +136,52 @@ export async function recordHandEvent(
     );
   }
 
-  // Determine next sequence number for this (gameId, handId) bucket.
-  // Postgres treats null handId values as distinct, so the unique index
-  // (gameId, handId, sequenceNumber) does not collide between buckets.
-  const last = await tx.handEvent.findFirst({
-    where: { gameId: input.gameId, handId: input.handId ?? null },
-    orderBy: { sequenceNumber: 'desc' },
-    select: { sequenceNumber: true },
-  });
-  const sequenceNumber = (last?.sequenceNumber ?? 0) + 1;
+  const scopeId = handLedgerScopeId({ gameId: input.gameId, handId: input.handId ?? null });
 
-  const created = await tx.handEvent.create({
-    data: {
-      gameId: input.gameId,
-      handId: input.handId ?? null,
-      userId: input.userId ?? null,
-      sequenceNumber,
-      eventType: input.eventType,
-      payload: JSON.stringify(input.payload ?? {}),
-      correlationId: input.correlationId ?? null,
-    },
-    select: { id: true, sequenceNumber: true },
-  });
-
-  // Lightweight breadcrumb in normal logs so operators can grep without
-  // querying the ledger. The ledger row IS the source of truth.
-  logger.info('HandEvent', {
-    gameId: input.gameId,
-    handId: input.handId ?? null,
-    seq: sequenceNumber,
-    type: input.eventType,
-    cor: input.correlationId ?? undefined,
-  });
-
-  return created;
+  // Retry loop: on unique-constraint conflict, re-read max+1 and try again.
+  // The (scopeId, sequenceNumber) unique index makes the conflict detectable.
+  // 5 retries is enough for any realistic concurrency on a single scope.
+  let lastErr: any = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const last = await tx.handEvent.findFirst({
+      where: { scopeId },
+      orderBy: { sequenceNumber: 'desc' },
+      select: { sequenceNumber: true },
+    });
+    const sequenceNumber = (last?.sequenceNumber ?? 0) + 1;
+    try {
+      const created = await tx.handEvent.create({
+        data: {
+          gameId: input.gameId,
+          handId: input.handId ?? null,
+          userId: input.userId ?? null,
+          scopeId,
+          sequenceNumber,
+          eventType: input.eventType,
+          payload: JSON.stringify(input.payload ?? {}),
+          correlationId: input.correlationId ?? null,
+        },
+        select: { id: true, sequenceNumber: true },
+      });
+      logger.info('HandEvent', {
+        scopeId,
+        seq: sequenceNumber,
+        type: input.eventType,
+        cor: input.correlationId ?? undefined,
+      });
+      return created;
+    } catch (err: any) {
+      lastErr = err;
+      // P2002 = Prisma unique constraint violation. Retry with a fresh max.
+      if (err?.code === 'P2002' || /Unique constraint/i.test(err?.message ?? '')) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(
+    `handLedger: failed to allocate sequence after 5 attempts on scope ${scopeId}: ${lastErr?.message ?? 'unknown'}`
+  );
 }
 
 /**

@@ -61,9 +61,65 @@ interface AuthRow {
   createdAt: Date;
 }
 
+interface PendingRow {
+  id: string;
+  userId: string;
+  walletAddress: string;
+  nonce: string;
+  chainId: number;
+  contractAddress: string;
+  amount: bigint | null;
+  issuedAt: Date;
+  expiresAt: Date;
+  used: boolean;
+  usedAt: Date | null;
+  createdAt: Date;
+}
+
 function buildWalletHarness() {
   const auths: AuthRow[] = [];
+  const pending: PendingRow[] = [];
   const prisma: any = {
+    pendingDepositChallenge: {
+      create: vi.fn(async (args: any) => {
+        if (pending.some((p) => p.nonce === args.data.nonce)) {
+          const err: any = new Error('Unique constraint failed on nonce');
+          err.code = 'P2002';
+          throw err;
+        }
+        const row: PendingRow = {
+          id: 'pdc_' + (pending.length + 1),
+          userId: args.data.userId,
+          walletAddress: args.data.walletAddress,
+          nonce: args.data.nonce,
+          chainId: args.data.chainId,
+          contractAddress: args.data.contractAddress,
+          amount: args.data.amount == null ? null : BigInt(args.data.amount),
+          issuedAt: args.data.issuedAt ?? new Date(),
+          expiresAt: args.data.expiresAt,
+          used: false,
+          usedAt: null,
+          createdAt: new Date(),
+        };
+        pending.push(row);
+        return row;
+      }),
+      findUnique: vi.fn(async (args: any) =>
+        pending.find((p) => p.nonce === args.where.nonce) ?? null
+      ),
+      updateMany: vi.fn(async (args: any) => {
+        const w = args.where;
+        let count = 0;
+        for (const p of pending) {
+          if (w.id && p.id !== w.id) continue;
+          if (w.used != null && p.used !== w.used) continue;
+          if (args.data.used != null) p.used = args.data.used;
+          if (args.data.usedAt != null) p.usedAt = args.data.usedAt;
+          count++;
+        }
+        return { count };
+      }),
+    },
     depositAuthorization: {
       create: vi.fn(async (args: any) => {
         if (auths.some((a) => a.nonce === args.data.nonce)) {
@@ -129,7 +185,7 @@ function buildWalletHarness() {
       deleteMany: vi.fn(async () => ({ count: 0 })),
     },
   };
-  return { prisma, auths };
+  return { prisma, auths, pending };
 }
 
 function makeWallet() {
@@ -148,7 +204,7 @@ describe('Phase 8 [H-04] — strict signed-challenge deposit authorization', () 
   it('valid challenge is accepted once', async () => {
     const wallet = makeWallet();
     const userId = 'u1';
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId,
       walletAddress: wallet.address,
       amount: 1_000_000n,
@@ -172,7 +228,7 @@ describe('Phase 8 [H-04] — strict signed-challenge deposit authorization', () 
   it('replay (same nonce) is rejected with code "replay"', async () => {
     const wallet = makeWallet();
     const userId = 'u1';
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId,
       walletAddress: wallet.address,
       amount: 1_000_000n,
@@ -202,7 +258,7 @@ describe('Phase 8 [H-04] — strict signed-challenge deposit authorization', () 
     const userId = 'u1';
     // issuedAt 1 hour ago -> expiresAt is also in the past
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId,
       walletAddress: wallet.address,
       amount: null,
@@ -228,7 +284,7 @@ describe('Phase 8 [H-04] — strict signed-challenge deposit authorization', () 
     const realWallet = makeWallet();
     const decoyWallet = makeWallet();
     const userId = 'u1';
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId,
       walletAddress: realWallet.address,
       amount: null,
@@ -256,7 +312,7 @@ describe('Phase 8 [H-04] — strict signed-challenge deposit authorization', () 
 
   it('wrong user rejected (caller userId differs from challenge userId)', async () => {
     const wallet = makeWallet();
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId: 'u_alice',
       walletAddress: wallet.address,
       amount: null,
@@ -279,7 +335,7 @@ describe('Phase 8 [H-04] — strict signed-challenge deposit authorization', () 
 
   it('chainId mismatch rejected (replay across chains)', async () => {
     const wallet = makeWallet();
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId: 'u1',
       walletAddress: wallet.address,
       amount: null,
@@ -302,7 +358,7 @@ describe('Phase 8 [H-04] — strict signed-challenge deposit authorization', () 
 
   it('contract mismatch rejected (signature targets a different contract)', async () => {
     const wallet = makeWallet();
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId: 'u1',
       walletAddress: wallet.address,
       amount: null,
@@ -325,7 +381,7 @@ describe('Phase 8 [H-04] — strict signed-challenge deposit authorization', () 
 
   it('tampered message rejected (signature does not match modified challenge)', async () => {
     const wallet = makeWallet();
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId: 'u1',
       walletAddress: wallet.address,
       amount: 1_000_000n,
@@ -383,7 +439,7 @@ describe('Phase 8 [H-04] — consumeAuthorization (atomic single-use)', () => {
   it('first consume succeeds, second consume returns false (idempotent)', async () => {
     // Seed an authorization directly.
     const wallet = makeWallet();
-    const challenge = mod.createDepositChallenge({
+    const challenge = await mod.createDepositChallenge({
       userId: 'u1',
       walletAddress: wallet.address,
       amount: 1_000_000n,
@@ -413,5 +469,136 @@ describe('Phase 8 [H-04] — consumeAuthorization (atomic single-use)', () => {
     // The row is now marked used.
     expect(harness.auths[0].used).toBe(true);
     expect(harness.auths[0].usedAt).toBeInstanceOf(Date);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 9 follow-up [item 2]: server-issued challenges with strict TTL gates.
+// ---------------------------------------------------------------------------
+
+describe('Phase 9 follow-up [item 2] — server-issued challenges + TTL gates', () => {
+  let mod: typeof import('../../src/services/wallet');
+  beforeEach(async () => {
+    vi.resetModules();
+    mod = await import('../../src/services/wallet');
+    (globalThis as any).__t3WalletHarness = buildWalletHarness();
+  });
+
+  it('forged client-generated nonce (no server pending row) rejected with code unknown_challenge', async () => {
+    // Attacker constructs a perfectly-formatted canonical challenge with a
+    // nonce the server NEVER issued, signs it with a real wallet, and posts.
+    const wallet = makeWallet();
+    const userId = 'u_attacker';
+    const issuedAt = new Date();
+    const expiresAt = new Date(issuedAt.getTime() + 9 * 60 * 1000);
+    const forgedNonce = 'ff'.repeat(32); // not from the server
+    const message = mod.buildDepositChallenge({
+      userId,
+      walletAddress: wallet.address,
+      nonce: forgedNonce,
+      chainId: 31337,
+      contractAddress: '0x000000000000000000000000000000000000beef',
+      amount: 1_000_000n,
+      issuedAt,
+      expiresAt,
+    });
+    const signature = await wallet.signMessage(message);
+
+    const result = await mod.storeDepositAuthorization({
+      userId,
+      walletAddress: wallet.address,
+      message,
+      signature,
+      expectedChainId: 31337,
+      expectedContractAddress: '0x000000000000000000000000000000000000beef',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok === false) expect(result.code).toBe('unknown_challenge');
+  });
+
+  it('far-future expiry (TTL > 10min + skew) rejected with code ttl_exceeded', async () => {
+    const wallet = makeWallet();
+    const userId = 'u1';
+    const issuedAt = new Date();
+    // expiresAt is 24 hours in the future — way beyond the 10-minute cap.
+    const expiresAt = new Date(issuedAt.getTime() + 24 * 60 * 60 * 1000);
+    const message = mod.buildDepositChallenge({
+      userId,
+      walletAddress: wallet.address,
+      nonce: 'ab'.repeat(32),
+      chainId: 31337,
+      contractAddress: '0x000000000000000000000000000000000000beef',
+      amount: null,
+      issuedAt,
+      expiresAt,
+    });
+    const signature = await wallet.signMessage(message);
+
+    const result = await mod.storeDepositAuthorization({
+      userId,
+      walletAddress: wallet.address,
+      message,
+      signature,
+      expectedChainId: 31337,
+      expectedContractAddress: '0x000000000000000000000000000000000000beef',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok === false) expect(result.code).toBe('ttl_exceeded');
+  });
+
+  it('future-issued challenge (issuedAt > now + skew) rejected with code issued_in_future', async () => {
+    const wallet = makeWallet();
+    const userId = 'u1';
+    // issuedAt 5 minutes in the future.
+    const issuedAt = new Date(Date.now() + 5 * 60 * 1000);
+    const expiresAt = new Date(issuedAt.getTime() + 9 * 60 * 1000);
+    const message = mod.buildDepositChallenge({
+      userId,
+      walletAddress: wallet.address,
+      nonce: 'cd'.repeat(32),
+      chainId: 31337,
+      contractAddress: '0x000000000000000000000000000000000000beef',
+      amount: null,
+      issuedAt,
+      expiresAt,
+    });
+    const signature = await wallet.signMessage(message);
+
+    const result = await mod.storeDepositAuthorization({
+      userId,
+      walletAddress: wallet.address,
+      message,
+      signature,
+      expectedChainId: 31337,
+      expectedContractAddress: '0x000000000000000000000000000000000000beef',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok === false) expect(result.code).toBe('issued_in_future');
+  });
+
+  it('valid server-issued challenge accepted (full happy path through createDepositChallenge)', async () => {
+    const wallet = makeWallet();
+    const userId = 'u1';
+    const challenge = await mod.createDepositChallenge({
+      userId,
+      walletAddress: wallet.address,
+      amount: 1_000_000n,
+      chainId: 31337,
+      contractAddress: '0x000000000000000000000000000000000000beef',
+    });
+    const signature = await wallet.signMessage(challenge.challenge);
+    const result = await mod.storeDepositAuthorization({
+      userId,
+      walletAddress: wallet.address,
+      message: challenge.challenge,
+      signature,
+      expectedChainId: 31337,
+      expectedContractAddress: '0x000000000000000000000000000000000000beef',
+    });
+    expect(result.ok).toBe(true);
+    // Pending row was marked used.
+    const harness: any = (globalThis as any).__t3WalletHarness;
+    expect(harness.pending.length).toBe(1);
+    expect(harness.pending[0].used).toBe(true);
   });
 });

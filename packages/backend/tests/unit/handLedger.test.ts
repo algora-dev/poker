@@ -40,6 +40,7 @@ interface LedgerRow {
   gameId: string;
   handId: string | null;
   userId: string | null;
+  scopeId: string;
   sequenceNumber: number;
   eventType: string;
   payload: string;
@@ -50,13 +51,16 @@ function buildLedgerTx(initial?: { handEvents?: LedgerRow[] }) {
   const events: LedgerRow[] = (initial?.handEvents ?? []).slice();
   const tx: any = {
     handEvent: {
+      // Filter by scopeId (Phase 9 follow-up [item 4]). Also accept legacy
+      // (gameId, handId) where so older tests keep working.
       findFirst: vi.fn(async (args: any) => {
         const w = args.where;
-        const matches = events.filter(
-          (e) =>
-            e.gameId === w.gameId &&
-            (e.handId ?? null) === (w.handId ?? null)
-        );
+        const matches = events.filter((e) => {
+          if (w.scopeId != null) return e.scopeId === w.scopeId;
+          if (w.gameId != null && e.gameId !== w.gameId) return false;
+          if ('handId' in w && (e.handId ?? null) !== (w.handId ?? null)) return false;
+          return true;
+        });
         if (!matches.length) return null;
         if (args.orderBy?.sequenceNumber === 'desc') {
           matches.sort((a, b) => b.sequenceNumber - a.sequenceNumber);
@@ -64,10 +68,25 @@ function buildLedgerTx(initial?: { handEvents?: LedgerRow[] }) {
         return matches[0];
       }),
       create: vi.fn(async (args: any) => {
+        // Enforce the (scopeId, sequenceNumber) unique index so the retry
+        // loop in recordHandEvent can be exercised by tests.
+        const dup = events.find(
+          (e) =>
+            e.scopeId === args.data.scopeId &&
+            e.sequenceNumber === args.data.sequenceNumber
+        );
+        if (dup) {
+          const err: any = new Error(
+            'Unique constraint failed on (scopeId, sequenceNumber)'
+          );
+          err.code = 'P2002';
+          throw err;
+        }
         const row: LedgerRow = {
           gameId: args.data.gameId,
           handId: args.data.handId ?? null,
           userId: args.data.userId ?? null,
+          scopeId: args.data.scopeId,
           sequenceNumber: args.data.sequenceNumber,
           eventType: args.data.eventType,
           payload: args.data.payload,
@@ -204,6 +223,47 @@ describe('Phase 7 [M-05] — recordHandEvent', () => {
     expect(h1).toBe(h2);
     expect(h1).not.toBe(h3);
   });
+
+  // Phase 9 follow-up [item 4]: prove that two rapid game-level events
+  // serialize correctly under the (scopeId, sequenceNumber) unique index +
+  // retry loop, even if the first attempt sees a stale max(sequence).
+  it('two concurrent game-level events get distinct sequence numbers (retry loop covers race)', async () => {
+    const { tx, events } = buildLedgerTx();
+    // Race the two writes (concurrent promises).
+    const [a, b] = await Promise.all([
+      mod.recordHandEvent(tx, {
+        gameId: 'g1',
+        eventType: 'game_created',
+        payload: {},
+      }),
+      mod.recordHandEvent(tx, {
+        gameId: 'g1',
+        eventType: 'player_joined',
+        payload: {},
+      }),
+    ]);
+    expect(events.length).toBe(2);
+    const seqs = [a.sequenceNumber, b.sequenceNumber].sort();
+    expect(seqs).toEqual([1, 2]);
+  });
+
+  it('hand-scoped vs game-scoped events sequence INDEPENDENTLY (different scopeId)', async () => {
+    const { tx } = buildLedgerTx();
+    // Both initial writes start at seq 1 because they live in different scopes.
+    const game = await mod.recordHandEvent(tx, {
+      gameId: 'g1',
+      eventType: 'game_created',
+      payload: {},
+    });
+    const hand = await mod.recordHandEvent(tx, {
+      gameId: 'g1',
+      handId: 'h1',
+      eventType: 'hand_started',
+      payload: {},
+    });
+    expect(game.sequenceNumber).toBe(1);
+    expect(hand.sequenceNumber).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -270,20 +330,32 @@ function buildLifecycleTx(initial: {
     handEvent: {
       findFirst: vi.fn(async (args: any) => {
         const w = args.where;
-        const matches = events.filter(
-          (e) =>
-            e.gameId === w.gameId &&
-            (e.handId ?? null) === (w.handId ?? null)
-        );
+        const matches = events.filter((e) => {
+          if (w.scopeId != null) return e.scopeId === w.scopeId;
+          if (w.gameId != null && e.gameId !== w.gameId) return false;
+          if ('handId' in w && (e.handId ?? null) !== (w.handId ?? null)) return false;
+          return true;
+        });
         if (!matches.length) return null;
         matches.sort((a, b) => b.sequenceNumber - a.sequenceNumber);
         return matches[0];
       }),
       create: vi.fn(async (args: any) => {
+        const dup = events.find(
+          (e) =>
+            e.scopeId === args.data.scopeId &&
+            e.sequenceNumber === args.data.sequenceNumber
+        );
+        if (dup) {
+          const err: any = new Error('Unique constraint failed on (scopeId, sequenceNumber)');
+          err.code = 'P2002';
+          throw err;
+        }
         events.push({
           gameId: args.data.gameId,
           handId: args.data.handId ?? null,
           userId: args.data.userId ?? null,
+          scopeId: args.data.scopeId,
           sequenceNumber: args.data.sequenceNumber,
           eventType: args.data.eventType,
           payload: args.data.payload,

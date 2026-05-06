@@ -4,7 +4,7 @@ import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
 import { findActiveAuthorization, consumeAuthorization } from '../services/wallet';
 import { emitBalanceUpdate } from '../socket';
-import { recordHandEvent } from '../services/handLedger';
+import { recordMoneyEvent } from '../services/moneyLedger';
 
 const VAULT_ABI = [
   'event Deposit(address indexed user, uint256 amount, uint256 timestamp, uint256 blockNumber)',
@@ -113,35 +113,23 @@ async function creditChips(
         },
       });
 
-      // Phase 7 + 8: ledger trail for the deposit. Game-level event
-      // (no handId) so it appears in the user's full off-table audit.
-      try {
-        // Use a synthetic gameId-like key: deposits aren't game-scoped, so
-        // we record under a per-user pseudo-game scope. Store the txHash as
-        // the payload's primary correlator instead.
-        await recordHandEvent(tx as any, {
-          gameId: `user:${user.id}`,
-          userId: user.id,
-          eventType: 'deposit',
-          payload: {
-            amount: amount.toString(),
-            chips: chips.toString(),
-            txHash,
-            blockNumber,
-            walletAddress: userAddress.toLowerCase(),
-            authorizationId: authorization.id,
-            nonce: authorization.nonce,
-          },
-          correlationId: txHash,
-        });
-      } catch (ledgerErr) {
-        // Ledger writes must not block a successful deposit credit. Log and
-        // continue — the Deposit + ChipAudit rows are the canonical record.
-        logger.error('Deposit ledger write failed (credit still applied)', {
-          error: (ledgerErr as Error).message,
-          txHash,
-        });
-      }
+      // Phase 9 follow-up [item 3]: deposits land in the dedicated
+      // off-table MoneyEvent ledger (no Game FK), not in HandEvent.
+      await recordMoneyEvent(tx as any, {
+        userId: user.id,
+        eventType: 'deposit',
+        amount: chips,
+        balanceBefore: chipBalance.chips - chips,
+        balanceAfter: chipBalance.chips,
+        txHash,
+        authorizationId: authorization.id,
+        correlationId: txHash,
+        payload: {
+          blockNumber,
+          walletAddress: userAddress.toLowerCase(),
+          nonce: authorization.nonce,
+        },
+      });
 
       creditedNewBalance = chipBalance.chips.toString();
       creditedUserId = user.id;

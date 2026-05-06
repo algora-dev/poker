@@ -15,6 +15,7 @@
     "test:integration": "vitest run --dir tests/integration",
     "test:sim": "vitest run --dir tests/sim",
     "validate": "tsx scripts/validate.ts",
+    "sim:fuzz": "tsx scripts/sim-fuzz.ts",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "studio": "prisma studio",

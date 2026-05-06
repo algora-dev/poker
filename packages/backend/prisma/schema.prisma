@@ -169,7 +169,13 @@ model HandEvent {
   game           Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
   handId         String?  // Null for game-level events (game_created, game_completed)
   userId         String?  // Null for events not attributable to one player
-  sequenceNumber Int      // Monotonic per (gameId, handId)
+  // Phase 9 follow-up [item 4]: per-scope sequence uniqueness. scopeId is
+  // 'hand:<handId>' for hand-scoped events and 'game:<gameId>' for
+  // game-scoped events. Postgres treats NULL handId as distinct in unique
+  // indexes, so the old (gameId, handId, sequenceNumber) unique did NOT
+  // protect game-level events. With a non-null scopeId, the unique is real.
+  scopeId        String
+  sequenceNumber Int      // Monotonic per scopeId
   eventType      String   // See PHASE7_EVENT_TYPES in src/services/handLedger.ts
   payload        String   @default("{}") // JSON string
   correlationId  String?  // Groups events from one request/action chain
@@ -179,7 +185,61 @@ model HandEvent {
   @@index([handId])
   @@index([eventType])
   @@index([correlationId])
-  @@unique([gameId, handId, sequenceNumber])
+  @@index([scopeId])
+  @@unique([scopeId, sequenceNumber])
+}
+
+// Phase 9 follow-up [item 3]: off-table money ledger. Distinct from
+// HandEvent (game/hand only) and ChipAudit (legacy off-table audit). Holds
+// deposit, withdrawal, refund, buy-in, cashout, admin_adjustment events.
+// No FK to Game so deposits/withdrawals can be recorded without a Game row.
+model MoneyEvent {
+  id              String   @id @default(cuid())
+  userId          String
+  eventType       String   // 'deposit' | 'withdrawal' | 'withdrawal_refund' | 'game_buy_in' | 'game_cashout' | 'game_cancel_refund' | 'admin_adjustment'
+  amount          BigInt   // Positive = chips into user, negative = chips out of user
+  balanceBefore   BigInt?
+  balanceAfter    BigInt?
+  gameId          String?  // Optional reference (NOT a FK — keep this table free of cascade weirdness)
+  handId          String?
+  txHash          String?
+  withdrawalId    String?
+  depositId       String?
+  authorizationId String?
+  payload         String   @default("{}")
+  correlationId   String?
+  serverTime      DateTime @default(now())
+
+  @@index([userId])
+  @@index([eventType])
+  @@index([txHash])
+  @@index([withdrawalId])
+  @@index([correlationId])
+  @@index([gameId])
+  @@index([serverTime])
+}
+
+// Phase 9 follow-up [item 2]: server-issued deposit challenges. Persisted
+// the moment the server issues a challenge, so the signed-submit step
+// REQUIRES a matching server-side row. Clients can no longer forge
+// canonical challenges with arbitrary nonces or far-future expiries.
+model PendingDepositChallenge {
+  id              String   @id @default(cuid())
+  userId          String
+  walletAddress   String
+  nonce           String   @unique
+  chainId         Int
+  contractAddress String
+  amount          BigInt?
+  issuedAt        DateTime @default(now())
+  expiresAt       DateTime
+  used            Boolean  @default(false)
+  usedAt          DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+  @@index([walletAddress])
+  @@index([used, expiresAt])
 }
 
 // Player actions within a hand
