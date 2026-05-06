@@ -2,8 +2,9 @@ import { ethers } from 'ethers';
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
-import { findActiveAuthorization, markAuthorizationUsed } from '../services/wallet';
+import { findActiveAuthorization, consumeAuthorization } from '../services/wallet';
 import { emitBalanceUpdate } from '../socket';
+import { recordHandEvent } from '../services/handLedger';
 
 const VAULT_ABI = [
   'event Deposit(address indexed user, uint256 amount, uint256 timestamp, uint256 blockNumber)',
@@ -36,11 +37,11 @@ async function creditChips(
   blockNumber: number
 ) {
   try {
-    // Check for active deposit authorization
-    const authorization = await findActiveAuthorization(userAddress);
-
+    // Phase 8 [H-04]: prefer an authorization that's bound to the exact
+    // amount, falling back to a wallet-bound (amount=null) auth.
+    const authorization = await findActiveAuthorization(userAddress, amount);
     if (!authorization) {
-      logger.warn('Deposit attempted without authorization', {
+      logger.warn('Deposit attempted without active authorization', {
         walletAddress: userAddress,
         txHash,
         amount: amount.toString(),
@@ -52,35 +53,44 @@ async function creditChips(
     // Convert mUSD to chips (1:1 ratio, both use 6 decimals)
     const chips = amount;
 
+    // Phase 8 [H-04]: idempotent crediting by txHash + atomic auth consume.
+    // The Deposit table's unique txHash + `tx.deposit.create` will throw on
+    // duplicate, and `consumeAuthorization` returns false if the row was
+    // already consumed by a concurrent request — either way, no double-credit.
+    let alreadyProcessed = false;
+    let creditedNewBalance: string | null = null;
+    let creditedUserId: string | null = null;
     await prisma.$transaction(async (tx) => {
-      // Get user from authorization (not from wallet address)
-      const user = await tx.user.findUnique({
-        where: { id: authorization.userId },
-      });
-
-      if (!user) {
-        logger.error('User not found for authorized deposit', {
-          userId: authorization.userId,
-          walletAddress: userAddress,
-        });
+      // Idempotency check: txHash already credited?
+      const existing = await tx.deposit.findUnique({ where: { txHash } });
+      if (existing) {
+        alreadyProcessed = true;
         return;
       }
 
-      // Create or update chip balance
+      // Atomic auth consume: returns false if another concurrent request
+      // already consumed the authorization, in which case we abort.
+      const claimed = await consumeAuthorization(tx as any, authorization.id);
+      if (!claimed) {
+        logger.warn('Authorization already consumed by concurrent request', {
+          authorizationId: authorization.id,
+          txHash,
+        });
+        alreadyProcessed = true;
+        return;
+      }
+
+      const user = await tx.user.findUnique({ where: { id: authorization.userId } });
+      if (!user) {
+        throw new Error('user_not_found_for_authorized_deposit');
+      }
+
       const chipBalance = await tx.chipBalance.upsert({
         where: { userId: user.id },
-        create: {
-          userId: user.id,
-          chips,
-        },
-        update: {
-          chips: {
-            increment: chips,
-          },
-        },
+        create: { userId: user.id, chips },
+        update: { chips: { increment: chips } },
       });
 
-      // Record deposit in ledger
       await tx.deposit.create({
         data: {
           userId: user.id,
@@ -91,7 +101,6 @@ async function creditChips(
         },
       });
 
-      // Create audit log
       await tx.chipAudit.create({
         data: {
           userId: user.id,
@@ -104,25 +113,56 @@ async function creditChips(
         },
       });
 
-      // Mark authorization as used
-      await markAuthorizationUsed(authorization.id);
+      // Phase 7 + 8: ledger trail for the deposit. Game-level event
+      // (no handId) so it appears in the user's full off-table audit.
+      try {
+        // Use a synthetic gameId-like key: deposits aren't game-scoped, so
+        // we record under a per-user pseudo-game scope. Store the txHash as
+        // the payload's primary correlator instead.
+        await recordHandEvent(tx as any, {
+          gameId: `user:${user.id}`,
+          userId: user.id,
+          eventType: 'deposit',
+          payload: {
+            amount: amount.toString(),
+            chips: chips.toString(),
+            txHash,
+            blockNumber,
+            walletAddress: userAddress.toLowerCase(),
+            authorizationId: authorization.id,
+            nonce: authorization.nonce,
+          },
+          correlationId: txHash,
+        });
+      } catch (ledgerErr) {
+        // Ledger writes must not block a successful deposit credit. Log and
+        // continue — the Deposit + ChipAudit rows are the canonical record.
+        logger.error('Deposit ledger write failed (credit still applied)', {
+          error: (ledgerErr as Error).message,
+          txHash,
+        });
+      }
 
+      creditedNewBalance = chipBalance.chips.toString();
+      creditedUserId = user.id;
+    });
+
+    if (alreadyProcessed) return;
+    if (creditedUserId && creditedNewBalance) {
       logger.info('Chips credited successfully', {
-        userId: user.id,
+        userId: creditedUserId,
         walletAddress: userAddress,
         amount: amount.toString(),
         chips: chips.toString(),
         txHash,
         blockNumber,
-        newBalance: chipBalance.chips.toString(),
+        newBalance: creditedNewBalance,
       });
-
-      // Emit real-time balance update to user
-      emitBalanceUpdate(user.id, chipBalance.chips.toString());
-    });
+      emitBalanceUpdate(creditedUserId, creditedNewBalance);
+    }
   } catch (error) {
     logger.error('Failed to credit chips', {
-      error,
+      error: (error as Error).message,
       userAddress,
       amount: amount.toString(),
       txHash,

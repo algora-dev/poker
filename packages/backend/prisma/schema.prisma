@@ -216,21 +216,34 @@ model ChipAudit {
   @@index([createdAt])
 }
 
-// Deposit authorization (10min window to deposit from specific wallet)
+// Deposit authorization. Phase 8 [H-04]: tightly bound to (userId, wallet,
+// nonce, chainId, contractAddress, optional amount, expiresAt). Single-use
+// enforced atomically when a matching on-chain deposit is credited.
 model DepositAuthorization {
-  id            String   @id @default(cuid())
-  userId        String
-  walletAddress String   @unique // Only one active authorization per wallet
-  signature     String   // User's signature proving wallet ownership
-  message       String   // Message that was signed
-  expiresAt     DateTime
-  used          Boolean  @default(false)
-  usedAt        DateTime?
-  createdAt     DateTime @default(now())
+  id              String   @id @default(cuid())
+  userId          String
+  // Phase 8: walletAddress is no longer @unique (multiple pending challenges
+  // per wallet are allowed, distinguished by nonce). Replays are blocked by
+  // single-use of `nonce` (unique below).
+  walletAddress   String
+  signature       String   // User's signature over the canonical challenge string
+  message         String   // Exact challenge string the user signed (server-issued)
+  // Phase 8 [H-04]: structured binding fields. The server issues these and
+  // bakes them into `message` so the signature is bound to a specific intent.
+  nonce           String   @unique // Server-issued one-time nonce; single-use
+  chainId         Int      // EVM chain id this authorization is valid on
+  contractAddress String   // Vault contract this authorization targets
+  amount          BigInt?  // Optional amount binding (null = wallet/user-bound only)
+  issuedAt        DateTime @default(now())
+  expiresAt       DateTime
+  used            Boolean  @default(false)
+  usedAt          DateTime?
+  createdAt       DateTime @default(now())
 
   @@index([userId])
   @@index([walletAddress])
   @@index([expiresAt])
+  @@index([used, expiresAt])
   @@map("deposit_authorizations")
 }
 
