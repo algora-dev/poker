@@ -59,13 +59,26 @@ async function start() {
 
   // Global rate limit (generous default to absorb bursts; tighter limits are
   // applied per-route via { config: { rateLimit: { ... } } }).
-  await app.register(rateLimit, {
-    global: true,
-    max: 300,                // 300 req/min/IP across all routes
-    timeWindow: '1 minute',
-    allowList: [],
-    keyGenerator: (req) => (req.ip || 'unknown'),
-  });
+  // Global IP rate-limit: 300 req/min/IP across all routes. Per-route
+  // limits (signup/login/action) still layer on top. The harness needs
+  // higher tempo than 300/min — set HARNESS_BYPASS_GLOBAL_RATELIMIT=1 in
+  // dev to lift the global limit; per-route limits stay in force.
+  if (CONFIG.HARNESS_BYPASS_GLOBAL_RATELIMIT) {
+    console.log('[STARTUP] HARNESS_BYPASS_GLOBAL_RATELIMIT=1 — global rate limit DISABLED (dev only)');
+    await app.register(rateLimit, {
+      global: false,
+      max: 1_000_000,
+      timeWindow: '1 minute',
+    });
+  } else {
+    await app.register(rateLimit, {
+      global: true,
+      max: 300,                // 300 req/min/IP across all routes
+      timeWindow: '1 minute',
+      allowList: [],
+      keyGenerator: (req) => (req.ip || 'unknown'),
+    });
+  }
 
   app.get('/health', async () => ({ status: 'ok' }));
 

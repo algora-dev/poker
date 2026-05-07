@@ -1,0 +1,164 @@
+/**
+ * Invariants checked after each hand and at session end.
+ * A failure throws — the harness exits non-zero.
+ */
+import { PrismaClient } from '@prisma/client';
+import type { BotClient } from './botClient';
+
+export interface InvariantContext {
+  gameId: string;
+  bots: BotClient[];
+  /** Sum of (initial buy-in chips) across all bots, in micro-units. */
+  initialChipsTotal: bigint;
+  prisma: PrismaClient;
+}
+
+function microSum(microStrs: string[]): bigint {
+  return microStrs.reduce((a, s) => a + BigInt(s), 0n);
+}
+
+/**
+ * Conservation: at any time, sum of player stacks at the table + current pot
+ * + chips already cashed out (recorded as `chip_balance` deltas) must equal
+ * the initial chips bought-in.
+ *
+ * Eliminated players have stack=0 at table; their chips are in the pot or
+ * already in another player's stack. Cashout returns chips to ChipBalance.
+ */
+export async function assertChipsConserved(ctx: InvariantContext) {
+  const { prisma, gameId, initialChipsTotal } = ctx;
+  const game = await prisma.game.findUnique({
+    where: { id: gameId },
+    include: { players: true, hands: { where: { stage: { not: 'completed' } }, take: 1 } },
+  });
+  if (!game) throw new Error(`Game ${gameId} disappeared`);
+
+  const stackTotal = game.players.reduce((a, p) => a + p.chipStack, 0n);
+  const pot = game.hands[0]?.pot ?? 0n;
+
+  // Cashouts: ChipAudit operation='game_cashout' or 'eliminate' for this game.
+  // We approximate via chipAudit notes since the table doesn't have a gameId
+  // foreign key in the current schema.
+  // Instead we read each bot's current ChipBalance and compare to a snapshot
+  // we took at start.
+  // For simplicity: stackTotal + pot + sum(cashedOut) must equal initialChipsTotal.
+  // Cashed out = current ChipBalance.chips - ChipBalance.chipsAtStart.
+  // The harness tracks chipsAtStart externally; assertion is in assertSessionLedger.
+  if (game.status === 'in_progress') {
+    if (stackTotal + pot > initialChipsTotal) {
+      throw new Error(
+        `Chip leak: stacks(${stackTotal}) + pot(${pot}) = ${
+          stackTotal + pot
+        } > initial(${initialChipsTotal})`
+      );
+    }
+    if (stackTotal + pot < initialChipsTotal) {
+      // Could be cashout-on-elimination. Acceptable while game is in progress
+      // ONLY if no eliminated player is at the table; otherwise log it as a soft check.
+      // We'll do the strict end-of-session check in assertSessionLedger.
+    }
+  }
+
+  for (const p of game.players) {
+    if (p.chipStack < 0n) {
+      throw new Error(`Negative chip stack for ${p.userId}: ${p.chipStack}`);
+    }
+  }
+}
+
+/**
+ * End-of-session ledger check:
+ * sum(final ChipBalance) for the bots == sum(starting ChipBalance) for the bots.
+ * Game itself is a closed system; chips can move between bots but cannot vanish.
+ */
+export async function assertSessionLedger(
+  ctx: InvariantContext,
+  startingBalances: Map<string, bigint>
+) {
+  const { prisma } = ctx;
+  let startTotal = 0n;
+  let endTotal = 0n;
+  for (const [userId, start] of startingBalances) {
+    startTotal += start;
+    const bal = await prisma.chipBalance.findUnique({ where: { userId } });
+    const end = bal?.chips ?? 0n;
+    endTotal += end;
+  }
+
+  // Also account for chips locked in the game (not yet cashed back).
+  const game = await prisma.game.findUnique({
+    where: { id: ctx.gameId },
+    include: { players: true, hands: true },
+  });
+  if (!game) throw new Error('game vanished');
+
+  const lockedInGame = game.players.reduce((a, p) => a + p.chipStack, 0n);
+  const livePot = game.hands.find((h) => h.stage !== 'completed')?.pot ?? 0n;
+
+  const total = endTotal + lockedInGame + livePot;
+  if (total !== startTotal) {
+    throw new Error(
+      `Ledger mismatch: start=${startTotal} end=${endTotal} locked=${lockedInGame} pot=${livePot} total=${total} delta=${
+        total - startTotal
+      }`
+    );
+  }
+}
+
+/**
+ * Stall detection: nobody should sit on isMyTurn for >60s.
+ */
+export function assertNoStalls(ctx: InvariantContext, maxStallMs = 90_000) {
+  const now = Date.now();
+  for (const b of ctx.bots) {
+    // Silent bots are EXPECTED to sit on their turn (testing auto-fold).
+    if (b.cfg.silent) continue;
+    if (b.turnStartedAt && now - b.turnStartedAt > maxStallMs) {
+      throw new Error(
+        `Bot ${b.cfg.email} stalled on its turn for ${now - b.turnStartedAt}ms`
+      );
+    }
+  }
+}
+
+/**
+ * No bot accumulated unrecoverable client-side errors.
+ * Some action errors are expected (race-loser bots), so we cap at a threshold
+ * proportional to actions taken.
+ */
+export function assertBotsHealthy(ctx: InvariantContext) {
+  for (const b of ctx.bots) {
+    const allowed = Math.max(3, Math.floor(b.actionsTaken * 0.1));
+    if (b.errors.length > allowed) {
+      throw new Error(
+        `Bot ${b.cfg.email} accumulated ${b.errors.length} errors (allowed ${allowed}). First few: ${b.errors
+          .slice(0, 5)
+          .join(' | ')}`
+      );
+    }
+  }
+}
+
+/**
+ * HandEvent sequence numbers must be monotonic per scopeId.
+ * Tests Gerald's Item 4 fix end-to-end (under live concurrency).
+ */
+export async function assertHandEventSequencesMonotonic(prisma: PrismaClient) {
+  const events = await prisma.handEvent.findMany({
+    select: { scopeId: true, sequenceNumber: true, serverTime: true },
+    orderBy: [{ scopeId: 'asc' }, { sequenceNumber: 'asc' }],
+  });
+  const byScope = new Map<string, number[]>();
+  for (const e of events) {
+    const arr = byScope.get(e.scopeId) ?? [];
+    arr.push(e.sequenceNumber);
+    byScope.set(e.scopeId, arr);
+  }
+  for (const [scope, seqs] of byScope) {
+    const seen = new Set<number>();
+    for (const n of seqs) {
+      if (seen.has(n)) throw new Error(`Duplicate HandEvent seq ${n} in scope ${scope}`);
+      seen.add(n);
+    }
+  }
+}

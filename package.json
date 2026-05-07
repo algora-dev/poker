@@ -19,6 +19,7 @@
     "test": "npm run test:backend && npm run test:contracts",
     "validate": "npm run validate --workspace=packages/backend",
     "sim:fuzz": "npm run sim:fuzz --workspace=packages/backend",
+    "harness": "npm run harness --workspace=packages/backend",
     "db:migrate": "npm run migrate:dev --workspace=packages/backend",
     "db:studio": "npm run studio --workspace=packages/backend",
     "docker:up": "docker-compose up -d",

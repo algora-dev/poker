@@ -16,6 +16,7 @@
     "test:sim": "vitest run --dir tests/sim",
     "validate": "tsx scripts/validate.ts",
     "sim:fuzz": "tsx scripts/sim-fuzz.ts",
+    "harness": "tsx tests/harness/runHarness.ts",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "studio": "prisma studio",
@@ -34,6 +35,7 @@
     "ethers": "^6.11.1",
     "fastify": "^4.26.2",
     "socket.io": "^4.7.5",
+    "socket.io-client": "^4.8.3",
     "winston": "^3.12.0",
     "zod": "^3.22.4"
   },
