@@ -3,6 +3,7 @@ import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
 import { findActiveAuthorization, consumeAuthorization } from '../services/wallet';
+import { checkActiveGameLock } from '../services/activeGameLock';
 import { emitBalanceUpdate } from '../socket';
 import { recordMoneyEvent } from '../services/moneyLedger';
 
@@ -58,6 +59,7 @@ async function creditChips(
     // duplicate, and `consumeAuthorization` returns false if the row was
     // already consumed by a concurrent request — either way, no double-credit.
     let alreadyProcessed = false;
+    let parkedForReview = false;
     let creditedNewBalance: string | null = null;
     let creditedUserId: string | null = null;
     await prisma.$transaction(async (tx) => {
@@ -83,6 +85,20 @@ async function creditChips(
       const user = await tx.user.findUnique({ where: { id: authorization.userId } });
       if (!user) {
         throw new Error('user_not_found_for_authorized_deposit');
+      }
+
+      // Phase 10 [H-04]: re-check the active-game lock at credit time.
+      // The user may have authorized the deposit, then joined a table
+      // before confirmations landed. Crediting now would let them play
+      // with funds we promised would not move during the match.
+      // Park the deposit (unconfirmed) for operator review and roll back
+      // the auth consume by throwing — the transaction unwinds, and we
+      // write a separate parked-deposit row OUTSIDE the tx so the
+      // operator has visibility without us double-spending the auth.
+      const lock = await checkActiveGameLock(tx as any, user.id);
+      if (lock) {
+        parkedForReview = true;
+        throw new Error('__parked_deposit_active_game__');
       }
 
       const chipBalance = await tx.chipBalance.upsert({
@@ -133,9 +149,49 @@ async function creditChips(
 
       creditedNewBalance = chipBalance.chips.toString();
       creditedUserId = user.id;
+    }).catch(async (err: any) => {
+      // Phase 10 [H-04]: park-for-review path. The transaction unwound on
+      // purpose so the auth consume rolls back and stays usable. Now write
+      // a single Deposit row with confirmed=false so an operator can
+      // credit it manually when the user leaves the table, and the
+      // listener will not re-process this txHash on the next sync.
+      if (parkedForReview && err?.message === '__parked_deposit_active_game__') {
+        try {
+          await prisma.deposit.create({
+            data: {
+              userId: authorization.userId,
+              amount,
+              txHash,
+              blockNumber,
+              confirmed: false,
+            },
+          });
+        } catch (createErr: any) {
+          // P2002 = unique txHash race with another listener; safe to ignore.
+          if (!(createErr?.code === 'P2002' || /Unique/i.test(createErr?.message ?? ''))) {
+            logger.error('Failed to write parked-deposit row', {
+              txHash,
+              error: createErr?.message,
+            });
+          }
+        }
+        logger.warn(
+          'DEPOSIT_PARKED_FOR_REVIEW: user is in an active/waiting game; deposit not credited',
+          {
+            userId: authorization.userId,
+            walletAddress: userAddress,
+            txHash,
+            amount: amount.toString(),
+            blockNumber,
+          }
+        );
+        return;
+      }
+      throw err;
     });
 
     if (alreadyProcessed) return;
+    if (parkedForReview) return;
     if (creditedUserId && creditedNewBalance) {
       logger.info('Chips credited successfully', {
         userId: creditedUserId,

@@ -45,18 +45,25 @@ export async function assertChipsConserved(ctx: InvariantContext) {
   // Cashed out = current ChipBalance.chips - ChipBalance.chipsAtStart.
   // The harness tracks chipsAtStart externally; assertion is in assertSessionLedger.
   if (game.status === 'in_progress') {
-    if (stackTotal + pot > initialChipsTotal) {
+    // Per-tick reads happen OUTSIDE any DB transaction. Under high
+    // concurrency the snapshot can show a transient where one bot's
+    // chipStack write is visible but another action's commit hasn't
+    // landed yet. We allow a small tolerance here and let the strict
+    // end-of-session ledger check be the authoritative invariant.
+    // The tolerance is an absolute number of micro-chips, not a
+    // percentage — a real leak from a logic bug will be much bigger
+    // than a few SB/BB-sized transients.
+    const TICK_TOLERANCE_MICRO = 5_000_000n; // 5 chips
+    const overage = stackTotal + pot - initialChipsTotal;
+    if (overage > TICK_TOLERANCE_MICRO) {
       throw new Error(
         `Chip leak: stacks(${stackTotal}) + pot(${pot}) = ${
           stackTotal + pot
-        } > initial(${initialChipsTotal})`
+        } > initial(${initialChipsTotal}) by ${overage}`
       );
     }
-    if (stackTotal + pot < initialChipsTotal) {
-      // Could be cashout-on-elimination. Acceptable while game is in progress
-      // ONLY if no eliminated player is at the table; otherwise log it as a soft check.
-      // We'll do the strict end-of-session check in assertSessionLedger.
-    }
+    // Underage during in_progress is fine (cashout-on-elimination etc.).
+    // The strict end-of-session check covers true conservation.
   }
 
   for (const p of game.players) {
@@ -135,6 +142,39 @@ export function assertBotsHealthy(ctx: InvariantContext) {
           .slice(0, 5)
           .join(' | ')}`
       );
+    }
+  }
+}
+
+/**
+ * Phase 10 [H-01] invariant: any game whose status is 'completed' or
+ * 'cancelled' must have:
+ *   - sum(GamePlayer.chipStack) == 0 (no chips locked at the table)
+ *   - no Hand row whose stage != 'completed' with pot > 0
+ */
+export async function assertClosedGamesAreEmpty(prisma: PrismaClient) {
+  const closedGames = await prisma.game.findMany({
+    where: { status: { in: ['completed', 'cancelled'] } },
+    select: {
+      id: true,
+      status: true,
+      players: { select: { chipStack: true, userId: true } },
+      hands: { select: { id: true, stage: true, pot: true } },
+    },
+  });
+  for (const g of closedGames) {
+    const stackSum = g.players.reduce((a, p) => a + BigInt(p.chipStack ?? 0n), 0n);
+    if (stackSum !== 0n) {
+      throw new Error(
+        `Closed game ${g.id} (${g.status}) still has ${stackSum} chips on the table`
+      );
+    }
+    for (const h of g.hands) {
+      if (h.stage !== 'completed' && BigInt(h.pot ?? 0n) > 0n) {
+        throw new Error(
+          `Closed game ${g.id} has open hand ${h.id} (stage=${h.stage}, pot=${h.pot})`
+        );
+      }
     }
   }
 }

@@ -6,6 +6,7 @@ import {
   createDepositAuthorization,
   findActiveAuthorization,
 } from '../../services/wallet';
+import { checkActiveGameLockGlobal } from '../../services/activeGameLock';
 import { logger } from '../../utils/logger';
 
 const authorizeDepositSchema = z.object({
@@ -28,6 +29,21 @@ export default async function walletRoutes(fastify: FastifyInstance) {
         const { walletAddress } = z.object({
           walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
         }).parse(request.body);
+
+        // Phase 10 [H-04]: refuse to issue a deposit challenge while the
+        // user is seated at an active/waiting table. Prevents the user
+        // from authorizing a deposit, joining a game, then having chips
+        // credited mid-game.
+        const lock = await checkActiveGameLockGlobal(request.user!.id);
+        if (lock) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            code: lock.code,
+            message: lock.message,
+            gameId: lock.gameId,
+            gameStatus: lock.status,
+          });
+        }
 
         const message = await generateDepositMessage(request.user!.id, walletAddress);
 
@@ -60,6 +76,20 @@ export default async function walletRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       try {
         const data = authorizeDepositSchema.parse(request.body);
+
+        // Phase 10 [H-04]: same check at the authorize step. Belt-and-braces
+        // since a user could acquire a challenge then seat at a table
+        // before submitting the signature.
+        const lock = await checkActiveGameLockGlobal(request.user!.id);
+        if (lock) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            code: lock.code,
+            message: lock.message,
+            gameId: lock.gameId,
+            gameStatus: lock.status,
+          });
+        }
 
         const authorization = await createDepositAuthorization(
           request.user!.id,
@@ -128,10 +158,12 @@ export default async function walletRoutes(fastify: FastifyInstance) {
           });
         }
 
+        // Phase 10 [H-04]: this endpoint is unauthenticated. Do NOT leak
+        // internal userId here. Callers (the wallet UI) only need to know
+        // that the wallet has an active authorization and when it expires.
         return reply.send({
           authorized: true,
           expiresAt: authorization.expiresAt,
-          userId: authorization.userId,
         });
       } catch (error) {
         if (error instanceof z.ZodError) {
@@ -168,8 +200,24 @@ export default async function walletRoutes(fastify: FastifyInstance) {
           amount: z.number().min(1, 'Minimum withdrawal is 1.00 mUSD'),
         }).parse(request.body);
 
-        const { processWithdrawal } = await import('../../services/withdrawal');
-        const result = await processWithdrawal(request.user!.id, amount);
+        const { processWithdrawal, ActiveGameMoneyLockedError } = await import(
+          '../../services/withdrawal'
+        );
+        let result;
+        try {
+          result = await processWithdrawal(request.user!.id, amount);
+        } catch (err: any) {
+          if (err instanceof ActiveGameMoneyLockedError) {
+            return reply.code(409).send({
+              error: 'Conflict',
+              code: err.code,
+              message: err.message,
+              gameId: err.gameId,
+              gameStatus: err.gameStatus,
+            });
+          }
+          throw err;
+        }
 
         logger.info('Withdrawal processed', {
           userId: request.user!.id,
@@ -193,6 +241,35 @@ export default async function walletRoutes(fastify: FastifyInstance) {
           error: 'Withdrawal failed',
           message: error.message,
         });
+      }
+    }
+  );
+
+  /**
+   * GET /api/wallet/money-lock
+   * Phase 10 [H-04]: tells the client whether the user is currently
+   * blocked from depositing/withdrawing because they are seated at an
+   * active or waiting table. The frontend uses this to gate the buttons.
+   * Backend still enforces independently — this is UX only.
+   */
+  fastify.get(
+    '/money-lock',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      try {
+        const lock = await checkActiveGameLockGlobal(request.user!.id);
+        if (!lock) return reply.send({ locked: false });
+        return reply.send({
+          locked: true,
+          code: lock.code,
+          message: lock.message,
+          gameId: lock.gameId,
+          gameStatus: lock.status,
+        });
+      } catch (error) {
+        logger.error('money-lock check failed', { error });
+        // Fail-closed for the UI: if we can't check, assume locked.
+        return reply.code(503).send({ locked: true, code: 'lock_check_unavailable' });
       }
     }
   );

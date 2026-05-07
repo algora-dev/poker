@@ -17,6 +17,7 @@ import { BotClient, type BotConfig } from './botClient';
 import {
   assertBotsHealthy,
   assertChipsConserved,
+  assertClosedGamesAreEmpty,
   assertHandEventSequencesMonotonic,
   assertNoStalls,
   assertSessionLedger,
@@ -223,6 +224,7 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   await assertChipsConserved(ctx);
   assertBotsHealthy(ctx);
   await assertHandEventSequencesMonotonic(prisma);
+  await assertClosedGamesAreEmpty(prisma);
   await assertSessionLedger(ctx, startingBalances);
 
   // 11. Cleanup

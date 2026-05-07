@@ -17,6 +17,25 @@ loadEnv({ path: path.resolve(__dirname, '..', '..', '.env') });
 import { getScenario, listScenarios, SCENARIOS, type ScenarioEnv } from './scenarios';
 import { harnessPrisma } from './orchestrator';
 
+/**
+ * Phase 10: ensure each scenario starts from a known-clean game state.
+ * Wipes only game-related rows, leaves users + chip balances intact (those
+ * are repopulated/topped-up by the orchestrator each run).
+ */
+async function resetGameState() {
+  // Order matters — truncate child tables first to avoid FK violations.
+  // We use deleteMany so Prisma stays in sync with the row counts.
+  await harnessPrisma.handAction.deleteMany({});
+  await harnessPrisma.handEvent.deleteMany({});
+  await harnessPrisma.moneyEvent.deleteMany({});
+  await harnessPrisma.sidePot.deleteMany({});
+  await harnessPrisma.hand.deleteMany({});
+  await harnessPrisma.gamePlayer.deleteMany({});
+  await harnessPrisma.game.deleteMany({});
+  await harnessPrisma.chipAudit.deleteMany({});
+  await harnessPrisma.chipBalance.updateMany({ data: { chips: 0n } });
+}
+
 async function main() {
   const baseUrl = process.env.HARNESS_BASE_URL ?? 'http://localhost:3000';
   const adminSecret = process.env.HARNESS_ADMIN_SECRET;
@@ -54,7 +73,28 @@ async function main() {
   let failures = 0;
   const results: Array<{ name: string; ok: boolean; ms: number; hands?: number; err?: string }> = [];
 
+  // Phase 10: reset to a clean DB before the first scenario so leftover
+  // games from prior runs cannot inflate the ledger total.
+  if (process.env.HARNESS_SKIP_RESET !== '1') {
+    try {
+      await resetGameState();
+      console.log('[harness] DB reset to clean game state');
+    } catch (e: any) {
+      console.error(`[harness] DB reset failed: ${e.message}`);
+      process.exit(2);
+    }
+  }
+
   for (const s of scenarios) {
+    // Reset between scenarios too so each one starts from a clean slate
+    // and inter-scenario state coupling cannot inflate the ledger.
+    if (process.env.HARNESS_SKIP_RESET !== '1') {
+      try {
+        await resetGameState();
+      } catch {
+        /* non-fatal between scenarios */
+      }
+    }
     process.stdout.write(`\n▶ ${s.name}\n  ${s.description}\n  `);
     const t0 = Date.now();
     try {

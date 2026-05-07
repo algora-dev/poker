@@ -1,5 +1,6 @@
 import { prisma } from '../db/client';
 import { atomicStartGame } from '../services/holdemGame';
+import { closeGame } from '../services/closeGame';
 import { emitGameEvent } from '../socket';
 import { logger } from '../utils/logger';
 
@@ -116,37 +117,30 @@ async function cleanupFinishedGames() {
       const lastActivity = latestHand?.completedAt || latestHand?.createdAt || game.startedAt || game.createdAt;
       const idleMs = Date.now() - new Date(lastActivity).getTime();
 
-      // If idle for > 120 seconds with no active hand, mark completed
+      // If idle for > 120 seconds with no active hand, force close.
       // (must be longer than 25s between-hand countdown + buffer)
+      // Phase 10 [H-01]: route through the canonical closeGame helper
+      // so refunds are transactional, audited, and zero the table stack.
       if (idleMs > 120_000) {
-        // Refund remaining chips to players
-        for (const player of game.players) {
-          if (player.chipStack > BigInt(0)) {
-            const balance = await prisma.chipBalance.findUnique({
-              where: { userId: player.userId },
-            });
-            if (balance) {
-              await prisma.chipBalance.update({
-                where: { userId: player.userId },
-                data: { chips: { increment: player.chipStack } },
-              });
-            }
-          }
+        try {
+          const result = await closeGame({
+            gameId: game.id,
+            reason: 'stale_cleanup',
+            notes: `Stale-game cleanup after ${Math.round(idleMs / 1000)}s idle`,
+          });
+          logger.info('Cleaned up stale game', {
+            gameId: game.id,
+            name: game.name,
+            idleSeconds: Math.round(idleMs / 1000),
+            refundedPlayers: result.refundedPlayers.length,
+            totalRefunded: result.totalRefunded.toString(),
+          });
+        } catch (closeErr) {
+          logger.error('Stale-game close failed', {
+            gameId: game.id,
+            error: (closeErr as Error).message,
+          });
         }
-
-        await prisma.game.update({
-          where: { id: game.id },
-          data: {
-            status: 'completed',
-            completedAt: new Date(),
-          },
-        });
-
-        logger.info('Cleaned up stale game', {
-          gameId: game.id,
-          name: game.name,
-          idleSeconds: Math.round(idleMs / 1000),
-        });
       }
     }
 
@@ -161,33 +155,26 @@ async function cleanupFinishedGames() {
 
     for (const game of staleWaiting) {
       if (game.players.length <= 1) {
-        // Refund the creator if they're still there
-        for (const player of game.players) {
-          if (player.chipStack > BigInt(0)) {
-            const balance = await prisma.chipBalance.findUnique({
-              where: { userId: player.userId },
-            });
-            if (balance) {
-              await prisma.chipBalance.update({
-                where: { userId: player.userId },
-                data: { chips: { increment: player.chipStack } },
-              });
-            }
-          }
+        // Phase 10 [H-01]: same canonical close path so the lone creator's
+        // buy-in is refunded transactionally with full audit trail.
+        try {
+          const result = await closeGame({
+            gameId: game.id,
+            reason: 'stale_cleanup',
+            notes: 'Stale waiting game (≤1 player) auto-cancelled',
+          });
+          logger.info('Cancelled stale waiting game', {
+            gameId: game.id,
+            name: game.name,
+            refundedPlayers: result.refundedPlayers.length,
+            totalRefunded: result.totalRefunded.toString(),
+          });
+        } catch (closeErr) {
+          logger.error('Stale waiting close failed', {
+            gameId: game.id,
+            error: (closeErr as Error).message,
+          });
         }
-
-        await prisma.game.update({
-          where: { id: game.id },
-          data: {
-            status: 'cancelled',
-            completedAt: new Date(),
-          },
-        });
-
-        logger.info('Cancelled stale waiting game', {
-          gameId: game.id,
-          name: game.name,
-        });
       }
     }
   } catch (error) {

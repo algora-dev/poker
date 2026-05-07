@@ -1,4 +1,4 @@
-import { prisma } from '../db/client';
+﻿import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { evaluateHand, compareHands } from './poker/handEvaluator';
 import { dealCards } from './poker/deck';
@@ -137,7 +137,7 @@ export async function processAction(
           };
         }
 
-        // Multiple players still active — find next active player
+        // Multiple players still active â€” find next active player
         {
           const currentPlayerIndex = freshPlayers.findIndex(p => p.userId === userId);
           const numPlayers = freshPlayers.length;
@@ -197,7 +197,7 @@ export async function processAction(
           where: {
             handId: currentHand.id,
             userId,
-            stage: currentHand.stage, // 🎯 Current betting round only
+            stage: currentHand.stage, // ðŸŽ¯ Current betting round only
           },
           _sum: { amount: true },
         });
@@ -217,7 +217,7 @@ export async function processAction(
           where: {
             handId: currentHand.id,
             userId,
-            stage: currentHand.stage, // 🎯 Current betting round only
+            stage: currentHand.stage, // ðŸŽ¯ Current betting round only
           },
           _sum: { amount: true },
         });
@@ -332,7 +332,7 @@ export async function processAction(
         userId,
         action,
         amount: actionAmount,
-        stage: currentHand.stage, // 🎯 Record which betting round this action belongs to
+        stage: currentHand.stage, // ðŸŽ¯ Record which betting round this action belongs to
       },
     });
 
@@ -350,7 +350,7 @@ export async function processAction(
     });
 
     // Phase 7 [M-05]: action_applied ledger event with before/after state.
-    // No private cards in this payload — ledger privacy gate enforces it.
+    // No private cards in this payload â€” ledger privacy gate enforces it.
     await recordHandEvent(tx, {
       gameId: game.id,
       handId: currentHand.id,
@@ -497,12 +497,12 @@ export async function processAction(
         attempts++;
       }
       
-      // Safety check — if no active players can act, everyone is all-in → showdown
+      // Safety check â€” if no active players can act, everyone is all-in â†’ showdown
       if (attempts >= numPlayers) {
-        // All remaining players are all-in — fast forward to showdown
+        // All remaining players are all-in â€” fast forward to showdown
         const canAct = freshTurnPlayers.filter(p => p.position === 'active');
         if (canAct.length === 0) {
-          // Everyone is all-in or folded — deal remaining cards and showdown
+          // Everyone is all-in or folded â€” deal remaining cards and showdown
           let stage = currentHand.stage;
           let board = JSON.parse(currentHand.board);
           const deck = JSON.parse(currentHand.deck);
@@ -676,48 +676,15 @@ async function checkGameContinuation(tx: any, game: any) {
   );
 
   if (remaining.length <= 1) {
-    // Game over — last player standing wins
-    await tx.game.update({
-      where: { id: game.id },
-      data: {
-        status: 'completed',
-        completedAt: new Date(),
-      },
+    // Phase 10 [H-01]: route end-of-game cashout through the canonical
+    // closeGame helper. Same end state, single audited path.
+    const { closeGameInTx } = await import('./closeGame');
+    await closeGameInTx(tx, {
+      gameId: game.id,
+      reason: 'natural_completion',
+      notes: `Game completed: ${game.name}`,
+      winnerUserIds: remaining[0]?.userId ? [remaining[0].userId] : [],
     });
-
-    // PHASE 1: end-of-game cashout. Move each remaining player's in-table
-    // chipStack into their off-table ChipBalance and zero the chipStack.
-    // This is a single chip-mass move, not a credit — total chips conserved.
-    for (const player of players) {
-      if (player.chipStack > BigInt(0)) {
-        const stackToCashOut = player.chipStack;
-        const balance = await tx.chipBalance.findUnique({
-          where: { userId: player.userId },
-        });
-        if (balance) {
-          const newBal = await tx.chipBalance.update({
-            where: { userId: player.userId },
-            data: { chips: { increment: stackToCashOut } },
-          });
-          // Zero the in-table stack so chips are not held in two places.
-          await tx.gamePlayer.update({
-            where: { id: player.id },
-            data: { chipStack: BigInt(0) },
-          });
-          await tx.chipAudit.create({
-            data: {
-              userId: player.userId,
-              operation: 'game_cashout',
-              amountDelta: stackToCashOut,
-              balanceBefore: balance.chips,
-              balanceAfter: newBal.chips,
-              reference: game.id,
-              notes: `Cashed out from game: ${game.name}`,
-            },
-          });
-        }
-      }
-    }
 
     logger.info('Game completed', {
       gameId: game.id,
@@ -737,6 +704,7 @@ async function checkGameContinuation(tx: any, game: any) {
     });
     return;
   }
+
 
   // Check blind escalation
   const newHandsAtLevel = game.handsAtLevel + 1;
@@ -766,7 +734,7 @@ async function checkGameContinuation(tx: any, game: any) {
     });
   }
 
-  // Game continues — rotate dealer and start next hand
+  // Game continues â€” rotate dealer and start next hand
   const numPlayers = players.length;
   let newDealerIndex = (game.dealerIndex + 1) % numPlayers;
   // Skip eliminated players for dealer
@@ -817,7 +785,7 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
   const stageActions = await tx.handAction.findMany({
     where: {
       handId,
-      stage: hand.stage, // 🎯 KEY FIX: Only look at current betting round
+      stage: hand.stage, // ðŸŽ¯ KEY FIX: Only look at current betting round
     },
     orderBy: { timestamp: 'asc' },
   });
@@ -846,12 +814,12 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
   // Count real actions (not blinds)
   const realActions = stageActions.filter(a => a.action !== 'blind');
 
-  // Track the last raiser/bettor — the round ends when action returns to them.
+  // Track the last raiser/bettor â€” the round ends when action returns to them.
   //
   // PHASE 2 [M-01]: a short all-in (one whose increment over the current
   // high-water bet is LESS than the last legal raise increment) is treated
   // as a call for action-reopening purposes. It still moves chips into the
-  // pot, but it does NOT reset the action — the original aggressor cannot
+  // pot, but it does NOT reset the action â€” the original aggressor cannot
   // be forced to re-respond. See audits/t3-poker/06-dave-fix-prompt.md
   // Phase 2 and Hold'em short-all-in rules.
   let lastAggressorId: string | null = null;
@@ -958,7 +926,7 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
     return false;
   }
   
-  // No raise happened — check if everyone who can act has acted
+  // No raise happened â€” check if everyone who can act has acted
   const playersWhoActed = new Set(Array.from(playerLastAction.keys()));
   const allActed = playersWhoCanAct.every(p => playersWhoActed.has(p.userId));
   
@@ -967,7 +935,7 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
     return false;
   }
 
-  // Everyone acted, no raise — check if all checked or all bets equal
+  // Everyone acted, no raise â€” check if all checked or all bets equal
   const allChecked = playersWhoCanAct.every(p => playerLastAction.get(p.userId) === 'check');
   if (allChecked) {
     logger.info('Betting complete: all checked');
@@ -993,7 +961,7 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
     return true;
   }
 
-  // Check if anyone is all-in — only complete if all active players have acted
+  // Check if anyone is all-in â€” only complete if all active players have acted
   // and their bets match or exceed the highest active bet
   const allInPlayers = activePlayers.filter(p => p.position === 'all_in');
   if (allInPlayers.length > 0 && allBetsEqual) {

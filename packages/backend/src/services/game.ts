@@ -270,58 +270,25 @@ export async function cancelGameBeforeStart(userId: string, gameId: string) {
       throw new Error('No players found in game');
     }
 
-    // Refund buy-in to creator
-    const chipBalance = await tx.chipBalance.findUnique({
-      where: { userId: creator.userId },
+    // Phase 10 [H-01]: route through canonical closeGame helper.
+    const { closeGameInTx } = await import('./closeGame');
+    const closed = await closeGameInTx(tx, {
+      gameId,
+      reason: 'pre_start_cancel',
+      notes: `Cancelled game before start: ${game.name}`,
     });
 
-    if (!chipBalance) {
-      throw new Error('Chip balance not found');
-    }
-
-    const refundAmount = creator.chipStack;
-
-    const newBalance = await tx.chipBalance.update({
-      where: { userId: creator.userId },
-      data: {
-        chips: {
-          increment: refundAmount,
-        },
-      },
-    });
-
-    // Audit log
-    await tx.chipAudit.create({
-      data: {
-        userId: creator.userId,
-        operation: 'game_refund',
-        amountDelta: refundAmount,
-        balanceBefore: chipBalance.chips,
-        balanceAfter: newBalance.chips,
-        reference: gameId,
-        notes: `Cancelled game before start: ${game.name}`,
-      },
-    });
-
-    // Mark game as cancelled
-    await tx.game.update({
-      where: { id: gameId },
-      data: {
-        status: 'cancelled',
-        completedAt: new Date(),
-      },
-    });
-
+    const refunded = closed.refundedPlayers[0];
     logger.info('Game cancelled by creator', {
       gameId,
       userId,
-      refundAmount: refundAmount.toString(),
+      refundAmount: refunded?.refundAmount.toString() ?? '0',
     });
 
     return {
       success: true,
-      refundAmount: refundAmount.toString(),
-      newBalance: newBalance.chips.toString(),
+      refundAmount: (refunded?.refundAmount ?? 0n).toString(),
+      newBalance: (refunded?.newBalance ?? 0n).toString(),
     };
   });
 }

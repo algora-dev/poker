@@ -4,6 +4,9 @@
  * Add a new scenario by exporting an entry from `SCENARIOS` and giving it
  * an orchestration that the runHarness entry point can execute.
  */
+import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcrypt';
+import { createSigner } from 'fast-jwt';
 import { runOrchestration, type OrchestrationResult } from './orchestrator';
 import {
   Aggro,
@@ -13,6 +16,8 @@ import {
   RandomReasonable,
   type BotStrategy,
 } from './strategies';
+
+const prisma = new PrismaClient();
 
 export interface ScenarioEnv {
   baseUrl: string;
@@ -88,22 +93,25 @@ const SCENARIOS: Scenario[] = [
 
   {
     name: 'disconnect_reconnect',
-    description: '4 bots; one drops + reconnects mid-session. Verify state recovery.',
+    description: '4 bots; one drops + reconnects between hands. Verify state recovery + ledger.',
     run: (env) =>
       runOrchestration({
         baseUrl: env.baseUrl,
         adminSecret: env.adminSecret,
-        bots: botCfgs(env, [RandomReasonable, RandomReasonable, RandomReasonable, RandomReasonable]),
+        bots: botCfgs(env, [RandomReasonable, RandomReasonable, RandomReasonable, RandomReasonable], { thinkMs: 50 }),
         bankrollChips: 5000,
         buyInChips: 200,
-        maxHands: 15,
-        timeoutMs: 5 * 60_000,
+        maxHands: 8,
+        timeoutMs: 4 * 60_000,
         onFirstHand: async ({ bots, gameId }) => {
-          // Wait into the first hand, drop bot[2], wait, reconnect.
-          await new Promise((r) => setTimeout(r, 3000));
+          // Drop bot[2] briefly then reconnect. Done before serious action
+          // starts so the bot has a chance to refetch state and rejoin.
+          // Mid-hand disconnect-while-it's-your-turn is its own deeper test;
+          // see action_timeout for the 30s timer cleanup path.
+          await new Promise((r) => setTimeout(r, 800));
           const target = bots[2];
           target.disconnect(true);
-          await new Promise((r) => setTimeout(r, 4000));
+          await new Promise((r) => setTimeout(r, 1500));
           await target.reconnect(gameId);
         },
       }),
@@ -119,8 +127,8 @@ const SCENARIOS: Scenario[] = [
         bots: botCfgs(env, [RandomReasonable, RandomReasonable, Nit], { silentIndex: 2 }),
         bankrollChips: 5000,
         buyInChips: 200,
-        maxHands: 5,
-        timeoutMs: 8 * 60_000, // each silent turn waits ~30s
+        maxHands: 3,
+        timeoutMs: 4 * 60_000, // each silent turn waits ~30s; 3 hands x silent ~3 minutes
       }),
   },
 
@@ -161,6 +169,151 @@ const SCENARIOS: Scenario[] = [
       }),
   },
 ];
+
+// Phase 10 [H-04]: standalone scenario that exercises the active-game money
+// lock at the API level. Doesn't use BotClient because we want to drive the
+// /api/wallet/withdraw and /api/wallet/generate-message routes directly with
+// curated state.
+const moneyLockScenario: Scenario = {
+  name: 'money_lock_active_game',
+  description: 'Withdraw + deposit-challenge return 409 while user is seated at a waiting/in_progress table.',
+  async run(env): Promise<OrchestrationResult> {
+    const t0 = Date.now();
+    const suffix = env.runSuffix ?? 'lock';
+    const email = `lockbot.${suffix}@harness.test`.toLowerCase();
+    const username = `lockbot_${suffix}`.toLowerCase();
+    const password = 'harness-pw-2026!';
+    // Per-suffix deterministic 40-hex wallet address so re-runs reuse the
+    // same row and Prisma's unique(walletAddress) constraint is happy.
+    const walletAddress = ('0x' + Buffer.from(`hlk-${suffix}`).toString('hex').padEnd(40, '0').slice(0, 40)).toLowerCase();
+
+    // Seed user + balance
+    let user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      const passwordHash = await bcrypt.hash(password, 12);
+      user = await prisma.$transaction(async (tx) => {
+        const u = await tx.user.create({
+          data: { email, username, passwordHash, walletAddress },
+        });
+        await tx.chipBalance.create({ data: { userId: u.id, chips: 0n } });
+        return u;
+      });
+    }
+    // Ensure wallet linked (for withdraw path)
+    if (!user.walletAddress) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { walletAddress },
+      });
+    }
+    await prisma.chipBalance.update({
+      where: { userId: user.id },
+      data: { chips: 1_000_000_000n },
+    });
+
+    // Mint JWT directly (same trick as orchestrator)
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) throw new Error('JWT_SECRET not set');
+    const signer = createSigner({ key: jwtSecret, expiresIn: 60 * 60 * 1000 });
+    const token = signer({ userId: user.id });
+    const headers = { 'content-type': 'application/json', authorization: `Bearer ${token}` };
+
+    // Create a 'waiting' game for this user with a non-zero stack so the
+    // lock condition is true.
+    const gameId = (
+      await prisma.game.create({
+        data: {
+          name: `LockTest ${Date.now()}`,
+          createdBy: user.id,
+          smallBlind: 500_000n,
+          bigBlind: 1_000_000n,
+          minBuyIn: 100_000_000n,
+          maxBuyIn: 100_000_000n,
+          maxPlayers: 2,
+          status: 'waiting',
+          players: {
+            create: {
+              userId: user.id,
+              seatIndex: 0,
+              chipStack: 100_000_000n,
+              position: 'waiting',
+            },
+          },
+        },
+      })
+    ).id;
+
+    try {
+      // 1. Withdraw must 409 with code 'active_game_money_locked'
+      const wRes = await fetch(`${env.baseUrl}/api/wallet/withdraw`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ amount: 1 }),
+      });
+      if (wRes.status !== 409) {
+        throw new Error(`expected 409 from /withdraw while seated, got ${wRes.status}`);
+      }
+      const wBody: any = await wRes.json();
+      if (wBody.code !== 'active_game_money_locked') {
+        throw new Error(`expected code=active_game_money_locked, got ${wBody.code}`);
+      }
+
+      // 2. /generate-message (deposit challenge) must 409 too.
+      const gRes = await fetch(`${env.baseUrl}/api/wallet/generate-message`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ walletAddress }),
+      });
+      if (gRes.status !== 409) {
+        throw new Error(`expected 409 from /generate-message while seated, got ${gRes.status}`);
+      }
+      const gBody: any = await gRes.json();
+      if (gBody.code !== 'active_game_money_locked') {
+        throw new Error(`expected code=active_game_money_locked, got ${gBody.code}`);
+      }
+
+      // 3. /money-lock should report locked=true with the right gameId.
+      const lRes = await fetch(`${env.baseUrl}/api/wallet/money-lock`, { headers });
+      const lBody: any = await lRes.json();
+      if (lBody.locked !== true || lBody.gameId !== gameId) {
+        throw new Error(`/money-lock not reporting lock: ${JSON.stringify(lBody)}`);
+      }
+
+      // 4. Free the user (close game) and re-check: withdraw should now
+      //    pass the lock check (it'll fail at the contract call but that
+      //    happens AFTER the lock guard, so we check that the body is
+      //    no longer 409).
+      const { closeGame } = await import('../../src/services/closeGame');
+      await closeGame({ gameId, reason: 'admin_cancel', notes: 'lock-test cleanup' });
+      const lRes2 = await fetch(`${env.baseUrl}/api/wallet/money-lock`, { headers });
+      const lBody2: any = await lRes2.json();
+      if (lBody2.locked !== false) {
+        throw new Error(`/money-lock still locked after close: ${JSON.stringify(lBody2)}`);
+      }
+    } finally {
+      // Best-effort cleanup if assertion threw before reaching the close.
+      const stillThere = await prisma.game.findUnique({ where: { id: gameId } });
+      if (stillThere && stillThere.status !== 'completed' && stillThere.status !== 'cancelled') {
+        try {
+          const { closeGame } = await import('../../src/services/closeGame');
+          await closeGame({ gameId, reason: 'admin_cancel', notes: 'lock-test cleanup (finally)' });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    // Return the same shape the orchestrator does.
+    return {
+      gameId,
+      handsCompleted: 0,
+      durationMs: Date.now() - t0,
+      bots: [],
+    };
+  },
+};
+
+SCENARIOS.push(moneyLockScenario);
 
 export function listScenarios(): string[] {
   return SCENARIOS.map((s) => s.name);

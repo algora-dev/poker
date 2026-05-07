@@ -322,10 +322,42 @@ function buildLifecycleTx(initial: {
       update: vi.fn(async (args: any) => args.data),
     },
     game: {
-      update: vi.fn(async (args: any) => args.data),
+      update: vi.fn(async (args: any) => {
+        if (args.data?.status) (initial.game as any).status = args.data.status;
+        return args.data;
+      }),
+      // Phase 10 [H-01]: closeGameInTx fetches game with players + open hands.
+      findUnique: vi.fn(async (args: any) => {
+        if (args.where.id !== initial.game.id) return null;
+        const includePlayers = args.include?.players;
+        const includeHands = args.include?.hands;
+        const sortedPlayers = includePlayers
+          ? players.slice().sort((a, b) => a.seatIndex - b.seatIndex).map((p) => ({ ...p }))
+          : undefined;
+        const handRow = initial.hand
+          ? { ...initial.hand, stage: (initial.hand as any).stage ?? 'river' }
+          : null;
+        const hands = includeHands
+          ? handRow && handRow.stage !== 'completed'
+            ? [handRow]
+            : []
+          : undefined;
+        return {
+          ...(initial.game as any),
+          status: (initial.game as any).status ?? 'in_progress',
+          players: sortedPlayers,
+          hands,
+        };
+      }),
     },
     sidePot: {
       update: vi.fn(async (args: any) => args.data),
+    },
+    handAction: {
+      findMany: vi.fn(async () => []),
+    },
+    moneyEvent: {
+      create: vi.fn(async (args: any) => ({ id: 'me', ...args.data })),
     },
     handEvent: {
       findFirst: vi.fn(async (args: any) => {

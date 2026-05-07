@@ -4,6 +4,24 @@ import { CONFIG } from '../config';
 import { logger } from '../utils/logger';
 import { emitBalanceUpdate } from '../socket';
 import { recordMoneyEvent } from './moneyLedger';
+import { checkActiveGameLock } from './activeGameLock';
+
+/**
+ * Structured error class so the route can return a 409 with a stable code.
+ */
+export class ActiveGameMoneyLockedError extends Error {
+  readonly code = 'active_game_money_locked' as const;
+  readonly gameId: string;
+  readonly gameStatus: 'waiting' | 'in_progress';
+  constructor(gameId: string, gameStatus: 'waiting' | 'in_progress', message?: string) {
+    super(
+      message ??
+        'Cannot withdraw while seated at an active or waiting table. Leave the table to unlock your balance.'
+    );
+    this.gameId = gameId;
+    this.gameStatus = gameStatus;
+  }
+}
 
 const VAULT_ABI = [
   'function completeWithdrawal(address user, uint256 amount) external',
@@ -49,16 +67,12 @@ export async function processWithdrawal(
     throw new Error(`Insufficient chips. Available: ${available}`);
   }
 
-  // Check user isn't in an active game
-  const activeGame = await prisma.gamePlayer.findFirst({
-    where: {
-      userId,
-      game: { status: 'in_progress' },
-    },
-  });
-
-  if (activeGame) {
-    throw new Error('Cannot withdraw while in an active game. Leave the table first.');
+  // Phase 10 [H-04]: pre-check the active-game money lock. The same
+  // check is repeated INSIDE the deduct transaction below to close the
+  // race window between this read and the balance write.
+  const preLock = await checkActiveGameLock(prisma, userId);
+  if (preLock) {
+    throw new ActiveGameMoneyLockedError(preLock.gameId, preLock.status, preLock.message);
   }
 
   // Check no pending withdrawal exists
@@ -75,6 +89,16 @@ export async function processWithdrawal(
 
   // Step 1: Deduct chips and create withdrawal record atomically
   const { withdrawal, balanceBefore } = await prisma.$transaction(async (tx) => {
+    // Phase 10 [H-04]: re-check the active-game lock INSIDE the tx.
+    // Without this, a user could submit /withdraw and /games/:id/join
+    // back-to-back — the check would pass, the join would seat them,
+    // and the deduct would still complete, leaking off-table chips
+    // while leaving table chips behind.
+    const lock = await checkActiveGameLock(tx as any, userId);
+    if (lock) {
+      throw new ActiveGameMoneyLockedError(lock.gameId, lock.status, lock.message);
+    }
+
     const balance = await tx.chipBalance.findUnique({
       where: { userId },
     });

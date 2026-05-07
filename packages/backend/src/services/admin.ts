@@ -1,10 +1,15 @@
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
+import { closeGameInTx } from './closeGame';
 
 /**
- * Clean up abandoned/stuck games and refund chips
- * - Games stuck in "in_progress" for > 1 hour
- * - Games in "waiting" for > 24 hours
+ * Clean up abandoned/stuck games and refund chips.
+ *
+ * Phase 10 [H-01]: this and the manual `cancelGame` below now both route
+ * through the canonical `closeGameInTx` helper so refunds are
+ * transactional, audited, and zero the table stack. The old "split pot
+ * equally if any actions were taken" heuristic was a chip-leak vector
+ * (see audits/t3-poker/11-harness-findings.md) and has been retired.
  */
 export async function cleanupStuckGames() {
   const results = {
@@ -18,48 +23,18 @@ export async function cleanupStuckGames() {
     const stuckInProgressGames = await tx.game.findMany({
       where: {
         status: 'in_progress',
-        startedAt: {
-          lt: new Date(Date.now() - 10 * 60 * 1000), // 10 minutes ago
-        },
+        startedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) },
       },
-      include: {
-        players: {
-          include: {
-            user: {
-              select: { id: true, username: true },
-            },
-          },
-        },
-        hands: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-        },
-      },
+      select: { id: true, name: true, status: true },
     });
 
     // Find abandoned waiting games (> 24 hours old)
-    // Include `hands` (will be empty) so the union with stuckInProgressGames
-    // keeps a consistent type and TS does not narrow `hands` away.
     const abandonedWaitingGames = await tx.game.findMany({
       where: {
         status: 'waiting',
-        createdAt: {
-          lt: new Date(Date.now() - 24 * 60 * 60 * 1000), // 24 hours ago
-        },
+        createdAt: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
       },
-      include: {
-        players: {
-          include: {
-            user: {
-              select: { id: true, username: true },
-            },
-          },
-        },
-        hands: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-        },
-      },
+      select: { id: true, name: true, status: true },
     });
 
     const allGamesToCleanup = [...stuckInProgressGames, ...abandonedWaitingGames];
@@ -69,87 +44,24 @@ export async function cleanupStuckGames() {
         gameId: game.id,
         name: game.name,
         status: game.status,
-        players: game.players.length,
       });
 
-      // Check if any hands were played (actions taken)
-      const handActions = game.hands[0]
-        ? await tx.handAction.count({
-            where: { handId: game.hands[0].id },
-          })
-        : 0;
-
-      // Refund policy:
-      // - If NO actions taken → Full refund
-      // - If actions taken → Split pot equally
-      const shouldFullRefund = handActions === 0;
-
-      for (const player of game.players) {
-        let refundAmount: bigint;
-
-        if (shouldFullRefund) {
-          // Full buy-in refund
-          refundAmount = player.chipStack;
-        } else {
-          // Split pot equally (fair for stuck games)
-          const totalPot =
-            game.hands[0]?.pot || game.players.reduce((sum, p) => sum + (game.minBuyIn - p.chipStack), BigInt(0));
-          refundAmount = totalPot / BigInt(game.players.length);
-        }
-
-        if (refundAmount > 0) {
-          // Get current chip balance
-          const chipBalance = await tx.chipBalance.findUnique({
-            where: { userId: player.userId },
-          });
-
-          if (chipBalance) {
-            // Refund chips
-            const newBalance = await tx.chipBalance.update({
-              where: { userId: player.userId },
-              data: {
-                chips: {
-                  increment: refundAmount,
-                },
-              },
-            });
-
-            // Audit log
-            await tx.chipAudit.create({
-              data: {
-                userId: player.userId,
-                operation: 'game_refund',
-                amountDelta: refundAmount,
-                balanceBefore: chipBalance.chips,
-                balanceAfter: newBalance.chips,
-                reference: game.id,
-                notes: `Refund from abandoned game: ${game.name} (${shouldFullRefund ? 'full' : 'split'})`,
-              },
-            });
-
-            results.chipsRefunded += refundAmount;
-            results.playersRefunded++;
-
-            logger.info('Player refunded', {
-              userId: player.userId,
-              username: player.user.username,
-              amount: refundAmount.toString(),
-              type: shouldFullRefund ? 'full' : 'split',
-            });
-          }
-        }
-      }
-
-      // Mark game as cancelled
-      await tx.game.update({
-        where: { id: game.id },
-        data: {
-          status: 'cancelled',
-          completedAt: new Date(),
-        },
+      const closed = await closeGameInTx(tx, {
+        gameId: game.id,
+        reason: 'admin_cancel',
+        notes: `Admin cleanup of stuck ${game.status} game: ${game.name}`,
       });
 
       results.gamesMarkedCancelled++;
+      results.chipsRefunded += closed.totalRefunded;
+      results.playersRefunded += closed.refundedPlayers.length;
+      for (const r of closed.refundedPlayers) {
+        logger.info('Player refunded', {
+          userId: r.userId,
+          amount: r.refundAmount.toString(),
+          newBalance: r.newBalance.toString(),
+        });
+      }
     }
 
     logger.info('Cleanup complete', {
@@ -166,102 +78,37 @@ export async function cleanupStuckGames() {
 }
 
 /**
- * Cancel a specific game and refund players
- * (Admin function)
+ * Cancel a specific game and refund players (admin function).
+ * Phase 10 [H-01]: routes through closeGameInTx.
  */
 export async function cancelGame(gameId: string, reason: string) {
   return await prisma.$transaction(async (tx) => {
     const game = await tx.game.findUnique({
       where: { id: gameId },
-      include: {
-        players: {
-          include: {
-            user: {
-              select: { id: true, username: true },
-            },
-          },
-        },
-        hands: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-        },
-      },
+      select: { id: true, status: true, name: true },
     });
-
-    if (!game) {
-      throw new Error('Game not found');
-    }
-
+    if (!game) throw new Error('Game not found');
     if (game.status === 'completed' || game.status === 'cancelled') {
       throw new Error('Game already finished');
     }
 
-    // Check if any hands were played
-    const handActions = game.hands[0]
-      ? await tx.handAction.count({
-          where: { handId: game.hands[0].id },
-        })
-      : 0;
-
-    const shouldFullRefund = handActions === 0;
-
-    // Refund all players
-    for (const player of game.players) {
-      let refundAmount: bigint;
-
-      if (shouldFullRefund) {
-        refundAmount = player.chipStack;
-      } else {
-        const totalPot =
-          game.hands[0]?.pot || game.players.reduce((sum, p) => sum + (game.minBuyIn - p.chipStack), BigInt(0));
-        refundAmount = totalPot / BigInt(game.players.length);
-      }
-
-      if (refundAmount > 0) {
-        const chipBalance = await tx.chipBalance.findUnique({
-          where: { userId: player.userId },
-        });
-
-        if (chipBalance) {
-          const newBalance = await tx.chipBalance.update({
-            where: { userId: player.userId },
-            data: {
-              chips: {
-                increment: refundAmount,
-              },
-            },
-          });
-
-          await tx.chipAudit.create({
-            data: {
-              userId: player.userId,
-              operation: 'game_refund',
-              amountDelta: refundAmount,
-              balanceBefore: chipBalance.chips,
-              balanceAfter: newBalance.chips,
-              reference: gameId,
-              notes: `Admin cancelled game: ${reason}`,
-            },
-          });
-        }
-      }
-    }
-
-    // Mark as cancelled
-    await tx.game.update({
-      where: { id: gameId },
-      data: {
-        status: 'cancelled',
-        completedAt: new Date(),
-      },
+    const closed = await closeGameInTx(tx, {
+      gameId,
+      reason: 'admin_cancel',
+      notes: `Admin cancelled game: ${reason}`,
     });
 
     logger.info('Game cancelled by admin', {
       gameId,
       reason,
-      playersRefunded: game.players.length,
+      refundedPlayers: closed.refundedPlayers.length,
+      totalRefunded: closed.totalRefunded.toString(),
     });
 
-    return { success: true, playersRefunded: game.players.length };
+    return {
+      success: true,
+      playersRefunded: closed.refundedPlayers.length,
+      totalRefunded: closed.totalRefunded.toString(),
+    };
   });
 }

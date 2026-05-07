@@ -143,13 +143,63 @@ function buildMockTx(initial: {
     game: {
       update: vi.fn(async (args: any) => {
         calls.push({ model: 'game', method: 'update', args });
+        if (args.data?.status) {
+          // Mirror the status flip back into the in-memory game so the
+          // closeGame helper's idempotency check (game.status already
+          // closed) sees the right value across nested calls.
+          (initial.game as any).status = args.data.status;
+        }
         return args.data;
+      }),
+      // Phase 10 [H-01]: closeGameInTx reads game + open hands + players.
+      // Build the response from the same in-memory state the test mutates.
+      findUnique: vi.fn(async (args: any) => {
+        calls.push({ model: 'game', method: 'findUnique', args });
+        if (args.where.id !== initial.game.id) return null;
+        const includePlayers = args.include?.players;
+        const includeHands = args.include?.hands;
+        const sortedPlayers = includePlayers
+          ? players
+              .slice()
+              .sort((a, b) => a.seatIndex - b.seatIndex)
+              .map((p) => ({ ...p }))
+          : undefined;
+        const handRow = initial.hand
+          ? { ...initial.hand, stage: (initial.hand as any).stage ?? 'river' }
+          : null;
+        const hands = includeHands
+          ? handRow && handRow.stage !== 'completed'
+            ? [handRow]
+            : []
+          : undefined;
+        return {
+          ...(initial.game as any),
+          status: (initial.game as any).status ?? 'in_progress',
+          players: sortedPlayers,
+          hands,
+        };
       }),
     },
     sidePot: {
       update: vi.fn(async (args: any) => {
         calls.push({ model: 'sidePot', method: 'update', args });
         return args.data;
+      }),
+    },
+    // Phase 10 [H-01]: closeGameInTx reads handAction for pot-share refunds
+    // (cancel paths). For natural_completion paths it skips the read, but
+    // we provide a no-op default so other tests don't choke either.
+    handAction: {
+      findMany: vi.fn(async (args: any) => {
+        calls.push({ model: 'handAction', method: 'findMany', args });
+        return [];
+      }),
+    },
+    // Phase 9: MoneyEvent ledger. closeGame writes one row per refund.
+    moneyEvent: {
+      create: vi.fn(async (args: any) => {
+        calls.push({ model: 'moneyEvent', method: 'create', args });
+        return { id: 'me', ...args.data };
       }),
     },
     // Phase 7 [M-05]: handEvent ledger stub. Sequence numbering matches the

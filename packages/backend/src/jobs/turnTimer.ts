@@ -5,7 +5,7 @@
 
 import { prisma } from '../db/client';
 import { processAction } from '../services/pokerActions';
-import { emitGameEvent } from '../socket';
+import { broadcastGameState, emitGameEvent } from '../socket';
 import { logger } from '../utils/logger';
 
 const TURN_TIMEOUT_MS = parseInt(process.env.TURN_TIMEOUT_MS || '30000', 10); // 30s default
@@ -76,6 +76,18 @@ async function checkExpiredTurns() {
           userId: activePlayer.userId,
           autoAction: true,
         });
+        // Phase 10 [H-03]: also push fresh per-player state so clients
+        // don't have to refetch after every auto-fold/auto-check. Mirrors
+        // what /api/games/:id/action does at the end of a real action.
+        try {
+          const playerIds = game.players.map((p: any) => p.userId);
+          await broadcastGameState(game.id, playerIds);
+        } catch (broadcastErr) {
+          logger.warn('broadcastGameState after auto-action failed (non-fatal)', {
+            gameId: game.id,
+            error: (broadcastErr as Error).message,
+          });
+        }
         // Clear any warning state for this turn since it's over.
         warnedTurns.delete(turnKey(hand.id, hand.activePlayerIndex));
       } catch (err) {
