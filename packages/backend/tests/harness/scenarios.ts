@@ -279,10 +279,130 @@ const moneyLockScenario: Scenario = {
         throw new Error(`/money-lock not reporting lock: ${JSON.stringify(lBody)}`);
       }
 
-      // 4. Free the user (close game) and re-check: withdraw should now
-      //    pass the lock check (it'll fail at the contract call but that
-      //    happens AFTER the lock guard, so we check that the body is
-      //    no longer 409).
+      // 4. Phase 10 [H-04] hardening: a player who is all-in (chipStack=0
+      //    but seat still attached to an in_progress game) must STILL be
+      //    locked. Flip the GamePlayer to chipStack=0 / all_in and confirm.
+      await prisma.gamePlayer.updateMany({
+        where: { userId: user.id, gameId },
+        data: { chipStack: 0n, position: 'all_in' },
+      });
+      await prisma.game.update({ where: { id: gameId }, data: { status: 'in_progress' } });
+      const lAllInRes = await fetch(`${env.baseUrl}/api/wallet/money-lock`, { headers });
+      const lAllInBody: any = await lAllInRes.json();
+      if (lAllInBody.locked !== true) {
+        throw new Error(
+          `/money-lock not locked for all-in seat (chipStack=0): ${JSON.stringify(lAllInBody)}`
+        );
+      }
+      const wAllInRes = await fetch(`${env.baseUrl}/api/wallet/withdraw`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ amount: 1 }),
+      });
+      if (wAllInRes.status !== 409) {
+        throw new Error(
+          `expected 409 from /withdraw while all-in (chipStack=0), got ${wAllInRes.status}`
+        );
+      }
+
+      // 5. Folded but still seated: same. Position transitions back to
+      //    'folded' between hands.
+      await prisma.gamePlayer.updateMany({
+        where: { userId: user.id, gameId },
+        data: { position: 'folded', chipStack: 0n },
+      });
+      const lFoldedRes = await fetch(`${env.baseUrl}/api/wallet/money-lock`, { headers });
+      const lFoldedBody: any = await lFoldedRes.json();
+      if (lFoldedBody.locked !== true) {
+        throw new Error(
+          `/money-lock not locked for folded seat: ${JSON.stringify(lFoldedBody)}`
+        );
+      }
+
+      // 6. Trying to create a NEW game while seated must 409 too.
+      const cRes = await fetch(`${env.baseUrl}/api/games/create`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: `BadCreate ${Date.now()}`,
+          minBuyIn: 1,
+          maxBuyIn: 1,
+          creatorBuyIn: 1,
+          smallBlind: 0.5,
+          bigBlind: 1,
+        }),
+      });
+      if (cRes.status !== 409) {
+        throw new Error(
+          `expected 409 from /games/create while seated, got ${cRes.status}: ${await cRes.text()}`
+        );
+      }
+      const cBody: any = await cRes.json();
+      if (cBody.code !== 'active_game_money_locked') {
+        throw new Error(`expected code=active_game_money_locked, got ${cBody.code}`);
+      }
+
+      // 7. Deposit credit-time check: simulate the listener trying to
+      //    credit while the user is still seated. Requires a stub
+      //    DepositAuthorization; the helper acquires the per-user money
+      //    mutex, sees the lock, and skips the credit. ChipBalance must
+      //    not change. A Deposit row is written with confirmed=false for
+      //    operator visibility (idempotency only — not a normal flow).
+      const { createDepositChallenge } = await import('../../src/services/wallet');
+      const challenge = await createDepositChallenge({
+        userId: user.id,
+        walletAddress,
+        amount: 1_000_000n,
+      });
+      // Insert the auth row directly (bypassing signature flow) so the
+      // listener has something to consume. We mark it used=false.
+      const depositAuth = await prisma.depositAuthorization.create({
+        data: {
+          userId: user.id,
+          walletAddress: walletAddress,
+          nonce: challenge.nonce,
+          chainId: challenge.chainId,
+          contractAddress: challenge.contractAddress,
+          amount: 1_000_000n,
+          issuedAt: challenge.issuedAt,
+          expiresAt: challenge.expiresAt,
+          signature: 'harness-stub',
+          message: challenge.challenge,
+        },
+      });
+      const txHash = '0x' + 'd0' + Date.now().toString(16).padStart(16, '0').padEnd(62, '0');
+      const balanceBeforeCredit = (
+        await prisma.chipBalance.findUnique({ where: { userId: user.id } })
+      )!.chips;
+      // Drive creditChips directly with the helper. It must NOT credit.
+      const { creditChipsForTesting } = await import('../../src/blockchain/listener');
+      await creditChipsForTesting(walletAddress, 1_000_000n, txHash, 999_999_999);
+      const balanceAfterCredit = (
+        await prisma.chipBalance.findUnique({ where: { userId: user.id } })
+      )!.chips;
+      if (balanceAfterCredit !== balanceBeforeCredit) {
+        throw new Error(
+          `Deposit credited while user was seated: before=${balanceBeforeCredit} after=${balanceAfterCredit}`
+        );
+      }
+      // Auth must remain unconsumed.
+      const authAfter = await prisma.depositAuthorization.findUnique({
+        where: { id: depositAuth.id },
+      });
+      if (!authAfter || authAfter.used) {
+        throw new Error(
+          `Authorization was consumed during deferred deposit (should still be usable)`
+        );
+      }
+      // Deferred Deposit row must be present with confirmed=false.
+      const deferredRow = await prisma.deposit.findUnique({ where: { txHash } });
+      if (!deferredRow || deferredRow.confirmed !== false) {
+        throw new Error(
+          `Expected deferred Deposit row with confirmed=false, got ${JSON.stringify(deferredRow)}`
+        );
+      }
+
+      // 8. Free the user (close game) and re-check: lock clears.
       const { closeGame } = await import('../../src/services/closeGame');
       await closeGame({ gameId, reason: 'admin_cancel', notes: 'lock-test cleanup' });
       const lRes2 = await fetch(`${env.baseUrl}/api/wallet/money-lock`, { headers });

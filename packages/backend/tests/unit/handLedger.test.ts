@@ -282,6 +282,9 @@ function buildLifecycleTx(initial: {
   const events: LedgerRow[] = [];
 
   const tx: any = {
+    // Phase 10 [H-04] hardening: closeGame acquires a per-user advisory
+    // lock via $executeRawUnsafe. Mock as no-op for unit tests.
+    $executeRawUnsafe: vi.fn(async () => 0),
     gamePlayer: {
       findMany: vi.fn(async () =>
         players

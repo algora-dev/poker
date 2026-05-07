@@ -49,6 +49,7 @@
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { recordMoneyEvent } from './moneyLedger';
+import { acquireUserMoneyMutex } from './userMoneyMutex';
 
 export type CloseReason =
   | 'natural_completion'
@@ -173,6 +174,17 @@ export async function closeGameInTx(
 
   const refundedPlayers: ClosedPlayerSummary[] = [];
   let totalRefunded = 0n;
+
+  // Phase 10 [H-04] hardening: acquire the per-user money mutex for every
+  // player in deterministic order BEFORE any balance write. Stable order
+  // (userId asc) avoids deadlocks if two close paths race for overlapping
+  // user sets.
+  const sortedPlayers = game.players
+    .slice()
+    .sort((a: any, b: any) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0));
+  for (const player of sortedPlayers) {
+    await acquireUserMoneyMutex(tx, player.userId);
+  }
 
   for (const player of game.players) {
     const stack = BigInt(player.chipStack ?? 0n);

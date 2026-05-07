@@ -83,6 +83,11 @@ function buildMockTx(initial: {
   const calls: { model: string; method: string; args: any }[] = [];
 
   const tx: any = {
+    // Phase 10 [H-04] hardening: closeGame + processWithdrawal etc.
+    // acquire a per-user advisory lock via $executeRawUnsafe. The mock
+    // returns 0 (no rows) which is fine for tests; real Postgres returns
+    // void from pg_advisory_xact_lock.
+    $executeRawUnsafe: vi.fn(async () => 0),
     gamePlayer: {
       findMany: vi.fn(async (args: any) => {
         calls.push({ model: 'gamePlayer', method: 'findMany', args });

@@ -1,6 +1,29 @@
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { recordHandEvent } from './handLedger';
+import { acquireUserMoneyMutex } from './userMoneyMutex';
+import { checkActiveGameLock } from './activeGameLock';
+
+/**
+ * Phase 10 [H-04] hardening: error class shared by createGame and joinGame
+ * so the API layer can map it to a stable HTTP 409.
+ *
+ * Withdrawal raises its own ActiveGameMoneyLockedError defined in
+ * withdrawal.ts; both share the same `code` and 409 mapping convention.
+ */
+export class GameJoinMoneyLockedError extends Error {
+  readonly code = 'active_game_money_locked' as const;
+  readonly gameId: string;
+  readonly gameStatus: 'waiting' | 'in_progress';
+  constructor(gameId: string, gameStatus: 'waiting' | 'in_progress', message?: string) {
+    super(
+      message ??
+        'Cannot join or create a table while already seated at an active or waiting table.'
+    );
+    this.gameId = gameId;
+    this.gameStatus = gameStatus;
+  }
+}
 
 /**
  * Hard cap on table size for the alpha. Per Phase 6 [M-03] and Gerald audit:
@@ -46,6 +69,22 @@ export async function createGame(
   }
 
   return await prisma.$transaction(async (tx) => {
+    // Phase 10 [H-04] hardening: serialize all money movement for this
+    // user. Blocks any concurrent withdraw / join / deposit-credit until
+    // this tx commits.
+    await acquireUserMoneyMutex(tx, userId);
+
+    // Hard rule: a user with an existing seat at any waiting/in_progress
+    // game cannot start a new one. They must leave the table first.
+    const existingLock = await checkActiveGameLock(tx as any, userId);
+    if (existingLock) {
+      throw new GameJoinMoneyLockedError(
+        existingLock.gameId,
+        existingLock.status,
+        'Cannot create a new table while already seated at an active or waiting table.'
+      );
+    }
+
     // Get user's chip balance
     const chipBalance = await tx.chipBalance.findUnique({
       where: { userId },
@@ -298,6 +337,20 @@ export async function cancelGameBeforeStart(userId: string, gameId: string) {
  */
 export async function joinGame(userId: string, gameId: string, buyInAmount?: bigint) {
   return await prisma.$transaction(async (tx) => {
+    // Phase 10 [H-04] hardening: serialize money movement and reject join
+    // if user is already seated at any other waiting/in_progress game.
+    await acquireUserMoneyMutex(tx, userId);
+
+    const otherSeatLock = await checkActiveGameLock(tx as any, userId);
+    // Allow joining the SAME game (idempotency / re-join after refresh).
+    if (otherSeatLock && otherSeatLock.gameId !== gameId) {
+      throw new GameJoinMoneyLockedError(
+        otherSeatLock.gameId,
+        otherSeatLock.status,
+        'Cannot join this table while still seated at another active or waiting table.'
+      );
+    }
+
     // Get game with players
     const game = await tx.game.findUnique({
       where: { id: gameId },

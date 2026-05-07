@@ -2,16 +2,24 @@
  * Phase 10 [H-04] — Active-game money lock.
  *
  * A user cannot deposit or withdraw while seated at a poker table whose
- * status is 'waiting' OR 'in_progress' AND they still have a non-zero
- * `GamePlayer.chipStack`. A waiting table still has buy-in locked, so
- * blocking only on 'in_progress' was insufficient.
+ * status is 'waiting' OR 'in_progress'. The rule is "seated at an
+ * active/waiting table", NOT "has chips on the table":
+ *
+ *   - All-in players have chipStack=0 mid-hand but are still in the hand;
+ *     they must stay locked until the game closes.
+ *   - Folded players are still seated (the next hand will deal them in)
+ *     and stay locked.
+ *   - Eliminated players are kept locked too — fail-closed default. They
+ *     unlock when closeGame runs and removes them via the cancel/cashout
+ *     path. If an admin needs to unlock an eliminated player early, that's
+ *     an operational override, not a user-facing flow.
  *
  * Single helper used by:
  *   - processWithdrawal (inside the deduct-balance transaction)
+ *   - createGame / joinGame (inside the buy-in deduct transaction)
  *   - createDepositChallenge (before issuing a nonce)
- *   - blockchain credit path (re-check before crediting; queue for manual
- *     review if the user joined a table after authorization but before
- *     confirmations landed)
+ *   - authorizeDeposit (re-check at signed submit time)
+ *   - blockchain credit path (re-check inside the credit transaction)
  *
  * Returns null when the user is free to move money. Returns a structured
  * reason when they are not so callers can surface the same 409 code:
@@ -26,6 +34,7 @@ export interface ActiveGameLockHit {
   gameId: string;
   status: 'waiting' | 'in_progress';
   chipStack: string;
+  position: string;
 }
 
 export type ActiveGameLockResult = null | ActiveGameLockHit;
@@ -33,9 +42,14 @@ export type ActiveGameLockResult = null | ActiveGameLockHit;
 const LOCKED_STATUSES = ['waiting', 'in_progress'] as const;
 
 /**
- * Check if the user has any "money-locked" seat. Pass a Prisma transaction
- * client (`tx`) to compose this with a balance-mutation transaction so
- * there is no race between the check and the deduction.
+ * Check if the user has any seat at a waiting/in-progress game. Pass a
+ * Prisma transaction client (`tx`) to compose this with a balance-mutation
+ * transaction so there is no race between the check and the deduction.
+ *
+ * Phase 10 [H-04] hardening: the rule is "seated", not "has chips". A
+ * player who is all-in (`chipStack=0` but still in the hand), folded but
+ * seated for the next hand, or even eliminated but not yet released,
+ * stays locked until the game closes via closeGame.
  */
 export async function checkActiveGameLock(
   client: { gamePlayer: { findFirst: (args: any) => Promise<any> } },
@@ -45,12 +59,12 @@ export async function checkActiveGameLock(
   const seat = await client.gamePlayer.findFirst({
     where: {
       userId,
-      chipStack: { gt: 0n },
       game: { status: { in: LOCKED_STATUSES as unknown as string[] } },
     },
     select: {
       gameId: true,
       chipStack: true,
+      position: true,
       game: { select: { status: true } },
     },
   });
@@ -62,6 +76,7 @@ export async function checkActiveGameLock(
     gameId: seat.gameId,
     status: seat.game.status as 'waiting' | 'in_progress',
     chipStack: BigInt(seat.chipStack ?? 0n).toString(),
+    position: seat.position ?? 'unknown',
   };
 }
 

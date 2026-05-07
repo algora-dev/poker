@@ -249,6 +249,9 @@ export function buildSimWorld(initial?: Partial<Snapshot>) {
   // $transaction — they share the same backing rows, with snapshot/rollback
   // applied at the $transaction boundary.
   const buildClient = () => ({
+    // Phase 10 [H-04] hardening: stub the per-user money mutex's raw SQL
+    // call. Sim runs are single-threaded so the mutex is a no-op here.
+    $executeRawUnsafe: async () => 0,
     user: {
       findUnique: async (args: any) =>
         state.users.find((r) => matchWhere(r, args.where)) ?? null,

@@ -1,7 +1,15 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../middleware/auth';
-import { createGame, getGame, getActiveGames, getCompletedGames, joinGame, cancelGameBeforeStart } from '../../services/game';
+import {
+  createGame,
+  getGame,
+  getActiveGames,
+  getCompletedGames,
+  joinGame,
+  cancelGameBeforeStart,
+  GameJoinMoneyLockedError,
+} from '../../services/game';
 import { initializeHand, getGameState, atomicStartGame } from '../../services/holdemGame';
 import { processAction } from '../../services/pokerActions';
 import { emitBalanceUpdate, emitGameEvent } from '../../socket';
@@ -78,6 +86,17 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           return reply.code(400).send({
             error: 'Validation failed',
             details: error.errors,
+          });
+        }
+
+        // Phase 10 [H-04] hardening: 409 if user is already seated.
+        if (error instanceof GameJoinMoneyLockedError) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            code: error.code,
+            message: error.message,
+            gameId: error.gameId,
+            gameStatus: error.gameStatus,
           });
         }
 
@@ -260,6 +279,17 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           // No newBalance - not deducted yet
         });
       } catch (error) {
+        // Phase 10 [H-04] hardening: 409 if user is already seated elsewhere.
+        if (error instanceof GameJoinMoneyLockedError) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            code: error.code,
+            message: error.message,
+            gameId: error.gameId,
+            gameStatus: error.gameStatus,
+          });
+        }
+
         if (error instanceof Error) {
           if (
             error.message.includes('not found') ||

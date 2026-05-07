@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { emitBalanceUpdate } from '../socket';
 import { recordMoneyEvent } from './moneyLedger';
 import { checkActiveGameLock } from './activeGameLock';
+import { acquireUserMoneyMutex } from './userMoneyMutex';
 
 /**
  * Structured error class so the route can return a 409 with a stable code.
@@ -89,11 +90,15 @@ export async function processWithdrawal(
 
   // Step 1: Deduct chips and create withdrawal record atomically
   const { withdrawal, balanceBefore } = await prisma.$transaction(async (tx) => {
-    // Phase 10 [H-04]: re-check the active-game lock INSIDE the tx.
-    // Without this, a user could submit /withdraw and /games/:id/join
-    // back-to-back — the check would pass, the join would seat them,
-    // and the deduct would still complete, leaking off-table chips
-    // while leaving table chips behind.
+    // Phase 10 [H-04] hardening: serialize ALL money-moving paths for
+    // this user behind a per-user advisory lock. Any concurrent
+    // withdraw / join / create / deposit-credit for the same userId
+    // will block on this until the current tx commits.
+    await acquireUserMoneyMutex(tx, userId);
+
+    // After we hold the mutex, re-read the active-game lock. The
+    // mutex guarantees we see the FINAL committed state of any
+    // concurrent join/create/credit — no race window.
     const lock = await checkActiveGameLock(tx as any, userId);
     if (lock) {
       throw new ActiveGameMoneyLockedError(lock.gameId, lock.status, lock.message);
