@@ -3,6 +3,26 @@ import { Wallet, Contract, JsonRpcProvider, parseUnits } from 'ethers';
 import { CONFIG } from '../config';
 import { logger } from '../utils/logger';
 import { emitBalanceUpdate } from '../socket';
+import { recordMoneyEvent } from './moneyLedger';
+import { checkActiveGameLock } from './activeGameLock';
+import { acquireUserMoneyMutex } from './userMoneyMutex';
+
+/**
+ * Structured error class so the route can return a 409 with a stable code.
+ */
+export class ActiveGameMoneyLockedError extends Error {
+  readonly code = 'active_game_money_locked' as const;
+  readonly gameId: string;
+  readonly gameStatus: 'waiting' | 'in_progress';
+  constructor(gameId: string, gameStatus: 'waiting' | 'in_progress', message?: string) {
+    super(
+      message ??
+        'Cannot withdraw while seated at an active or waiting table. Leave the table to unlock your balance.'
+    );
+    this.gameId = gameId;
+    this.gameStatus = gameStatus;
+  }
+}
 
 const VAULT_ABI = [
   'function completeWithdrawal(address user, uint256 amount) external',
@@ -48,16 +68,12 @@ export async function processWithdrawal(
     throw new Error(`Insufficient chips. Available: ${available}`);
   }
 
-  // Check user isn't in an active game
-  const activeGame = await prisma.gamePlayer.findFirst({
-    where: {
-      userId,
-      game: { status: 'in_progress' },
-    },
-  });
-
-  if (activeGame) {
-    throw new Error('Cannot withdraw while in an active game. Leave the table first.');
+  // Phase 10 [H-04]: pre-check the active-game money lock. The same
+  // check is repeated INSIDE the deduct transaction below to close the
+  // race window between this read and the balance write.
+  const preLock = await checkActiveGameLock(prisma, userId);
+  if (preLock) {
+    throw new ActiveGameMoneyLockedError(preLock.gameId, preLock.status, preLock.message);
   }
 
   // Check no pending withdrawal exists
@@ -74,6 +90,20 @@ export async function processWithdrawal(
 
   // Step 1: Deduct chips and create withdrawal record atomically
   const { withdrawal, balanceBefore } = await prisma.$transaction(async (tx) => {
+    // Phase 10 [H-04] hardening: serialize ALL money-moving paths for
+    // this user behind a per-user advisory lock. Any concurrent
+    // withdraw / join / create / deposit-credit for the same userId
+    // will block on this until the current tx commits.
+    await acquireUserMoneyMutex(tx, userId);
+
+    // After we hold the mutex, re-read the active-game lock. The
+    // mutex guarantees we see the FINAL committed state of any
+    // concurrent join/create/credit — no race window.
+    const lock = await checkActiveGameLock(tx as any, userId);
+    if (lock) {
+      throw new ActiveGameMoneyLockedError(lock.gameId, lock.status, lock.message);
+    }
+
     const balance = await tx.chipBalance.findUnique({
       where: { userId },
     });
@@ -104,6 +134,21 @@ export async function processWithdrawal(
         balanceAfter: newBalance.chips,
         reference: withdrawal.id,
         notes: `Withdrawal of ${amount.toFixed(2)} mUSD to ${user.walletAddress}`,
+      },
+    });
+
+    // Phase 9 follow-up [item 3]: ledger event for withdrawal request.
+    await recordMoneyEvent(tx as any, {
+      userId,
+      eventType: 'withdrawal_requested',
+      amount: -amountBigInt,
+      balanceBefore: balance.chips,
+      balanceAfter: newBalance.chips,
+      withdrawalId: withdrawal.id,
+      correlationId: `withdrawal:${withdrawal.id}`,
+      payload: {
+        wallet: user.walletAddress,
+        amountMicro: amountBigInt.toString(),
       },
     });
 
@@ -163,6 +208,16 @@ export async function processWithdrawal(
           completedAt: new Date(),
         },
       });
+      // Phase 9 follow-up [item 3]: ledger event for completion.
+      await recordMoneyEvent(prisma as any, {
+        userId,
+        eventType: 'withdrawal_completed',
+        amount: 0n,
+        withdrawalId: withdrawal.id,
+        txHash: tx.hash,
+        correlationId: `withdrawal:${withdrawal.id}`,
+        payload: { blockNumber: receipt.blockNumber },
+      });
 
       logger.info('Withdrawal completed', {
         withdrawalId: withdrawal.id,
@@ -207,6 +262,24 @@ export async function processWithdrawal(
           reference: withdrawal.id,
           notes: `Withdrawal failed — refunded. Error: ${error.message}`,
         },
+      });
+      // Phase 9 follow-up [item 3]: ledger events for failure + refund.
+      await recordMoneyEvent(tx as any, {
+        userId,
+        eventType: 'withdrawal_failed',
+        amount: 0n,
+        withdrawalId: withdrawal.id,
+        correlationId: `withdrawal:${withdrawal.id}`,
+        payload: { error: String(error?.message ?? error) },
+      });
+      await recordMoneyEvent(tx as any, {
+        userId,
+        eventType: 'withdrawal_refund',
+        amount: amountBigInt,
+        balanceBefore: balanceBefore - amountBigInt,
+        balanceAfter: balanceBefore,
+        withdrawalId: withdrawal.id,
+        correlationId: `withdrawal:${withdrawal.id}`,
       });
     });
 

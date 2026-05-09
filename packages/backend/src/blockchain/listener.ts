@@ -2,8 +2,11 @@ import { ethers } from 'ethers';
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
-import { findActiveAuthorization, markAuthorizationUsed } from '../services/wallet';
+import { findActiveAuthorization, consumeAuthorization } from '../services/wallet';
+import { checkActiveGameLock } from '../services/activeGameLock';
+import { acquireUserMoneyMutex } from '../services/userMoneyMutex';
 import { emitBalanceUpdate } from '../socket';
+import { recordMoneyEvent } from '../services/moneyLedger';
 
 const VAULT_ABI = [
   'event Deposit(address indexed user, uint256 amount, uint256 timestamp, uint256 blockNumber)',
@@ -36,11 +39,11 @@ async function creditChips(
   blockNumber: number
 ) {
   try {
-    // Check for active deposit authorization
-    const authorization = await findActiveAuthorization(userAddress);
-
+    // Phase 8 [H-04]: prefer an authorization that's bound to the exact
+    // amount, falling back to a wallet-bound (amount=null) auth.
+    const authorization = await findActiveAuthorization(userAddress, amount);
     if (!authorization) {
-      logger.warn('Deposit attempted without authorization', {
+      logger.warn('Deposit attempted without active authorization', {
         walletAddress: userAddress,
         txHash,
         amount: amount.toString(),
@@ -52,35 +55,65 @@ async function creditChips(
     // Convert mUSD to chips (1:1 ratio, both use 6 decimals)
     const chips = amount;
 
+    // Phase 8 [H-04]: idempotent crediting by txHash + atomic auth consume.
+    // The Deposit table's unique txHash + `tx.deposit.create` will throw on
+    // duplicate, and `consumeAuthorization` returns false if the row was
+    // already consumed by a concurrent request — either way, no double-credit.
+    //
+    // Phase 10 [H-04] hardening: serialize via the per-user money mutex
+    // and abort cleanly when the user is locked. We do NOT create a
+    // user-facing parked-deposit row — just log loudly with full context
+    // so an operator can recover. The deposit is on-chain and replayable;
+    // when the user leaves the table, our normal sync flow will see the
+    // event again, the lock will be clear, and the credit will land.
+    let alreadyProcessed = false;
+    let deferredForActiveGame = false;
+    let creditedNewBalance: string | null = null;
+    let creditedUserId: string | null = null;
     await prisma.$transaction(async (tx) => {
-      // Get user from authorization (not from wallet address)
-      const user = await tx.user.findUnique({
-        where: { id: authorization.userId },
-      });
+      // 1. Hold the per-user money mutex for the duration of this tx so
+      //    no concurrent join/withdraw/deposit-credit races us.
+      await acquireUserMoneyMutex(tx, authorization.userId);
 
-      if (!user) {
-        logger.error('User not found for authorized deposit', {
-          userId: authorization.userId,
-          walletAddress: userAddress,
-        });
+      // 2. Idempotency check: txHash already credited?
+      const existing = await tx.deposit.findUnique({ where: { txHash } });
+      if (existing) {
+        alreadyProcessed = true;
         return;
       }
 
-      // Create or update chip balance
+      // 3. Re-check the active-game lock NOW that we hold the mutex. We
+      //    do this BEFORE consuming the authorization so the auth row
+      //    stays valid for the eventual recovery credit.
+      const lock = await checkActiveGameLock(tx as any, authorization.userId);
+      if (lock) {
+        deferredForActiveGame = true;
+        return;
+      }
+
+      // 4. Atomic auth consume: returns false if another concurrent request
+      //    already consumed the authorization, in which case we abort.
+      const claimed = await consumeAuthorization(tx as any, authorization.id);
+      if (!claimed) {
+        logger.warn('Authorization already consumed by concurrent request', {
+          authorizationId: authorization.id,
+          txHash,
+        });
+        alreadyProcessed = true;
+        return;
+      }
+
+      const user = await tx.user.findUnique({ where: { id: authorization.userId } });
+      if (!user) {
+        throw new Error('user_not_found_for_authorized_deposit');
+      }
+
       const chipBalance = await tx.chipBalance.upsert({
         where: { userId: user.id },
-        create: {
-          userId: user.id,
-          chips,
-        },
-        update: {
-          chips: {
-            increment: chips,
-          },
-        },
+        create: { userId: user.id, chips },
+        update: { chips: { increment: chips } },
       });
 
-      // Record deposit in ledger
       await tx.deposit.create({
         data: {
           userId: user.id,
@@ -91,7 +124,6 @@ async function creditChips(
         },
       });
 
-      // Create audit log
       await tx.chipAudit.create({
         data: {
           userId: user.id,
@@ -104,25 +136,87 @@ async function creditChips(
         },
       });
 
-      // Mark authorization as used
-      await markAuthorizationUsed(authorization.id);
-
-      logger.info('Chips credited successfully', {
+      // Phase 9 follow-up [item 3]: deposits land in the dedicated
+      // off-table MoneyEvent ledger (no Game FK), not in HandEvent.
+      await recordMoneyEvent(tx as any, {
         userId: user.id,
+        eventType: 'deposit',
+        amount: chips,
+        balanceBefore: chipBalance.chips - chips,
+        balanceAfter: chipBalance.chips,
+        txHash,
+        authorizationId: authorization.id,
+        correlationId: txHash,
+        payload: {
+          blockNumber,
+          walletAddress: userAddress.toLowerCase(),
+          nonce: authorization.nonce,
+        },
+      });
+
+      creditedNewBalance = chipBalance.chips.toString();
+      creditedUserId = user.id;
+    });
+
+    if (alreadyProcessed) return;
+    if (deferredForActiveGame) {
+      // Phase 10 [H-04] hardening: write a Deposit row with confirmed=false
+      // ONLY for idempotency (so historical re-sync does not loop on this
+      // txHash forever). The authorization is intentionally NOT consumed.
+      //
+      // This is operational recovery state, NOT a user-facing parked
+      // deposit feature. The user should be informed via support that
+      // they sent funds while seated and that operator action is required
+      // to credit them after they leave the table. There is intentionally
+      // no auto-credit job in this branch — see audits writeup for the
+      // documented manual recovery procedure.
+      try {
+        await prisma.deposit.create({
+          data: {
+            userId: authorization.userId,
+            amount,
+            txHash,
+            blockNumber,
+            confirmed: false,
+          },
+        });
+      } catch (createErr: any) {
+        // P2002 = unique txHash race with another listener; safe to ignore.
+        if (!(createErr?.code === 'P2002' || /Unique/i.test(createErr?.message ?? ''))) {
+          logger.error('Failed to write deferred-deposit row', {
+            txHash,
+            error: createErr?.message,
+          });
+        }
+      }
+      logger.warn(
+        'DEPOSIT_DEFERRED_ACTIVE_GAME: user is seated at an active/waiting game; deposit NOT credited and authorization NOT consumed; manual operator recovery required',
+        {
+          userId: authorization.userId,
+          walletAddress: userAddress,
+          txHash,
+          amount: amount.toString(),
+          blockNumber,
+          authorizationId: authorization.id,
+        }
+      );
+      return;
+    }
+    if (creditedUserId && creditedNewBalance) {
+      logger.info('Chips credited successfully', {
+        userId: creditedUserId,
         walletAddress: userAddress,
         amount: amount.toString(),
         chips: chips.toString(),
         txHash,
         blockNumber,
-        newBalance: chipBalance.chips.toString(),
+        newBalance: creditedNewBalance,
       });
-
-      // Emit real-time balance update to user
-      emitBalanceUpdate(user.id, chipBalance.chips.toString());
-    });
+      emitBalanceUpdate(creditedUserId, creditedNewBalance);
+    }
   } catch (error) {
     logger.error('Failed to credit chips', {
-      error,
+      error: (error as Error).message,
       userAddress,
       amount: amount.toString(),
       txHash,
@@ -311,4 +405,18 @@ export function getListenerStatus() {
     network: CONFIG.CHAIN_ID,
     confirmations: CONFIG.CONFIRMATIONS,
   };
+}
+
+/**
+ * Phase 10 [H-04] hardening test hook — lets the harness drive the credit
+ * path without going through ethers.js + a live chain. Same logic as the
+ * confirmations path uses.
+ */
+export async function creditChipsForTesting(
+  userAddress: string,
+  amount: bigint,
+  txHash: string,
+  blockNumber: number
+) {
+  return creditChips(userAddress, amount, txHash, blockNumber);
 }

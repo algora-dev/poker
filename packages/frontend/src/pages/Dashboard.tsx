@@ -15,6 +15,14 @@ export default function Dashboard() {
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const [recentGames, setRecentGames] = useState<any[]>([]);
+  // Phase 10 [H-04]: deposit/withdraw locked while user is seated at
+  // any waiting/in_progress table. Backend enforces too; this is UX.
+  const [moneyLock, setMoneyLock] = useState<{
+    locked: boolean;
+    gameId?: string;
+    gameStatus?: 'waiting' | 'in_progress';
+    message?: string;
+  }>({ locked: false });
   const { isConnected } = useSocket();
 
   useEffect(() => {
@@ -28,6 +36,9 @@ export default function Dashboard() {
     };
     fetchUserData();
     loadRecentGames();
+    loadMoneyLock();
+    const lockInterval = setInterval(loadMoneyLock, 15_000);
+    return () => clearInterval(lockInterval);
   }, []);
 
   const loadRecentGames = async () => {
@@ -35,6 +46,16 @@ export default function Dashboard() {
       const response = await api.get('/api/games/history');
       setRecentGames(response.data.games?.slice(0, 5) || []);
     } catch (_) {}
+  };
+
+  const loadMoneyLock = async () => {
+    try {
+      const response = await api.get('/api/wallet/money-lock');
+      setMoneyLock(response.data);
+    } catch (_) {
+      // Fail-closed: if the check itself fails, lock the buttons.
+      setMoneyLock({ locked: true, message: 'Could not check active-game status' });
+    }
   };
 
   if (!user) {
@@ -108,32 +129,40 @@ export default function Dashboard() {
         {/* Action Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <button
-            onClick={() => setShowDepositModal(true)}
-            className="rounded-xl p-5 text-left transition group border"
+            disabled={moneyLock.locked}
+            onClick={() => !moneyLock.locked && setShowDepositModal(true)}
+            title={moneyLock.locked ? moneyLock.message ?? 'Locked while in an active table' : ''}
+            className={`rounded-xl p-5 text-left transition group border ${moneyLock.locked ? 'opacity-50 cursor-not-allowed' : ''}`}
             style={{ background: 'linear-gradient(135deg, rgba(18,206,236,0.08), transparent)', borderColor: 'rgba(18,206,236,0.15)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(18,206,236,0.35)'; }}
+            onMouseEnter={(e) => { if (!moneyLock.locked) e.currentTarget.style.borderColor = 'rgba(18,206,236,0.35)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(18,206,236,0.15)'; }}
           >
             <img src="/assets/musd-logo.png" alt="" className="w-8 h-8 mb-3" />
             <h3 className="text-white font-bold mb-1">Deposit</h3>
-            <p className="text-gray-500 text-sm">Add chips with mUSD on Linea</p>
+            <p className="text-gray-500 text-sm">
+              {moneyLock.locked ? 'Locked: leave your active table first' : 'Add chips with mUSD on Linea'}
+            </p>
             <div className="mt-3 text-sm font-medium group-hover:translate-x-1 transition-transform" style={{ color: '#12ceec' }}>
-              Deposit →
+              {moneyLock.locked ? 'Locked' : 'Deposit →'}
             </div>
           </button>
 
           <button
-            onClick={() => setShowWithdrawModal(true)}
-            className="rounded-xl p-5 text-left transition group border"
+            disabled={moneyLock.locked}
+            onClick={() => !moneyLock.locked && setShowWithdrawModal(true)}
+            title={moneyLock.locked ? moneyLock.message ?? 'Locked while in an active table' : ''}
+            className={`rounded-xl p-5 text-left transition group border ${moneyLock.locked ? 'opacity-50 cursor-not-allowed' : ''}`}
             style={{ background: 'linear-gradient(135deg, rgba(156,81,255,0.08), transparent)', borderColor: 'rgba(156,81,255,0.15)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(156,81,255,0.35)'; }}
+            onMouseEnter={(e) => { if (!moneyLock.locked) e.currentTarget.style.borderColor = 'rgba(156,81,255,0.35)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(156,81,255,0.15)'; }}
           >
             <img src="/assets/musd-logo.png" alt="" className="w-8 h-8 mb-3" />
             <h3 className="text-white font-bold mb-1">Withdraw</h3>
-            <p className="text-gray-500 text-sm">Cash out chips to your wallet</p>
+            <p className="text-gray-500 text-sm">
+              {moneyLock.locked ? 'Locked: leave your active table first' : 'Cash out chips to your wallet'}
+            </p>
             <div className="mt-3 text-sm font-medium group-hover:translate-x-1 transition-transform" style={{ color: '#9c51ff' }}>
-              Withdraw →
+              {moneyLock.locked ? 'Locked' : 'Withdraw →'}
             </div>
           </button>
 

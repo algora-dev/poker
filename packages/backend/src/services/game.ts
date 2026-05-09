@@ -1,5 +1,36 @@
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
+import { recordHandEvent } from './handLedger';
+import { acquireUserMoneyMutex } from './userMoneyMutex';
+import { checkActiveGameLock } from './activeGameLock';
+
+/**
+ * Phase 10 [H-04] hardening: error class shared by createGame and joinGame
+ * so the API layer can map it to a stable HTTP 409.
+ *
+ * Withdrawal raises its own ActiveGameMoneyLockedError defined in
+ * withdrawal.ts; both share the same `code` and 409 mapping convention.
+ */
+export class GameJoinMoneyLockedError extends Error {
+  readonly code = 'active_game_money_locked' as const;
+  readonly gameId: string;
+  readonly gameStatus: 'waiting' | 'in_progress';
+  constructor(gameId: string, gameStatus: 'waiting' | 'in_progress', message?: string) {
+    super(
+      message ??
+        'Cannot join or create a table while already seated at an active or waiting table.'
+    );
+    this.gameId = gameId;
+    this.gameStatus = gameStatus;
+  }
+}
+
+/**
+ * Hard cap on table size for the alpha. Per Phase 6 [M-03] and Gerald audit:
+ * 9-handed UX/turn logic has not been deliberately tested; reject creation
+ * attempts above this cap server-side regardless of client-side intent.
+ */
+export const MAX_TABLE_SIZE = 8;
 
 /**
  * Create a new game
@@ -11,8 +42,20 @@ export async function createGame(
   maxBuyIn: bigint,
   smallBlind: bigint,
   bigBlind: bigint,
-  creatorBuyIn?: bigint
+  creatorBuyIn?: bigint,
+  // Phase 6 [M-03][M-04]: optional max table size (clamped to MAX_TABLE_SIZE)
+  // and explicit auto-start opt-in (default false). Hosts must opt in.
+  options?: { maxPlayers?: number; autoStart?: boolean }
 ) {
+  // Validate maxPlayers up-front so we never persist an invalid table size.
+  const requestedMax = options?.maxPlayers ?? MAX_TABLE_SIZE;
+  if (!Number.isInteger(requestedMax) || requestedMax < 2) {
+    throw new Error('maxPlayers must be an integer >= 2');
+  }
+  if (requestedMax > MAX_TABLE_SIZE) {
+    throw new Error(`maxPlayers cannot exceed ${MAX_TABLE_SIZE}`);
+  }
+  const autoStart = options?.autoStart === true;
   const buyIn = creatorBuyIn || minBuyIn;
   if (buyIn < minBuyIn || buyIn > maxBuyIn) {
     throw new Error('Creator buy-in must be within the min/max range');
@@ -26,6 +69,22 @@ export async function createGame(
   }
 
   return await prisma.$transaction(async (tx) => {
+    // Phase 10 [H-04] hardening: serialize all money movement for this
+    // user. Blocks any concurrent withdraw / join / deposit-credit until
+    // this tx commits.
+    await acquireUserMoneyMutex(tx, userId);
+
+    // Hard rule: a user with an existing seat at any waiting/in_progress
+    // game cannot start a new one. They must leave the table first.
+    const existingLock = await checkActiveGameLock(tx as any, userId);
+    if (existingLock) {
+      throw new GameJoinMoneyLockedError(
+        existingLock.gameId,
+        existingLock.status,
+        'Cannot create a new table while already seated at an active or waiting table.'
+      );
+    }
+
     // Get user's chip balance
     const chipBalance = await tx.chipBalance.findUnique({
       where: { userId },
@@ -50,7 +109,10 @@ export async function createGame(
         createdBy: userId,
         smallBlind,
         bigBlind,
-        maxPlayers: 9,
+        // Phase 6 [M-03]: hard-capped at MAX_TABLE_SIZE (8) above.
+        maxPlayers: requestedMax,
+        // Phase 6 [M-04]: opt-in auto-start. Default off.
+        autoStart,
         minBuyIn,
         maxBuyIn,
         status: 'waiting',
@@ -90,6 +152,31 @@ export async function createGame(
       userId,
       minBuyIn: minBuyIn.toString(),
       maxBuyIn: maxBuyIn.toString(),
+    });
+
+    // Phase 7 [M-05]: ledger event for game lifecycle.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      userId,
+      eventType: 'game_created',
+      payload: {
+        name,
+        minBuyIn: minBuyIn.toString(),
+        maxBuyIn: maxBuyIn.toString(),
+        smallBlind: smallBlind.toString(),
+        bigBlind: bigBlind.toString(),
+        maxPlayers: requestedMax,
+        autoStart,
+      },
+    });
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      userId,
+      eventType: 'player_joined',
+      payload: {
+        seatIndex: 0,
+        buyIn: buyIn.toString(),
+      },
     });
 
     return {
@@ -222,58 +309,25 @@ export async function cancelGameBeforeStart(userId: string, gameId: string) {
       throw new Error('No players found in game');
     }
 
-    // Refund buy-in to creator
-    const chipBalance = await tx.chipBalance.findUnique({
-      where: { userId: creator.userId },
+    // Phase 10 [H-01]: route through canonical closeGame helper.
+    const { closeGameInTx } = await import('./closeGame');
+    const closed = await closeGameInTx(tx, {
+      gameId,
+      reason: 'pre_start_cancel',
+      notes: `Cancelled game before start: ${game.name}`,
     });
 
-    if (!chipBalance) {
-      throw new Error('Chip balance not found');
-    }
-
-    const refundAmount = creator.chipStack;
-
-    const newBalance = await tx.chipBalance.update({
-      where: { userId: creator.userId },
-      data: {
-        chips: {
-          increment: refundAmount,
-        },
-      },
-    });
-
-    // Audit log
-    await tx.chipAudit.create({
-      data: {
-        userId: creator.userId,
-        operation: 'game_refund',
-        amountDelta: refundAmount,
-        balanceBefore: chipBalance.chips,
-        balanceAfter: newBalance.chips,
-        reference: gameId,
-        notes: `Cancelled game before start: ${game.name}`,
-      },
-    });
-
-    // Mark game as cancelled
-    await tx.game.update({
-      where: { id: gameId },
-      data: {
-        status: 'cancelled',
-        completedAt: new Date(),
-      },
-    });
-
+    const refunded = closed.refundedPlayers[0];
     logger.info('Game cancelled by creator', {
       gameId,
       userId,
-      refundAmount: refundAmount.toString(),
+      refundAmount: refunded?.refundAmount.toString() ?? '0',
     });
 
     return {
       success: true,
-      refundAmount: refundAmount.toString(),
-      newBalance: newBalance.chips.toString(),
+      refundAmount: (refunded?.refundAmount ?? 0n).toString(),
+      newBalance: (refunded?.newBalance ?? 0n).toString(),
     };
   });
 }
@@ -283,6 +337,20 @@ export async function cancelGameBeforeStart(userId: string, gameId: string) {
  */
 export async function joinGame(userId: string, gameId: string, buyInAmount?: bigint) {
   return await prisma.$transaction(async (tx) => {
+    // Phase 10 [H-04] hardening: serialize money movement and reject join
+    // if user is already seated at any other waiting/in_progress game.
+    await acquireUserMoneyMutex(tx, userId);
+
+    const otherSeatLock = await checkActiveGameLock(tx as any, userId);
+    // Allow joining the SAME game (idempotency / re-join after refresh).
+    if (otherSeatLock && otherSeatLock.gameId !== gameId) {
+      throw new GameJoinMoneyLockedError(
+        otherSeatLock.gameId,
+        otherSeatLock.status,
+        'Cannot join this table while still seated at another active or waiting table.'
+      );
+    }
+
     // Get game with players
     const game = await tx.game.findUnique({
       where: { id: gameId },
@@ -379,6 +447,17 @@ export async function joinGame(userId: string, gameId: string, buyInAmount?: big
       userId,
       buyIn: buyIn.toString(),
       newBalance: updatedBalance.chips.toString(),
+    });
+
+    // Phase 7 [M-05]: ledger event for join.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      userId,
+      eventType: 'player_joined',
+      payload: {
+        seatIndex: game.players.length,
+        buyIn: buyIn.toString(),
+      },
     });
 
     return {

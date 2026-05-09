@@ -39,6 +39,11 @@ export const CONFIG = {
   // In production => MUST be set explicitly; otherwise no cross-origin requests allowed.
   CORS_ORIGINS: process.env.CORS_ORIGINS || '',
 
+  // Test-only: bypass the global 300/min/IP rate-limit so the bot harness
+  // can drive the backend at high tempo. Per-route limits (signup, login,
+  // action) still apply. Refused in production.
+  HARNESS_BYPASS_GLOBAL_RATELIMIT: process.env.HARNESS_BYPASS_GLOBAL_RATELIMIT === '1',
+
   // Optional
   REDIS_URL: process.env.REDIS_URL,
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
@@ -61,6 +66,12 @@ for (const varName of requiredVars) {
   if (!CONFIG[varName as keyof typeof CONFIG]) {
     throw new Error(`Missing required environment variable: ${varName}`);
   }
+}
+
+// Production safety: never allow the harness rate-limit bypass in prod,
+// even if the env var leaks in. This is a test-only escape hatch.
+if (CONFIG.NODE_ENV === 'production' && CONFIG.HARNESS_BYPASS_GLOBAL_RATELIMIT) {
+  throw new Error('HARNESS_BYPASS_GLOBAL_RATELIMIT must not be set in production');
 }
 
 // Admin secret hardening: required and strong in production.

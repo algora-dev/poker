@@ -1,12 +1,17 @@
 import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { createDeck, shuffleDeck, dealCards, Card } from './poker/deck';
+import { recordHandEvent, buildDeckCommitment } from './handLedger';
 
 /**
- * Initialize a new hand - deal cards, post blinds
+ * Initialize a new hand - deal cards, post blinds.
+ *
+ * Pass a `parentTx` to participate in an existing transaction (used by the
+ * Phase 5 atomic game start so status flip + first hand init are committed
+ * together). Without parentTx, opens its own transaction.
  */
-export async function initializeHand(gameId: string) {
-  return await prisma.$transaction(async (tx) => {
+export async function initializeHand(gameId: string, parentTx?: any) {
+  const run = async (tx: any) => {
     const game = await tx.game.findUnique({
       where: { id: gameId },
       include: {
@@ -177,8 +182,113 @@ export async function initializeHand(gameId: string) {
 
     logger.info(`HAND INIT #${handNumber}: pot=${hand.pot.toString()} bet=${bbAmount.toString()} dealer=${game.dealerIndex} sb=${smallBlindIndex}(${sbPlayer.userId.slice(-6)}) bb=${bigBlindIndex}(${bbPlayer.userId.slice(-6)}) first=${firstToActIndex} active=${numActive}`);
 
+    // Phase 7 [M-05]: ledger events for hand start, deck commitment, blinds.
+    // No private cards in any of these payloads (privacy gate enforces it).
+    const deckCommitment = await buildDeckCommitment(JSON.stringify(deck));
+    await recordHandEvent(tx, {
+      gameId,
+      handId: hand.id,
+      eventType: 'hand_started',
+      payload: {
+        handNumber,
+        dealerIndex: game.dealerIndex,
+        smallBlindSeat: smallBlindIndex,
+        bigBlindSeat: bigBlindIndex,
+        firstToActSeat: firstToActIndex,
+        activePlayers: numActive,
+      },
+    });
+    await recordHandEvent(tx, {
+      gameId,
+      handId: hand.id,
+      eventType: 'deck_committed',
+      payload: {
+        // Hash only — the actual deck order is committed in the DB and is
+        // verifiable post-hand by hashing the persisted Hand.deck again.
+        deckHash: deckCommitment,
+        algorithm: 'sha256',
+        deckCardCount: deck.length,
+      },
+    });
+    await recordHandEvent(tx, {
+      gameId,
+      handId: hand.id,
+      userId: sbPlayer.userId,
+      eventType: 'blinds_posted',
+      payload: {
+        seat: smallBlindIndex,
+        role: 'small_blind',
+        amount: sbAmount.toString(),
+        position: sbPosition,
+      },
+    });
+    await recordHandEvent(tx, {
+      gameId,
+      handId: hand.id,
+      userId: bbPlayer.userId,
+      eventType: 'blinds_posted',
+      payload: {
+        seat: bigBlindIndex,
+        role: 'big_blind',
+        amount: bbAmount.toString(),
+        position: bbPosition,
+      },
+    });
+
     return hand;
-  });
+  };
+  if (parentTx) return run(parentTx);
+  return await prisma.$transaction(run);
+}
+
+/**
+ * Atomically transition a game from 'waiting' to 'in_progress' and initialize
+ * the first hand in ONE transaction. Per Phase 5 [H-05]:
+ *   - status flip is guarded (status: 'waiting') -> idempotent under races
+ *   - hand init runs INSIDE the same transaction -> any failure rolls back
+ *   - returns { ok: true, hand } on success
+ *   - returns { ok: false, code: 'already_started' | 'init_failed', error? }
+ *     on a clean rejection. Caller decides how to surface to the client.
+ *
+ * Accepts an injectable prismaClient so unit tests can drive it without a DB.
+ */
+export async function atomicStartGame(
+  gameId: string,
+  client: { $transaction: (fn: (tx: any) => Promise<any>) => Promise<any> } = prisma
+): Promise<
+  | { ok: true; hand: any }
+  | { ok: false; code: 'already_started'; message: string }
+  | { ok: false; code: 'init_failed'; message: string; error?: any }
+> {
+  try {
+    const hand = await client.$transaction(async (tx: any) => {
+      const flip = await tx.game.updateMany({
+        where: { id: gameId, status: 'waiting' },
+        data: { status: 'in_progress', startedAt: new Date() },
+      });
+      if (flip.count === 0) {
+        const err: any = new Error('already_started');
+        err.__code = 'already_started';
+        throw err;
+      }
+      return await initializeHand(gameId, tx);
+    });
+    return { ok: true, hand };
+  } catch (err: any) {
+    if (err?.__code === 'already_started') {
+      return {
+        ok: false,
+        code: 'already_started',
+        message: 'Game already started or completed',
+      };
+    }
+    return {
+      ok: false,
+      code: 'init_failed',
+      message: err?.message ?? 'Failed to initialize first hand',
+      error: err,
+    };
+  }
 }
 
 /**

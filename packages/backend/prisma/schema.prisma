@@ -76,12 +76,17 @@ model Game {
   id          String    @id @default(cuid())
   name        String
   createdBy   String
-  maxPlayers  Int       @default(9)
+  // Phase 6 [M-03]: hard cap at 8 players. 9-handed support requires explicit
+  // testing of UX/turn logic and is not in scope for the alpha.
+  maxPlayers  Int       @default(8)
   minBuyIn    BigInt
   maxBuyIn    BigInt
   smallBlind  BigInt    @default(500000) // 0.5 chips in 6 decimals
   bigBlind    BigInt    @default(1000000) // 1.0 chips in 6 decimals
   status      String    @default("waiting") // waiting, in_progress, completed
+  // Phase 6 [M-04]: opt-in auto-start. Default off so a host has to explicitly
+  // enable it. The auto-start cron job only fires for games with autoStart=true.
+  autoStart   Boolean   @default(false)
   currentHandId String?   // Current active hand
   dealerIndex Int       @default(0) // Button position
   blindLevel  Int       @default(0) // Current blind level index
@@ -92,6 +97,7 @@ model Game {
 
   players GamePlayer[]
   hands   Hand[]
+  events  HandEvent[]
 
   @@index([status])
   @@index([createdAt])
@@ -128,6 +134,10 @@ model Hand {
   currentBet BigInt   @default(0) // Current bet to call
   activePlayerIndex Int @default(0) // Whose turn it is
   turnStartedAt DateTime? // When current player's turn began
+  // Optimistic-concurrency counter. Incremented atomically each time an
+  // action is applied so duplicate/parallel requests cannot double-apply.
+  // See audits/t3-poker/06-dave-fix-prompt.md Phase 3.
+  version    Int      @default(0)
   winnerIds  String   @default("[]") // JSON array of user IDs
   stage      String   @default("preflop") // preflop, flop, turn, river, showdown, completed
   createdAt  DateTime @default(now())
@@ -138,6 +148,98 @@ model Hand {
 
   @@index([gameId])
   @@index([handNumber])
+}
+
+// Phase 7 [M-05]: append-only hand/game event ledger. Sufficient to
+// reconstruct any hand internally and explain why chips moved. Distinct from
+// AppLog (operational logs) and ChipAudit (off-table balance ledger).
+//
+// Rules:
+//  - Append-only: rows are inserted, never updated or deleted.
+//  - Sequence is per-(game, hand) and increments monotonically.
+//  - Public events (during an active hand) MUST NOT include private cards.
+//  - Hand-completion events MAY include hole cards once the hand is over.
+//  - payload is a JSON string (Postgres JSONB would be nicer but keeps the
+//    existing storage convention used elsewhere in this schema).
+//  - correlationId groups events from a single request/action so disputes
+//    can be replayed end-to-end.
+model HandEvent {
+  id             String   @id @default(cuid())
+  gameId         String
+  game           Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  handId         String?  // Null for game-level events (game_created, game_completed)
+  userId         String?  // Null for events not attributable to one player
+  // Phase 9 follow-up [item 4]: per-scope sequence uniqueness. scopeId is
+  // 'hand:<handId>' for hand-scoped events and 'game:<gameId>' for
+  // game-scoped events. Postgres treats NULL handId as distinct in unique
+  // indexes, so the old (gameId, handId, sequenceNumber) unique did NOT
+  // protect game-level events. With a non-null scopeId, the unique is real.
+  scopeId        String
+  sequenceNumber Int      // Monotonic per scopeId
+  eventType      String   // See PHASE7_EVENT_TYPES in src/services/handLedger.ts
+  payload        String   @default("{}") // JSON string
+  correlationId  String?  // Groups events from one request/action chain
+  serverTime     DateTime @default(now())
+
+  @@index([gameId])
+  @@index([handId])
+  @@index([eventType])
+  @@index([correlationId])
+  @@index([scopeId])
+  @@unique([scopeId, sequenceNumber])
+}
+
+// Phase 9 follow-up [item 3]: off-table money ledger. Distinct from
+// HandEvent (game/hand only) and ChipAudit (legacy off-table audit). Holds
+// deposit, withdrawal, refund, buy-in, cashout, admin_adjustment events.
+// No FK to Game so deposits/withdrawals can be recorded without a Game row.
+model MoneyEvent {
+  id              String   @id @default(cuid())
+  userId          String
+  eventType       String   // 'deposit' | 'withdrawal' | 'withdrawal_refund' | 'game_buy_in' | 'game_cashout' | 'game_cancel_refund' | 'admin_adjustment'
+  amount          BigInt   // Positive = chips into user, negative = chips out of user
+  balanceBefore   BigInt?
+  balanceAfter    BigInt?
+  gameId          String?  // Optional reference (NOT a FK — keep this table free of cascade weirdness)
+  handId          String?
+  txHash          String?
+  withdrawalId    String?
+  depositId       String?
+  authorizationId String?
+  payload         String   @default("{}")
+  correlationId   String?
+  serverTime      DateTime @default(now())
+
+  @@index([userId])
+  @@index([eventType])
+  @@index([txHash])
+  @@index([withdrawalId])
+  @@index([correlationId])
+  @@index([gameId])
+  @@index([serverTime])
+}
+
+// Phase 9 follow-up [item 2]: server-issued deposit challenges. Persisted
+// the moment the server issues a challenge, so the signed-submit step
+// REQUIRES a matching server-side row. Clients can no longer forge
+// canonical challenges with arbitrary nonces or far-future expiries.
+model PendingDepositChallenge {
+  id              String   @id @default(cuid())
+  userId          String
+  walletAddress   String
+  nonce           String   @unique
+  chainId         Int
+  contractAddress String
+  amount          BigInt?
+  issuedAt        DateTime @default(now())
+  expiresAt       DateTime
+  used            Boolean  @default(false)
+  usedAt          DateTime?
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+  @@index([walletAddress])
+  @@index([used, expiresAt])
 }
 
 // Player actions within a hand
@@ -174,21 +276,34 @@ model ChipAudit {
   @@index([createdAt])
 }
 
-// Deposit authorization (10min window to deposit from specific wallet)
+// Deposit authorization. Phase 8 [H-04]: tightly bound to (userId, wallet,
+// nonce, chainId, contractAddress, optional amount, expiresAt). Single-use
+// enforced atomically when a matching on-chain deposit is credited.
 model DepositAuthorization {
-  id            String   @id @default(cuid())
-  userId        String
-  walletAddress String   @unique // Only one active authorization per wallet
-  signature     String   // User's signature proving wallet ownership
-  message       String   // Message that was signed
-  expiresAt     DateTime
-  used          Boolean  @default(false)
-  usedAt        DateTime?
-  createdAt     DateTime @default(now())
+  id              String   @id @default(cuid())
+  userId          String
+  // Phase 8: walletAddress is no longer @unique (multiple pending challenges
+  // per wallet are allowed, distinguished by nonce). Replays are blocked by
+  // single-use of `nonce` (unique below).
+  walletAddress   String
+  signature       String   // User's signature over the canonical challenge string
+  message         String   // Exact challenge string the user signed (server-issued)
+  // Phase 8 [H-04]: structured binding fields. The server issues these and
+  // bakes them into `message` so the signature is bound to a specific intent.
+  nonce           String   @unique // Server-issued one-time nonce; single-use
+  chainId         Int      // EVM chain id this authorization is valid on
+  contractAddress String   // Vault contract this authorization targets
+  amount          BigInt?  // Optional amount binding (null = wallet/user-bound only)
+  issuedAt        DateTime @default(now())
+  expiresAt       DateTime
+  used            Boolean  @default(false)
+  usedAt          DateTime?
+  createdAt       DateTime @default(now())
 
   @@index([userId])
   @@index([walletAddress])
   @@index([expiresAt])
+  @@index([used, expiresAt])
   @@map("deposit_authorizations")
 }
 

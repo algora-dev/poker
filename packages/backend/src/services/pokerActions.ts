@@ -1,7 +1,8 @@
-import { prisma } from '../db/client';
+﻿import { prisma } from '../db/client';
 import { logger } from '../utils/logger';
 import { evaluateHand, compareHands } from './poker/handEvaluator';
 import { dealCards } from './poker/deck';
+import { recordHandEvent } from './handLedger';
 
 type ActionType = 'fold' | 'check' | 'call' | 'raise' | 'all-in';
 
@@ -67,6 +68,26 @@ export async function processAction(
       throw new Error('Player not found in game');
     }
 
+    // PHASE 3 [H-02]: optimistic concurrency guard.
+    // Atomically claim the right to advance this turn before any state
+    // mutation. The guard requires the same hand id, active player index,
+    // stage, AND version we read above. If 0 rows match, another concurrent
+    // request already advanced the turn (or the stage/version moved) and
+    // this request is stale -> reject with a clear, retry-safe error.
+    // See audits/t3-poker/06-dave-fix-prompt.md Phase 3.
+    const guard = await tx.hand.updateMany({
+      where: {
+        id: currentHand.id,
+        activePlayerIndex: currentHand.activePlayerIndex,
+        stage: currentHand.stage,
+        version: currentHand.version,
+      },
+      data: { version: { increment: 1 } },
+    });
+    if (guard.count === 0) {
+      throw new Error('Stale action - turn already advanced');
+    }
+
     let actionAmount = BigInt(0);
     let newPot = currentHand.pot;
     let newCurrentBet = currentHand.currentBet;
@@ -116,7 +137,7 @@ export async function processAction(
           };
         }
 
-        // Multiple players still active — find next active player
+        // Multiple players still active â€” find next active player
         {
           const currentPlayerIndex = freshPlayers.findIndex(p => p.userId === userId);
           const numPlayers = freshPlayers.length;
@@ -176,7 +197,7 @@ export async function processAction(
           where: {
             handId: currentHand.id,
             userId,
-            stage: currentHand.stage, // 🎯 Current betting round only
+            stage: currentHand.stage, // ðŸŽ¯ Current betting round only
           },
           _sum: { amount: true },
         });
@@ -196,7 +217,7 @@ export async function processAction(
           where: {
             handId: currentHand.id,
             userId,
-            stage: currentHand.stage, // 🎯 Current betting round only
+            stage: currentHand.stage, // ðŸŽ¯ Current betting round only
           },
           _sum: { amount: true },
         });
@@ -290,7 +311,15 @@ export async function processAction(
         }
         playerChipStack -= actionAmount;
         newPot += actionAmount;
-        newCurrentBet = raiseTotalBigInt;
+
+        // PHASE 2 [H-01]: currentBet must reflect ACTUAL contribution after
+        // stack capping, never the requested raise target. A short all-in
+        // can only push currentBet to what the player actually paid.
+        // See audits/t3-poker/06-dave-fix-prompt.md Phase 2.
+        const actualTotalContribution = raiseAlreadyIn + actionAmount;
+        if (actualTotalContribution > currentHand.currentBet) {
+          newCurrentBet = actualTotalContribution;
+        }
         break;
       }
 
@@ -303,9 +332,13 @@ export async function processAction(
         userId,
         action,
         amount: actionAmount,
-        stage: currentHand.stage, // 🎯 Record which betting round this action belongs to
+        stage: currentHand.stage, // ðŸŽ¯ Record which betting round this action belongs to
       },
     });
+
+    // Capture before-state for the ledger event before we mutate the player.
+    const stackBefore = player.chipStack;
+    const potBefore = currentHand.pot;
 
     // Update player
     await tx.gamePlayer.update({
@@ -314,6 +347,28 @@ export async function processAction(
         chipStack: playerChipStack,
         position: playerPosition,
       },
+    });
+
+    // Phase 7 [M-05]: action_applied ledger event with before/after state.
+    // No private cards in this payload â€” ledger privacy gate enforces it.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      handId: currentHand.id,
+      userId,
+      eventType: 'action_applied',
+      payload: {
+        action,
+        amount: actionAmount.toString(),
+        stage: currentHand.stage,
+        activePlayerIndex: currentHand.activePlayerIndex,
+        stackBefore: stackBefore.toString(),
+        stackAfter: playerChipStack.toString(),
+        potBefore: potBefore.toString(),
+        potAfter: newPot.toString(),
+        currentBetAfter: newCurrentBet.toString(),
+        positionAfter: playerPosition,
+      },
+      correlationId: `act:${currentHand.id}:${currentHand.version + 1}`,
     });
 
     const t2 = Date.now();
@@ -356,6 +411,20 @@ export async function processAction(
           data: { board: JSON.stringify(board), deck: JSON.stringify(deck.slice(deckIdx)), pot: newPot, stage: 'river' },
         });
 
+        // Phase 7 [M-05]: ledger event for the fast-forward to river.
+        // Board cards are public once revealed, so they may appear here.
+        await recordHandEvent(tx, {
+          gameId: game.id,
+          handId: currentHand.id,
+          eventType: 'street_advanced',
+          payload: {
+            fromStage: currentHand.stage,
+            toStage: 'river',
+            allInFastForward: true,
+            board,
+          },
+        });
+
         const showdownResults = await handleShowdown(tx, game, { ...currentHand, board: JSON.stringify(board), pot: newPot });
         return { action, gameOver: true, showdownResults };
       }
@@ -386,6 +455,21 @@ export async function processAction(
           },
         });
 
+        // Phase 7 [M-05]: ledger event for the street advance.
+        // Re-read the freshly updated hand so the public board is captured.
+        const advancedHand = await tx.hand.findUnique({ where: { id: currentHand.id } });
+        await recordHandEvent(tx, {
+          gameId: game.id,
+          handId: currentHand.id,
+          eventType: 'street_advanced',
+          payload: {
+            fromStage: currentHand.stage,
+            toStage: nextStage,
+            board: advancedHand ? JSON.parse(advancedHand.board) : [],
+            potAfter: newPot.toString(),
+          },
+        });
+
         return { action, nextStage };
       }
     } else {
@@ -413,12 +497,12 @@ export async function processAction(
         attempts++;
       }
       
-      // Safety check — if no active players can act, everyone is all-in → showdown
+      // Safety check â€” if no active players can act, everyone is all-in â†’ showdown
       if (attempts >= numPlayers) {
-        // All remaining players are all-in — fast forward to showdown
+        // All remaining players are all-in â€” fast forward to showdown
         const canAct = freshTurnPlayers.filter(p => p.position === 'active');
         if (canAct.length === 0) {
-          // Everyone is all-in or folded — deal remaining cards and showdown
+          // Everyone is all-in or folded â€” deal remaining cards and showdown
           let stage = currentHand.stage;
           let board = JSON.parse(currentHand.board);
           const deck = JSON.parse(currentHand.deck);
@@ -492,9 +576,13 @@ export async function processAction(
 
 /**
  * Handle fold win - last remaining player takes the pot
+ * Exported for tests (Phase 1 chip-conservation invariants).
  */
-async function handleFoldWin(tx: any, game: any, hand: any, winner: any) {
-  // Award pot to winner's game stack
+export async function handleFoldWin(tx: any, game: any, hand: any, winner: any) {
+  // PHASE 1: Award pot to winner's in-table stack ONLY.
+  // Off-table withdrawable balance (ChipBalance) MUST NOT change here.
+  // ChipBalance is only credited at game-end refund / leave-table cashout.
+  // See audits/t3-poker/06-dave-fix-prompt.md Phase 1.
   await tx.gamePlayer.update({
     where: { id: winner.id },
     data: {
@@ -504,35 +592,6 @@ async function handleFoldWin(tx: any, game: any, hand: any, winner: any) {
     },
   });
 
-  // Award pot to winner's chip balance
-  const winnerBalance = await tx.chipBalance.findUnique({
-    where: { userId: winner.userId },
-  });
-
-  if (winnerBalance) {
-    const newBalance = await tx.chipBalance.update({
-      where: { userId: winner.userId },
-      data: {
-        chips: {
-          increment: hand.pot,
-        },
-      },
-    });
-
-    // Audit log
-    await tx.chipAudit.create({
-      data: {
-        userId: winner.userId,
-        operation: 'game_win',
-        amountDelta: hand.pot,
-        balanceBefore: winnerBalance.chips,
-        balanceAfter: newBalance.chips,
-        reference: game.id,
-        notes: `Won hand by fold in game: ${game.name}`,
-      },
-    });
-  }
-
   // Mark hand as completed
   await tx.hand.update({
     where: { id: hand.id },
@@ -540,6 +599,32 @@ async function handleFoldWin(tx: any, game: any, hand: any, winner: any) {
       stage: 'completed',
       winnerIds: JSON.stringify([winner.userId]),
       completedAt: new Date(),
+    },
+  });
+
+  // Phase 7 [M-05]: ledger trail for fold-win.
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    userId: winner.userId,
+    eventType: 'pot_awarded',
+    payload: {
+      reason: 'fold_win',
+      potNumber: 1,
+      amount: hand.pot.toString(),
+      winnerIds: [winner.userId],
+      shareEach: hand.pot.toString(),
+      remainder: '0',
+    },
+  });
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    eventType: 'hand_completed',
+    payload: {
+      reason: 'fold_win',
+      winnerIds: [winner.userId],
+      potTotal: hand.pot.toString(),
     },
   });
 
@@ -591,48 +676,35 @@ async function checkGameContinuation(tx: any, game: any) {
   );
 
   if (remaining.length <= 1) {
-    // Game over — last player standing wins
-    await tx.game.update({
-      where: { id: game.id },
-      data: {
-        status: 'completed',
-        completedAt: new Date(),
-      },
+    // Phase 10 [H-01]: route end-of-game cashout through the canonical
+    // closeGame helper. Same end state, single audited path.
+    const { closeGameInTx } = await import('./closeGame');
+    await closeGameInTx(tx, {
+      gameId: game.id,
+      reason: 'natural_completion',
+      notes: `Game completed: ${game.name}`,
+      winnerUserIds: remaining[0]?.userId ? [remaining[0].userId] : [],
     });
-
-    // Refund remaining chip stacks back to balances for all players
-    for (const player of players) {
-      if (player.chipStack > BigInt(0)) {
-        const balance = await tx.chipBalance.findUnique({
-          where: { userId: player.userId },
-        });
-        if (balance) {
-          const newBal = await tx.chipBalance.update({
-            where: { userId: player.userId },
-            data: { chips: { increment: player.chipStack } },
-          });
-          await tx.chipAudit.create({
-            data: {
-              userId: player.userId,
-              operation: 'game_cashout',
-              amountDelta: player.chipStack,
-              balanceBefore: balance.chips,
-              balanceAfter: newBal.chips,
-              reference: game.id,
-              notes: `Cashed out from game: ${game.name}`,
-            },
-          });
-        }
-      }
-    }
 
     logger.info('Game completed', {
       gameId: game.id,
       remainingPlayers: remaining.length,
       winner: remaining[0]?.userId,
     });
+
+    // Phase 7 [M-05]: ledger event for game-level completion.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      userId: remaining[0]?.userId ?? null,
+      eventType: 'game_completed',
+      payload: {
+        winnerId: remaining[0]?.userId ?? null,
+        remainingPlayers: remaining.length,
+      },
+    });
     return;
   }
+
 
   // Check blind escalation
   const newHandsAtLevel = game.handsAtLevel + 1;
@@ -662,7 +734,7 @@ async function checkGameContinuation(tx: any, game: any) {
     });
   }
 
-  // Game continues — rotate dealer and start next hand
+  // Game continues â€” rotate dealer and start next hand
   const numPlayers = players.length;
   let newDealerIndex = (game.dealerIndex + 1) % numPlayers;
   // Skip eliminated players for dealer
@@ -700,8 +772,9 @@ async function checkGameContinuation(tx: any, game: any) {
 /**
  * Check if betting round is complete
  * Now with stage tracking, this is much simpler and more accurate!
+ * Exported for tests (Phase 2 raise/all-in correctness).
  */
-async function checkBettingComplete(tx: any, handId: string, players: any[]): Promise<boolean> {
+export async function checkBettingComplete(tx: any, handId: string, players: any[]): Promise<boolean> {
   const hand = await tx.hand.findUnique({ 
     where: { id: handId },
   });
@@ -712,7 +785,7 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
   const stageActions = await tx.handAction.findMany({
     where: {
       handId,
-      stage: hand.stage, // 🎯 KEY FIX: Only look at current betting round
+      stage: hand.stage, // ðŸŽ¯ KEY FIX: Only look at current betting round
     },
     orderBy: { timestamp: 'asc' },
   });
@@ -741,17 +814,60 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
   // Count real actions (not blinds)
   const realActions = stageActions.filter(a => a.action !== 'blind');
 
-  // Track the last raiser/bettor — the round ends when action returns to them
+  // Track the last raiser/bettor â€” the round ends when action returns to them.
+  //
+  // PHASE 2 [M-01]: a short all-in (one whose increment over the current
+  // high-water bet is LESS than the last legal raise increment) is treated
+  // as a call for action-reopening purposes. It still moves chips into the
+  // pot, but it does NOT reset the action â€” the original aggressor cannot
+  // be forced to re-respond. See audits/t3-poker/06-dave-fix-prompt.md
+  // Phase 2 and Hold'em short-all-in rules.
   let lastAggressorId: string | null = null;
   let actedSinceLastRaise = new Set<string>();
-  
+  // Re-fetch the game's bigBlind for the default minimum increment.
+  const handGame = await tx.game.findUnique({ where: { id: hand.gameId } });
+  const bigBlind: bigint = handGame?.bigBlind ?? BigInt(0);
+  let runningHighBet = BigInt(0);
+  let lastRaiseIncrement: bigint = bigBlind;
+  const cumulativeBetByUser = new Map<string, bigint>();
+
   for (const action of stageActions) {
-    if (action.action === 'blind') continue;
-    
-    if (action.action === 'raise' || action.action === 'all-in') {
-      // Check if all-in is actually a raise (more than current required)
+    if (action.action === 'blind') {
+      // Blinds set the initial high-water bet but do not count as "acting".
+      const prior = cumulativeBetByUser.get(action.userId) || BigInt(0);
+      const newCum = prior + (action.amount || BigInt(0));
+      cumulativeBetByUser.set(action.userId, newCum);
+      if (newCum > runningHighBet) runningHighBet = newCum;
+      continue;
+    }
+
+    const prior = cumulativeBetByUser.get(action.userId) || BigInt(0);
+    const newCum = prior + (action.amount || BigInt(0));
+    cumulativeBetByUser.set(action.userId, newCum);
+
+    if (action.action === 'raise') {
+      // A normal 'raise' must (per the raise branch's min-raise check) be a
+      // full legal raise. Always treat it as the aggressor.
+      if (newCum > runningHighBet) {
+        lastRaiseIncrement = newCum - runningHighBet;
+        runningHighBet = newCum;
+      }
       lastAggressorId = action.userId;
       actedSinceLastRaise = new Set([action.userId]);
+    } else if (action.action === 'all-in') {
+      // Short-all-in test: only reopen action if the increment over the
+      // current high-water bet is at least the last legal raise increment.
+      const increment = newCum > runningHighBet ? newCum - runningHighBet : BigInt(0);
+      const reopens = increment >= lastRaiseIncrement && increment > BigInt(0);
+      if (newCum > runningHighBet) runningHighBet = newCum;
+      if (reopens) {
+        lastRaiseIncrement = increment;
+        lastAggressorId = action.userId;
+        actedSinceLastRaise = new Set([action.userId]);
+      } else {
+        // Short all-in: counts as a response but does NOT reopen action.
+        actedSinceLastRaise.add(action.userId);
+      }
     } else {
       actedSinceLastRaise.add(action.userId);
     }
@@ -810,7 +926,7 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
     return false;
   }
   
-  // No raise happened — check if everyone who can act has acted
+  // No raise happened â€” check if everyone who can act has acted
   const playersWhoActed = new Set(Array.from(playerLastAction.keys()));
   const allActed = playersWhoCanAct.every(p => playersWhoActed.has(p.userId));
   
@@ -819,7 +935,7 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
     return false;
   }
 
-  // Everyone acted, no raise — check if all checked or all bets equal
+  // Everyone acted, no raise â€” check if all checked or all bets equal
   const allChecked = playersWhoCanAct.every(p => playerLastAction.get(p.userId) === 'check');
   if (allChecked) {
     logger.info('Betting complete: all checked');
@@ -845,7 +961,7 @@ async function checkBettingComplete(tx: any, handId: string, players: any[]): Pr
     return true;
   }
 
-  // Check if anyone is all-in — only complete if all active players have acted
+  // Check if anyone is all-in â€” only complete if all active players have acted
   // and their bets match or exceed the highest active bet
   const allInPlayers = activePlayers.filter(p => p.position === 'all_in');
   if (allInPlayers.length > 0 && allBetsEqual) {
@@ -920,7 +1036,8 @@ async function advanceToNextStage(tx: any, hand: any, nextStage: string) {
 /**
  * Handle showdown - evaluate hands and award pot(s)
  */
-async function handleShowdown(tx: any, game: any, hand: any) {
+// Exported for tests (Phase 1 chip-conservation invariants).
+export async function handleShowdown(tx: any, game: any, hand: any) {
   const { calculateSidePots, storeSidePots, getSidePots } = await import('./sidePots');
   
   // Re-fetch fresh player positions (game.players may be stale within transaction)
@@ -936,6 +1053,22 @@ async function handleShowdown(tx: any, game: any, hand: any) {
   const sidePots = await calculateSidePots(tx, hand.id, freshShowdownPlayers);
   await storeSidePots(tx, hand.id, sidePots);
 
+  // Phase 7 [M-05]: ledger event for side-pot construction (proof of
+  // eligibility/amounts even before evaluation runs).
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    eventType: 'side_pots_built',
+    payload: {
+      pots: sidePots.map((p: any) => ({
+        potNumber: p.potNumber,
+        amount: p.amount.toString(),
+        eligiblePlayerIds: p.eligiblePlayerIds,
+      })),
+      totalPot: hand.pot.toString(),
+    },
+  });
+
   // Evaluate all active players' hands
   const evaluations = players.map((p: any) => ({
     userId: p.userId,
@@ -943,6 +1076,26 @@ async function handleShowdown(tx: any, game: any, hand: any) {
     holeCards: JSON.parse(p.holeCards),
     evaluation: evaluateHand(JSON.parse(p.holeCards), board),
   }));
+
+  // Phase 7 [M-05]: showdown_evaluated. The hand is over once we are here,
+  // so hole cards may appear in the ledger payload (privacy gate is scoped
+  // to mid-hand events).
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    eventType: 'showdown_evaluated',
+    payload: {
+      board,
+      evaluations: evaluations.map((e: any) => ({
+        userId: e.userId,
+        username: e.username,
+        holeCards: e.holeCards,
+        rank: e.evaluation.rank,
+        description: e.evaluation.description,
+        bestCards: e.evaluation.cards,
+      })),
+    },
+  });
 
   // Award each pot separately
   const allWinnerIds = new Set<string>();
@@ -972,13 +1125,39 @@ async function handleShowdown(tx: any, game: any, hand: any) {
     const potWinnerIds = potWinners.map(w => w.userId);
     const potWinnerNames = potWinners.map(w => w.username);
 
-    // Split pot among winners
+    // Split pot among winners. PHASE 9 follow-up [L-01]: integer-division
+    // remainder must be allocated deterministically; otherwise odd-chip
+    // pots leak chip mass over time. Convention: first winning seat left
+    // of the dealer button receives the remainder. The simulator's chip-
+    // conservation invariant catches the leak if this is ever broken.
     const potShare = pot.amount / BigInt(potWinnerIds.length);
+    const remainder = pot.amount - potShare * BigInt(potWinnerIds.length);
+
+    // Determine the seat to receive any odd-chip remainder.
+    let remainderRecipientId: string | null = null;
+    if (remainder > 0n) {
+      const numSeats = freshShowdownPlayers.length;
+      const dealer = (game.dealerIndex ?? 0) % Math.max(numSeats, 1);
+      // Walk seats left-of-dealer, return the first one that's a pot winner.
+      for (let i = 1; i <= numSeats; i++) {
+        const seat = freshShowdownPlayers[(dealer + i) % numSeats];
+        if (seat && potWinnerIds.includes(seat.userId)) {
+          remainderRecipientId = seat.userId;
+          break;
+        }
+      }
+      // Fallback: deterministic by userId order so we never lose chips.
+      if (!remainderRecipientId) {
+        remainderRecipientId = potWinnerIds.slice().sort()[0];
+      }
+    }
 
     logger.info(`Pot ${pot.potNumber} awarded`, {
       amount: pot.amount.toString(),
       winners: potWinnerNames,
       shareEach: potShare.toString(),
+      remainder: remainder.toString(),
+      remainderRecipientId,
     });
 
     potResults.push({
@@ -991,48 +1170,22 @@ async function handleShowdown(tx: any, game: any, hand: any) {
     // Track all winners
     potWinnerIds.forEach(id => allWinnerIds.add(id));
 
-    // Award chips to pot winners
+    // PHASE 1: Award pot share to winner's in-table stack ONLY.
+    // Off-table withdrawable balance (ChipBalance) MUST NOT change here.
+    // ChipBalance is only credited at game-end refund / leave-table cashout.
+    // See audits/t3-poker/06-dave-fix-prompt.md Phase 1.
     for (const winnerId of potWinnerIds) {
       const winner = freshShowdownPlayers.find((p: any) => p.userId === winnerId);
       if (winner) {
-        // Update game player chip stack
+        const extra = winnerId === remainderRecipientId ? remainder : 0n;
         await tx.gamePlayer.update({
           where: { id: winner.id },
           data: {
             chipStack: {
-              increment: potShare,
+              increment: potShare + extra,
             },
           },
         });
-        
-        // Update user's chip balance
-        const chipBalance = await tx.chipBalance.findUnique({
-          where: { userId: winnerId },
-        });
-        
-        if (chipBalance) {
-          const newBalance = await tx.chipBalance.update({
-            where: { userId: winnerId },
-            data: {
-              chips: {
-                increment: potShare,
-              },
-            },
-          });
-          
-          // Audit log
-          await tx.chipAudit.create({
-            data: {
-              userId: winnerId,
-              operation: 'game_win',
-              amountDelta: potShare,
-              balanceBefore: chipBalance.chips,
-              balanceAfter: newBalance.chips,
-              reference: game.id,
-              notes: `Won pot ${pot.potNumber} in game: ${game.name}`,
-            },
-          });
-        }
       }
     }
 
@@ -1048,6 +1201,25 @@ async function handleShowdown(tx: any, game: any, hand: any) {
         winnerId: potWinnerIds.length === 1 ? potWinnerIds[0] : null, // null if split
       },
     });
+
+    // Phase 7 [M-05]: pot_awarded with full allocation proof.
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      handId: hand.id,
+      eventType: 'pot_awarded',
+      payload: {
+        potNumber: pot.potNumber,
+        amount: pot.amount.toString(),
+        eligiblePlayerIds: pot.eligiblePlayerIds,
+        winnerIds: potWinnerIds,
+        winningRank: bestHand.rank,
+        winningDescription: bestHand.description,
+        shareEach: potShare.toString(),
+        remainder: remainder.toString(),
+        // Phase 9 follow-up [L-01]: explicit remainder allocation.
+        remainderRecipientId,
+      },
+    });
   }
 
   const winnerIds = Array.from(allWinnerIds);
@@ -1059,6 +1231,19 @@ async function handleShowdown(tx: any, game: any, hand: any) {
       stage: 'completed',
       winnerIds: JSON.stringify(winnerIds),
       completedAt: new Date(),
+    },
+  });
+
+  // Phase 7 [M-05]: hand_completed via showdown.
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: hand.id,
+    eventType: 'hand_completed',
+    payload: {
+      reason: 'showdown',
+      winnerIds,
+      potTotal: hand.pot.toString(),
+      numPots: sidePots.length,
     },
   });
 
