@@ -325,7 +325,7 @@ const SCENARIOS: Scenario[] = [
   // -------- Phase 4 batch C: money flow + resilience --------
   {
     name: 'withdraw_at_showdown',
-    description: '4 bots; repeatedly try /withdraw while game in_progress. Lock must hold across showdowns.',
+    description: '4 bots (with wallets) repeatedly try /withdraw while game in_progress. Every attempt must 409 active_game_money_locked.',
     run: (env) =>
       runOrchestration({
         baseUrl: env.baseUrl,
@@ -335,10 +335,27 @@ const SCENARIOS: Scenario[] = [
         buyInChips: 100,
         maxHands: 8,
         timeoutMs: 4 * 60_000,
+        onFirstHand: async ({ bots }) => {
+          // Attach a deterministic wallet to each bot so /withdraw doesn't
+          // short-circuit on "No wallet connected" before the lock check
+          // runs. (Gerald 2026-05-09: strict 409 assertion exposed that
+          // the bots were hitting an earlier validation, not the lock.)
+          for (const b of bots) {
+            if (!b.userId) continue;
+            const u = await prisma.user.findUnique({ where: { id: b.userId } });
+            if (u?.walletAddress) continue;
+            const wa = (
+              '0x' + Buffer.from(`was-${b.userId}`).toString('hex').padEnd(40, '0').slice(0, 40)
+            ).toLowerCase();
+            await prisma.user.update({ where: { id: b.userId }, data: { walletAddress: wa } });
+          }
+        },
         onTick: async ({ bots, gameId }) => {
           // Every tick (~1s), every bot tries to withdraw 1 chip. While
-          // the game is in_progress, all attempts must 409 with code
-          // active_game_money_locked. Any 200 here is a lock leak.
+          // the game is in_progress, every attempt MUST return 409 with
+          // body { code: 'active_game_money_locked' }. Anything else is
+          // a lock leak (Gerald 2026-05-09: was previously only failing
+          // on HTTP 200, which let other 4xx slip through silently).
           for (const b of bots) {
             if (!b.token) continue;
             const r = await fetch(`${env.baseUrl}/api/wallet/withdraw`, {
@@ -346,14 +363,19 @@ const SCENARIOS: Scenario[] = [
               headers: { 'content-type': 'application/json', authorization: `Bearer ${b.token}` },
               body: JSON.stringify({ amount: 1 }),
             });
-            if (r.status === 200) {
+            const text = await r.text();
+            if (r.status !== 409) {
               throw new Error(
-                `[INV-LOCK-LEAK] /withdraw returned 200 while user ${b.userId} seated in active game ${gameId}`
+                `[INV-LOCK-LEAK] /withdraw user=${b.userId} game=${gameId} expected 409, got ${r.status} body=${text.slice(0, 200)}`
               );
             }
-            // 409 expected; 4xx other than 409 is also fine (auth, validation).
-            // Drain body so socket pool doesn't leak.
-            await r.text();
+            let body: any;
+            try { body = JSON.parse(text); } catch { body = null; }
+            if (!body || body.code !== 'active_game_money_locked') {
+              throw new Error(
+                `[INV-LOCK-LEAK] /withdraw user=${b.userId} game=${gameId} 409 returned wrong body: ${text.slice(0, 200)}`
+              );
+            }
           }
         },
       }),
@@ -384,10 +406,14 @@ const SCENARIOS: Scenario[] = [
 
   {
     name: 'bust_then_new_game',
-    description: 'Bot busts in game A, lock should release on closeGame, bot can then create game B.',
+    description: 'Bot busts in game A, closeGame releases lock, BOTH former players can create new games.',
     async run(env): Promise<OrchestrationResult> {
       // Run a small all-in game where one bot busts. After closeGame,
-      // the surviving bot should be free to create a new game.
+      // BOTH bots (the survivor AND the one who busted) should be free
+      // to create a new game. Gerald 2026-05-09: was previously picking
+      // the first bot via find(() => true) which never identified the
+      // actual survivor; replaced with explicit testing of both seats
+      // against post-game DB state.
       const result = await runOrchestration({
         baseUrl: env.baseUrl,
         adminSecret: env.adminSecret,
@@ -397,20 +423,36 @@ const SCENARIOS: Scenario[] = [
         maxHands: 30, // game ends when one busts
         timeoutMs: 4 * 60_000,
       });
-      // After the orchestrator returns, the game should be closed (one
-      // player has all the chips, or game.status moved to completed).
-      // Try to create a new game with the WINNING bot's token.
-      const winner = result.bots.find((b) => {
-        // Whichever bot has the most accrued ChipBalance (the orchestrator
-        // doesn't track this in result; query DB).
-        return true;
+
+      // Confirm the game actually ended (status completed/cancelled).
+      const finalGame = await prisma.game.findUnique({
+        where: { id: result.gameId },
+        include: { players: { orderBy: { chipStack: 'desc' } } },
       });
-      if (winner && winner.token) {
+      if (!finalGame) {
+        throw new Error(`[INV-LOCK-STUCK] game ${result.gameId} not found after orchestrator returned`);
+      }
+      if (finalGame.status !== 'completed' && finalGame.status !== 'cancelled') {
+        throw new Error(
+          `[INV-LOCK-STUCK] game ${result.gameId} status=${finalGame.status} after orchestrator returned (expected completed/cancelled)`
+        );
+      }
+      // Identify survivor vs busted via final chipStack ordering.
+      // (closeGame helper zeros table stacks, so look at order BEFORE the
+      // close happened isn't an option — we instead test both bots
+      // can create a new game, which is the actual property we care about.)
+
+      // Test BOTH former players can create a new game. If either is still
+      // locked, closeGame failed to release that user's seat.
+      for (const b of result.bots) {
+        if (!b.token) continue;
         const r = await fetch(`${env.baseUrl}/api/games/create`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${winner.token}` },
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${b.token}` },
           body: JSON.stringify({
-            name: `Post-bust ${Date.now()}`,
+            // Server enforces name <= 50 chars; keep this short so the
+            // longer parallel-slot bot suffixes don't blow the limit.
+            name: `pb-${b.userId?.slice(-6) ?? 'na'}-${Date.now() % 1_000_000}`,
             minBuyIn: 1,
             maxBuyIn: 1,
             creatorBuyIn: 1,
@@ -418,24 +460,34 @@ const SCENARIOS: Scenario[] = [
             bigBlind: 1,
           }),
         });
-        if (r.status >= 400 && r.status !== 409) {
-          throw new Error(
-            `[INV-LOCK-STUCK] /games/create returned ${r.status} for ${winner.cfg.email} after closeGame: ${(await r.text()).slice(0, 200)}`
-          );
+        const text = await r.text();
+        if (r.status === 200 || r.status === 201) {
+          // Lock released; clean up the new game so we don't leak state
+          // to subsequent scenarios.
+          let newGameId: string | undefined;
+          try { newGameId = JSON.parse(text)?.game?.id; } catch { /* ignore */ }
+          if (newGameId) {
+            try {
+              const { closeGame } = await import('../../src/services/closeGame');
+              await closeGame({ gameId: newGameId, reason: 'admin_cancel', notes: 'bust_then_new_game cleanup' });
+            } catch { /* ignore */ }
+          }
+          continue;
         }
-        // 200 OR 409-with-active_game_money_locked are BOTH evidence the
-        // system is in a defined state. 200 = lock released (success).
-        // 409 with that code = the bot is somehow still seated which
-        // would mean closeGame didn't fully release. We accept 409 only
-        // if it's a different code (e.g. validation).
         if (r.status === 409) {
-          const body: any = await r.json().catch(() => ({}));
-          if (body.code === 'active_game_money_locked') {
+          let body: any;
+          try { body = JSON.parse(text); } catch { body = null; }
+          if (body?.code === 'active_game_money_locked') {
             throw new Error(
-              `[INV-LOCK-STUCK] /games/create returned 409 active_game_money_locked for ${winner.cfg.email} AFTER game finished. closeGame did not release lock.`
+              `[INV-LOCK-STUCK] /games/create returned 409 active_game_money_locked for ${b.cfg.email} AFTER game finished. closeGame did not release lock for this seat.`
             );
           }
+          // Some other 409 (validation) is acceptable — the lock isn't stuck.
+          continue;
         }
+        throw new Error(
+          `[INV-LOCK-STUCK] /games/create returned ${r.status} for ${b.cfg.email} after closeGame: ${text.slice(0, 200)}`
+        );
       }
       return result;
     },
@@ -443,7 +495,7 @@ const SCENARIOS: Scenario[] = [
 
   {
     name: 'deposit_during_close',
-    description: 'Trigger a deferred-deposit while game is mid-hand; closeGame should not racee with the deferred row.',
+    description: 'Hermetic deferred-deposit: while bot[0] seated, drive credit with a fresh per-scenario authorization. Balance unchanged, Deposit confirmed=false, auth used=false.',
     run: (env) =>
       runOrchestration({
         baseUrl: env.baseUrl,
@@ -454,38 +506,99 @@ const SCENARIOS: Scenario[] = [
         maxHands: 4,
         timeoutMs: 4 * 60_000,
         onTick: async ({ bots, gameId }) => {
-          // Once per scenario instance, drive a deposit credit attempt
-          // against bot[0] (who is seated). It must be deferred (no
-          // balance change, no auth consumption, deposit row written
-          // confirmed=false). Scope by gameId so parallel slots don't
-          // race on the same flag.
+          // Once per scenario instance: create a fresh DepositAuthorization
+          // for bot[0] (who is seated) and drive creditChipsForTesting.
+          // Hermetic: doesn't depend on any leftover DB state. Asserts:
+          //   1. ChipBalance unchanged after the call
+          //   2. Deposit row exists for this txHash with confirmed=false
+          //   3. The fresh authorization remains used=false
+          // (Gerald 2026-05-09: previously called creditChipsForTesting
+          // without creating an auth first, which made the test rely on
+          // whatever auth happened to be sitting in the DB.)
           const flagKey = `__deposit_during_close_fired_${gameId}`;
           if ((globalThis as any)[flagKey]) return;
           (globalThis as any)[flagKey] = true;
+
           const target = bots[0];
           if (!target.userId) return;
-          // Reuse the same helper the moneyLockScenario uses.
-          const { creditChipsForTesting } = await import('../../src/blockchain/listener');
-          // Give the user a wallet address if they don't have one.
-          const user = await prisma.user.findUnique({ where: { id: target.userId } });
-          if (!user?.walletAddress) {
-            const wa = ('0x' + Buffer.from(`ddc-${target.userId}`).toString('hex').padEnd(40, '0').slice(0, 40)).toLowerCase();
+
+          // Ensure target has a wallet address. Use a per-user, per-scenario
+          // deterministic 40-hex so re-runs don't collide on Prisma's
+          // unique(walletAddress) index.
+          const wa = (
+            '0x' + Buffer.from(`ddc-${target.userId}-${gameId}`).toString('hex').padEnd(40, '0').slice(0, 40)
+          ).toLowerCase();
+          const existing = await prisma.user.findUnique({ where: { id: target.userId } });
+          if (existing && !existing.walletAddress) {
             await prisma.user.update({ where: { id: target.userId }, data: { walletAddress: wa } });
           }
           const fresh = await prisma.user.findUnique({ where: { id: target.userId } });
-          const balanceBefore = (await prisma.chipBalance.findUnique({ where: { userId: target.userId } }))?.chips ?? 0n;
-          const txHash = '0x' + 'd1' + Date.now().toString(16).padStart(16, '0').padEnd(62, '0');
-          await creditChipsForTesting(fresh!.walletAddress!, 1_000_000n, txHash, 999_999_999);
-          const balanceAfter = (await prisma.chipBalance.findUnique({ where: { userId: target.userId } }))?.chips ?? 0n;
+          const walletAddress = fresh?.walletAddress ?? wa;
+
+          // Create a fresh deposit challenge + authorization row so the
+          // listener has SOMETHING bound to this exact amount. We mint
+          // the auth row with used=false (default) and signature stub.
+          const { createDepositChallenge } = await import('../../src/services/wallet');
+          const amount = 1_000_000n;
+          const challenge = await createDepositChallenge({
+            userId: target.userId,
+            walletAddress,
+            amount,
+          });
+          const depositAuth = await prisma.depositAuthorization.create({
+            data: {
+              userId: target.userId,
+              walletAddress,
+              nonce: challenge.nonce,
+              chainId: challenge.chainId,
+              contractAddress: challenge.contractAddress,
+              amount,
+              issuedAt: challenge.issuedAt,
+              expiresAt: challenge.expiresAt,
+              signature: 'harness-stub-deposit-during-close',
+              message: challenge.challenge,
+            },
+          });
+
+          const balanceBefore = (
+            await prisma.chipBalance.findUnique({ where: { userId: target.userId } })
+          )?.chips ?? 0n;
+          const txHash = '0x' + 'dd' + Date.now().toString(16).padStart(16, '0').padEnd(62, '0');
+
+          const { creditChipsForTesting } = await import('../../src/blockchain/listener');
+          await creditChipsForTesting(walletAddress, amount, txHash, 999_999_999);
+
+          // Assertion 1: balance unchanged.
+          const balanceAfter = (
+            await prisma.chipBalance.findUnique({ where: { userId: target.userId } })
+          )?.chips ?? 0n;
           if (balanceAfter !== balanceBefore) {
             throw new Error(
-              `[INV-DEPOSIT-DEFERRAL] Deposit credited mid-game! before=${balanceBefore} after=${balanceAfter}`
+              `[INV-DEPOSIT-DEFERRAL] balance changed mid-game! before=${balanceBefore} after=${balanceAfter}`
             );
           }
+
+          // Assertion 2: Deposit row written with confirmed=false.
           const dep = await prisma.deposit.findUnique({ where: { txHash } });
-          if (!dep || dep.confirmed !== false) {
+          if (!dep) {
+            throw new Error(`[INV-DEPOSIT-DEFERRAL] Deposit row missing for txHash=${txHash}`);
+          }
+          if (dep.confirmed !== false) {
             throw new Error(
-              `[INV-DEPOSIT-DEFERRAL] Deferred Deposit row missing or wrong confirmed flag: ${JSON.stringify(dep)}`
+              `[INV-DEPOSIT-DEFERRAL] Deposit.confirmed=${dep.confirmed} (expected false) for txHash=${txHash}`
+            );
+          }
+
+          // Assertion 3: the fresh authorization remains used=false.
+          const authAfter = await prisma.depositAuthorization.findUnique({
+            where: { id: depositAuth.id },
+          });
+          if (!authAfter) {
+            throw new Error(`[INV-DEPOSIT-DEFERRAL] DepositAuthorization id=${depositAuth.id} disappeared`);
+          }
+          if (authAfter.used !== false) {
+            throw new Error(
+              `[INV-DEPOSIT-DEFERRAL] DepositAuthorization id=${depositAuth.id} was consumed (used=${authAfter.used}); should still be usable for operator recovery`
             );
           }
         },
@@ -845,7 +958,8 @@ const concurrentCreateRaceScenario: Scenario = {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${u.token}` },
         body: JSON.stringify({
-          name: `Race ${u.email} ${Date.now()}`,
+          // Server enforces name <= 50 chars; keep short for parallel.
+          name: `rc-${u.id.slice(-6)}-${Date.now() % 1_000_000}`,
           minBuyIn: 100,
           maxBuyIn: 100,
           creatorBuyIn: 100,

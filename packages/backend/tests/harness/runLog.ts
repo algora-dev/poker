@@ -9,7 +9,12 @@
  *     reproduce the bug without re-running.
  *   - Cheap enough to leave on always (write append-only, no fsync per line).
  *   - One file per scenario per run; runId shared across all of them.
+ *   - PARALLEL-SAFE: each scenario keeps its own append stream so two
+ *     concurrently-running scenarios don't trample each other's logs.
+ *     Per Gerald's review (2026-05-09): the previous single
+ *     `currentScenario`/`currentStream` was a parallelism hazard.
  */
+import { AsyncLocalStorage } from 'async_hooks';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -38,13 +43,19 @@ export interface LogEvent {
   data?: Record<string, any>;
 }
 
+interface ScenarioStream {
+  name: string;
+  stream: fs.WriteStream;
+}
+
+/** Per-async-context current scenario name. Parallel slots get their own. */
+const scenarioContext = new AsyncLocalStorage<{ scenarioKey: string }>();
+
 export class RunLog {
   readonly runId: string;
   readonly runDir: string;
-  private currentScenario: string | null = null;
-  private currentStream: fs.WriteStream | null = null;
-  /** Errors collected during the current scenario; cleared on scenario start. */
-  private scenarioErrors: string[] = [];
+  /** Open streams keyed by scenarioKey. */
+  private streams = new Map<string, ScenarioStream>();
 
   constructor(runId?: string, baseDir?: string) {
     this.runId = runId ?? new Date().toISOString().replace(/[:.]/g, '-');
@@ -53,49 +64,64 @@ export class RunLog {
     fs.mkdirSync(this.runDir, { recursive: true });
   }
 
-  /** Start a new scenario log file. Closes the previous one if any. */
-  startScenario(name: string) {
-    if (this.currentStream) {
-      this.currentStream.end();
-      this.currentStream = null;
+  /**
+   * Open (or reuse) the stream for `scenarioKey`. Each scenario has its
+   * own append-mode WriteStream so parallel writers do not interleave.
+   * The returned object lets the caller bind subsequent writes via
+   * `runInScenario(...)`.
+   */
+  startScenario(scenarioKey: string) {
+    if (!this.streams.has(scenarioKey)) {
+      const file = path.join(this.runDir, `${this.safeName(scenarioKey)}.jsonl`);
+      const stream = fs.createWriteStream(file, { flags: 'a' });
+      this.streams.set(scenarioKey, { name: scenarioKey, stream });
     }
-    this.currentScenario = name;
-    this.scenarioErrors = [];
-    const file = path.join(this.runDir, `${name}.jsonl`);
-    this.currentStream = fs.createWriteStream(file, { flags: 'a' });
-    this.write({ kind: 'scenario.start', data: { name } });
+    this.write({ kind: 'scenario.start', data: { name: scenarioKey } }, scenarioKey);
   }
 
-  endScenario(name: string, ok: boolean, extra?: Record<string, any>) {
-    this.write({
-      kind: ok ? 'scenario.end' : 'scenario.fail',
-      data: { name, ok, ...extra },
-    });
-    if (this.currentStream) {
-      this.currentStream.end();
-      this.currentStream = null;
+  endScenario(scenarioKey: string, ok: boolean, extra?: Record<string, any>) {
+    this.write(
+      { kind: ok ? 'scenario.end' : 'scenario.fail', data: { name: scenarioKey, ok, ...extra } },
+      scenarioKey
+    );
+    const s = this.streams.get(scenarioKey);
+    if (s) {
+      s.stream.end();
+      this.streams.delete(scenarioKey);
     }
-    this.currentScenario = null;
   }
 
-  /** Record an event. Cheap; sync-buffered. */
-  write(ev: Omit<LogEvent, 'ts' | 'runId' | 'scenario'>) {
+  /**
+   * Run a callback with `scenarioKey` bound as the implicit scenario for
+   * any `write()` calls inside it (including from descendant async work).
+   */
+  runInScenario<T>(scenarioKey: string, fn: () => Promise<T> | T): Promise<T> {
+    return Promise.resolve(scenarioContext.run({ scenarioKey }, fn as any));
+  }
+
+  /**
+   * Record an event. If `scenarioKey` is provided it goes to that
+   * scenario's file; otherwise the implicit context's scenarioKey is
+   * used; otherwise the event is written to the run-level file.
+   */
+  write(ev: Omit<LogEvent, 'ts' | 'runId' | 'scenario'>, scenarioKey?: string) {
+    const ctx = scenarioContext.getStore();
+    const targetKey = scenarioKey ?? ctx?.scenarioKey;
     const full: LogEvent = {
       ts: new Date().toISOString(),
       runId: this.runId,
-      scenario: this.currentScenario ?? undefined,
+      scenario: targetKey,
       ...ev,
     };
     const line = JSON.stringify(full) + '\n';
-    if (this.currentStream) {
-      this.currentStream.write(line);
-    } else {
-      // No active scenario — write to run-level file.
-      fs.appendFileSync(path.join(this.runDir, '_run.jsonl'), line);
+    if (targetKey) {
+      const s = this.streams.get(targetKey);
+      if (s) {
+        s.stream.write(line);
+        return;
+      }
     }
-    if (ev.kind === 'invariant.fail' || ev.kind === 'bot.error' || ev.kind === 'scenario.fail') {
-      this.scenarioErrors.push(JSON.stringify(ev));
-    }
+    fs.appendFileSync(path.join(this.runDir, '_run.jsonl'), line);
   }
 
   /** Write a one-shot summary.json next to the JSONLs. */
@@ -138,10 +164,18 @@ export class RunLog {
   }
 
   close() {
-    if (this.currentStream) {
-      this.currentStream.end();
-      this.currentStream = null;
-    }
+    for (const s of this.streams.values()) s.stream.end();
+    this.streams.clear();
+  }
+
+  /** Strip filesystem-unsafe chars for use in a filename. */
+  private safeName(name: string): string {
+    return name.replace(/[^a-zA-Z0-9._-]/g, '_');
+  }
+
+  /** Read the current implicit scenarioKey, if any. */
+  static currentScenarioKey(): string | undefined {
+    return scenarioContext.getStore()?.scenarioKey;
   }
 }
 

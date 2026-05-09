@@ -304,6 +304,17 @@ export class BotClient {
     const text = await res.text();
     // "Stale action" is expected when state was racy; not a real error.
     if (text.includes('Stale action')) return false;
+    // Server semantically-stale errors. The watchdog/peer-event resync can
+    // race with another player's action and we end up sending a raise
+    // sized for an out-of-date currentBet. Treat as soft retry.
+    // (Gerald 2026-05-09: surfaced under HARNESS_PARALLEL=4.)
+    if (
+      text.includes('Raise must be higher than current bet') ||
+      text.includes('not your turn') ||
+      text.includes('Player not active')
+    ) {
+      return false;
+    }
     // 429: the bot got rate-limited by the per-user action limiter.
     // Don't pollute the errors list — just back off. The next state push
     // (or watchdog tick) will retry on a new lastActedKey.

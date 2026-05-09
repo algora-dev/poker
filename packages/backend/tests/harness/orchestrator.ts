@@ -22,7 +22,7 @@ import {
   assertNoStalls,
   assertSessionLedger,
 } from './invariants';
-import { getActiveRunLog, type RunLog } from './runLog';
+import { getActiveRunLog, RunLog } from './runLog';
 
 export interface OrchestrationOptions {
   baseUrl: string;
@@ -160,6 +160,15 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   const created = await createRes.json();
   const gameId: string = created.game.id;
 
+  // Wrap the rest of orchestration in a try/finally so we ALWAYS close
+  // the game on the way out — even on assertion failure. Without this,
+  // a failed scenario leaves bots seated at an in_progress game, which
+  // then 409s every subsequent /games/create from the same accounts.
+  // (Gerald 2026-05-09 follow-up: surfaced by HARNESS_PARALLEL=4 run.)
+  let orchestrationError: any = null;
+  let result: OrchestrationResult | null = null;
+  try {
+
   // 5. Creator socket joins room first (creator is auto-seated by createGame).
   await creator.joinGameRoom(gameId);
 
@@ -200,12 +209,15 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   };
   // Track in-flight game info on a process-wide map so the failure handler
   // in runHarness can grab gameId/botUserIds even when runOrchestration
-  // throws before returning a result. Keyed by activeRunLog runId for
-  // parallel-safety.
+  // throws before returning a result. Keyed by runId + scenarioKey so
+  // parallel slots cannot read each other's breadcrumb (Gerald 2026-05-09).
   const activeLogForBreadcrumb = opts.runLog ?? getActiveRunLog();
+  const scenarioKeyForBreadcrumb = RunLog.currentScenarioKey() ?? '__unscoped__';
   if (activeLogForBreadcrumb) {
-    (globalThis as any).__harness_inflight = (globalThis as any).__harness_inflight ?? {};
-    (globalThis as any).__harness_inflight[activeLogForBreadcrumb.runId] = {
+    const root = ((globalThis as any).__harness_inflight =
+      (globalThis as any).__harness_inflight ?? {});
+    const runBucket = (root[activeLogForBreadcrumb.runId] = root[activeLogForBreadcrumb.runId] ?? {});
+    runBucket[scenarioKeyForBreadcrumb] = {
       gameId,
       botUserIds: bots.map((b) => b.userId!).filter(Boolean),
     };
@@ -257,16 +269,46 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   await assertClosedGamesAreEmpty(prisma, activeLog, botUserIds);
   await assertSessionLedger(ctx, startingBalances);
 
-  // 11. Cleanup
-  for (const b of bots) b.shutdown();
-
-  return {
+  result = {
     gameId,
     handsCompleted,
     durationMs: Date.now() - startedAt,
     bots,
     botUserIds: bots.map((b) => b.userId!).filter(Boolean),
   };
+  } catch (e) {
+    orchestrationError = e;
+  } finally {
+    // Tear down bot sockets.
+    for (const b of bots) {
+      try { b.shutdown(); } catch { /* ignore */ }
+    }
+    // If the game is still open, close it so subsequent scenarios
+    // (and the same bot accounts in later passes) aren't lock-blocked.
+    try {
+      const game = await prisma.game.findUnique({ where: { id: gameId } });
+      if (game && game.status !== 'completed' && game.status !== 'cancelled') {
+        const { closeGame } = await import('../../src/services/closeGame');
+        await closeGame({
+          gameId,
+          reason: orchestrationError ? 'admin_cancel' : 'admin_cancel',
+          notes: orchestrationError
+            ? `harness scenario cleanup after failure: ${(orchestrationError?.message ?? '').slice(0, 200)}`
+            : 'harness scenario cleanup',
+        });
+      }
+    } catch (closeErr: any) {
+      // Closing fails (e.g. game already closed mid-flight) is non-fatal.
+      // Log via runLog if we have one.
+      const log = opts.runLog ?? getActiveRunLog();
+      log?.write({
+        kind: 'note',
+        data: { msg: 'closeGame on cleanup failed', error: closeErr?.message },
+      });
+    }
+  }
+  if (orchestrationError) throw orchestrationError;
+  return result!;
 }
 
 export { prisma as harnessPrisma };

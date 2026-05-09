@@ -125,59 +125,64 @@ async function main() {
       : { ...env, runSuffix: `${env.runSuffix ?? 'persist1'}_${passLabel}`.toLowerCase().replace(/[^a-z0-9_]/g, '') };
     runLog.startScenario(scenarioKey);
     const t0 = Date.now();
-    let lastResult: any = null;
-    try {
-      const res = await s.run(slotEnv);
-      lastResult = res;
-      const ms = Date.now() - t0;
-      console.log(
-        `[${passLabel}] PASS ${s.name} in ${ms}ms — gameId=${res.gameId.slice(-8)} hands=${res.handsCompleted}`
-      );
-      for (const b of res.bots) {
-        const tag = b.errors.length === 0 ? '   ok' : `  ${b.errors.length}err`;
-        console.log(
-          `      ${tag}  ${b.cfg.email.padEnd(34)}  acts=${b.actionsTaken
-            .toString()
-            .padStart(3)}  reconn=${b.reconnects}  watchdog=${b.watchdogResyncs}`
-        );
-      }
-      results.push({ name: scenarioKey, ok: true, ms, hands: res.handsCompleted });
-      runLog.endScenario(scenarioKey, true, { ms, hands: res.handsCompleted, gameId: res.gameId });
-    } catch (e: any) {
-      const ms = Date.now() - t0;
-      console.log(`[${passLabel}] FAIL ${s.name} in ${ms}ms`);
-      console.log(`  ${e?.stack || e?.message || e}`);
-      const invariantId = e?.invariantId;
-      results.push({ name: scenarioKey, ok: false, ms, err: e?.message || String(e) });
-      failures++;
+    // Bind subsequent writes (and any DB-snapshot lookups via the
+    // inflight map) to THIS scenarioKey so parallel slots don't interleave.
+    await runLog.runInScenario(scenarioKey, async () => {
+      let lastResult: any = null;
       try {
-        // If runOrchestration threw before returning, fall back to the
-        // in-flight breadcrumb the orchestrator left on globalThis.
-        const inflight = (globalThis as any).__harness_inflight?.[runLog.runId];
-        const snap = await snapshotFailure({
-          prisma: harnessPrisma,
-          runDir: runLog.runDir,
-          scenario: scenarioKey,
-          gameId: lastResult?.gameId ?? inflight?.gameId,
-          botUserIds: lastResult?.botUserIds ?? inflight?.botUserIds,
-          errorMessage: e?.message || String(e),
-          invariantId,
-        });
-        const issue = autoFileIssue({
-          scenario: scenarioKey,
-          runId: runLog.runId,
-          runDir: runLog.runDir,
-          errorMessage: e?.message || String(e),
-          invariantId,
-          snapshotPath: snap,
-        });
-        console.log(`  [snapshot] ${snap}`);
-        console.log(`  [issue]    ${issue}`);
-      } catch (snapErr: any) {
-        console.log(`  [snapshot] FAILED: ${snapErr?.message}`);
+        const res = await s.run(slotEnv);
+        lastResult = res;
+        const ms = Date.now() - t0;
+        console.log(
+          `[${passLabel}] PASS ${s.name} in ${ms}ms — gameId=${res.gameId.slice(-8)} hands=${res.handsCompleted}`
+        );
+        for (const b of res.bots) {
+          const tag = b.errors.length === 0 ? '   ok' : `  ${b.errors.length}err`;
+          console.log(
+            `      ${tag}  ${b.cfg.email.padEnd(34)}  acts=${b.actionsTaken
+              .toString()
+              .padStart(3)}  reconn=${b.reconnects}  watchdog=${b.watchdogResyncs}`
+          );
+        }
+        results.push({ name: scenarioKey, ok: true, ms, hands: res.handsCompleted });
+        runLog.endScenario(scenarioKey, true, { ms, hands: res.handsCompleted, gameId: res.gameId });
+      } catch (e: any) {
+        const ms = Date.now() - t0;
+        console.log(`[${passLabel}] FAIL ${s.name} in ${ms}ms`);
+        console.log(`  ${e?.stack || e?.message || e}`);
+        const invariantId = e?.invariantId;
+        results.push({ name: scenarioKey, ok: false, ms, err: e?.message || String(e) });
+        failures++;
+        try {
+          // Inflight map is keyed by runId + scenarioKey so parallel
+          // slots don't read each other's gameIds (Gerald 2026-05-09).
+          const inflightRoot = (globalThis as any).__harness_inflight?.[runLog.runId] ?? {};
+          const inflight = inflightRoot[scenarioKey];
+          const snap = await snapshotFailure({
+            prisma: harnessPrisma,
+            runDir: runLog.runDir,
+            scenario: scenarioKey,
+            gameId: lastResult?.gameId ?? inflight?.gameId,
+            botUserIds: lastResult?.botUserIds ?? inflight?.botUserIds,
+            errorMessage: e?.message || String(e),
+            invariantId,
+          });
+          const issue = autoFileIssue({
+            scenario: scenarioKey,
+            runId: runLog.runId,
+            runDir: runLog.runDir,
+            errorMessage: e?.message || String(e),
+            invariantId,
+            snapshotPath: snap,
+          });
+          console.log(`  [snapshot] ${snap}`);
+          console.log(`  [issue]    ${issue}`);
+        } catch (snapErr: any) {
+          console.log(`  [snapshot] FAILED: ${snapErr?.message}`);
+        }
+        runLog.endScenario(scenarioKey, false, { ms, error: e?.message, invariantId });
       }
-      runLog.endScenario(scenarioKey, false, { ms, error: e?.message, invariantId });
-    }
+    });
   }
 
   // ---- Pass dispatcher: serial (with reset) or parallel (no reset). ----
