@@ -4,6 +4,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import type { BotClient } from './botClient';
+import { INV, type RunLog } from './runLog';
 
 export interface InvariantContext {
   gameId: string;
@@ -11,6 +12,15 @@ export interface InvariantContext {
   /** Sum of (initial buy-in chips) across all bots, in micro-units. */
   initialChipsTotal: bigint;
   prisma: PrismaClient;
+  /** Optional run log for structured failure reporting. */
+  runLog?: RunLog;
+}
+
+function failInvariant(ctx: InvariantContext, id: string, msg: string): never {
+  ctx.runLog?.write({ kind: 'invariant.fail', invariantId: id, data: { msg } });
+  const err = new Error(`[${id}] ${msg}`);
+  (err as any).invariantId = id;
+  throw err;
 }
 
 function microSum(microStrs: string[]): bigint {
@@ -56,7 +66,9 @@ export async function assertChipsConserved(ctx: InvariantContext) {
     const TICK_TOLERANCE_MICRO = 5_000_000n; // 5 chips
     const overage = stackTotal + pot - initialChipsTotal;
     if (overage > TICK_TOLERANCE_MICRO) {
-      throw new Error(
+      failInvariant(
+        ctx,
+        INV.CHIPS_CONSERVED,
         `Chip leak: stacks(${stackTotal}) + pot(${pot}) = ${
           stackTotal + pot
         } > initial(${initialChipsTotal}) by ${overage}`
@@ -68,7 +80,7 @@ export async function assertChipsConserved(ctx: InvariantContext) {
 
   for (const p of game.players) {
     if (p.chipStack < 0n) {
-      throw new Error(`Negative chip stack for ${p.userId}: ${p.chipStack}`);
+      failInvariant(ctx, INV.NO_NEG_STACK, `Negative chip stack for ${p.userId}: ${p.chipStack}`);
     }
   }
 }
@@ -104,7 +116,9 @@ export async function assertSessionLedger(
 
   const total = endTotal + lockedInGame + livePot;
   if (total !== startTotal) {
-    throw new Error(
+    failInvariant(
+      ctx,
+      INV.SESSION_LEDGER,
       `Ledger mismatch: start=${startTotal} end=${endTotal} locked=${lockedInGame} pot=${livePot} total=${total} delta=${
         total - startTotal
       }`
@@ -121,7 +135,9 @@ export function assertNoStalls(ctx: InvariantContext, maxStallMs = 90_000) {
     // Silent bots are EXPECTED to sit on their turn (testing auto-fold).
     if (b.cfg.silent) continue;
     if (b.turnStartedAt && now - b.turnStartedAt > maxStallMs) {
-      throw new Error(
+      failInvariant(
+        ctx,
+        INV.NO_STALLS,
         `Bot ${b.cfg.email} stalled on its turn for ${now - b.turnStartedAt}ms`
       );
     }
@@ -137,7 +153,9 @@ export function assertBotsHealthy(ctx: InvariantContext) {
   for (const b of ctx.bots) {
     const allowed = Math.max(3, Math.floor(b.actionsTaken * 0.1));
     if (b.errors.length > allowed) {
-      throw new Error(
+      failInvariant(
+        ctx,
+        INV.BOTS_HEALTHY,
         `Bot ${b.cfg.email} accumulated ${b.errors.length} errors (allowed ${allowed}). First few: ${b.errors
           .slice(0, 5)
           .join(' | ')}`
@@ -152,7 +170,7 @@ export function assertBotsHealthy(ctx: InvariantContext) {
  *   - sum(GamePlayer.chipStack) == 0 (no chips locked at the table)
  *   - no Hand row whose stage != 'completed' with pot > 0
  */
-export async function assertClosedGamesAreEmpty(prisma: PrismaClient) {
+export async function assertClosedGamesAreEmpty(prisma: PrismaClient, runLog?: RunLog) {
   const closedGames = await prisma.game.findMany({
     where: { status: { in: ['completed', 'cancelled'] } },
     select: {
@@ -165,15 +183,19 @@ export async function assertClosedGamesAreEmpty(prisma: PrismaClient) {
   for (const g of closedGames) {
     const stackSum = g.players.reduce((a, p) => a + BigInt(p.chipStack ?? 0n), 0n);
     if (stackSum !== 0n) {
-      throw new Error(
-        `Closed game ${g.id} (${g.status}) still has ${stackSum} chips on the table`
-      );
+      const msg = `Closed game ${g.id} (${g.status}) still has ${stackSum} chips on the table`;
+      runLog?.write({ kind: 'invariant.fail', invariantId: INV.CLOSED_GAMES_EMPTY, data: { msg, gameId: g.id } });
+      const err = new Error(`[${INV.CLOSED_GAMES_EMPTY}] ${msg}`);
+      (err as any).invariantId = INV.CLOSED_GAMES_EMPTY;
+      throw err;
     }
     for (const h of g.hands) {
       if (h.stage !== 'completed' && BigInt(h.pot ?? 0n) > 0n) {
-        throw new Error(
-          `Closed game ${g.id} has open hand ${h.id} (stage=${h.stage}, pot=${h.pot})`
-        );
+        const msg = `Closed game ${g.id} has open hand ${h.id} (stage=${h.stage}, pot=${h.pot})`;
+        runLog?.write({ kind: 'invariant.fail', invariantId: INV.CLOSED_GAMES_EMPTY, data: { msg, gameId: g.id, handId: h.id } });
+        const err = new Error(`[${INV.CLOSED_GAMES_EMPTY}] ${msg}`);
+        (err as any).invariantId = INV.CLOSED_GAMES_EMPTY;
+        throw err;
       }
     }
   }
@@ -183,7 +205,7 @@ export async function assertClosedGamesAreEmpty(prisma: PrismaClient) {
  * HandEvent sequence numbers must be monotonic per scopeId.
  * Tests Gerald's Item 4 fix end-to-end (under live concurrency).
  */
-export async function assertHandEventSequencesMonotonic(prisma: PrismaClient) {
+export async function assertHandEventSequencesMonotonic(prisma: PrismaClient, runLog?: RunLog) {
   const events = await prisma.handEvent.findMany({
     select: { scopeId: true, sequenceNumber: true, serverTime: true },
     orderBy: [{ scopeId: 'asc' }, { sequenceNumber: 'asc' }],
@@ -197,7 +219,13 @@ export async function assertHandEventSequencesMonotonic(prisma: PrismaClient) {
   for (const [scope, seqs] of byScope) {
     const seen = new Set<number>();
     for (const n of seqs) {
-      if (seen.has(n)) throw new Error(`Duplicate HandEvent seq ${n} in scope ${scope}`);
+      if (seen.has(n)) {
+        const msg = `Duplicate HandEvent seq ${n} in scope ${scope}`;
+        runLog?.write({ kind: 'invariant.fail', invariantId: INV.SEQ_MONOTONIC, data: { msg, scope, seq: n } });
+        const err = new Error(`[${INV.SEQ_MONOTONIC}] ${msg}`);
+        (err as any).invariantId = INV.SEQ_MONOTONIC;
+        throw err;
+      }
       seen.add(n);
     }
   }

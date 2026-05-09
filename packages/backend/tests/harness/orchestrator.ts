@@ -22,6 +22,7 @@ import {
   assertNoStalls,
   assertSessionLedger,
 } from './invariants';
+import { getActiveRunLog, type RunLog } from './runLog';
 
 export interface OrchestrationOptions {
   baseUrl: string;
@@ -42,6 +43,8 @@ export interface OrchestrationOptions {
   onTick?: (ctx: TickContext) => void | Promise<void>;
   /** Optional one-time hook fired after the first hand starts. */
   onFirstHand?: (ctx: TickContext) => void | Promise<void>;
+  /** Run log for forensics. */
+  runLog?: RunLog;
 }
 
 export interface TickContext {
@@ -56,6 +59,8 @@ export interface OrchestrationResult {
   handsCompleted: number;
   durationMs: number;
   bots: BotClient[];
+  /** User IDs of all bots, useful for failure snapshots. */
+  botUserIds: string[];
 }
 
 const prisma = new PrismaClient();
@@ -191,6 +196,7 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
     bots,
     initialChipsTotal,
     prisma,
+    runLog: opts.runLog ?? getActiveRunLog() ?? undefined,
   };
 
   const maxHands = opts.maxHands ?? 10;
@@ -224,10 +230,11 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   }
 
   // 10. Final invariants
+  const activeLog = opts.runLog ?? getActiveRunLog() ?? undefined;
   await assertChipsConserved(ctx);
   assertBotsHealthy(ctx);
-  await assertHandEventSequencesMonotonic(prisma);
-  await assertClosedGamesAreEmpty(prisma);
+  await assertHandEventSequencesMonotonic(prisma, activeLog);
+  await assertClosedGamesAreEmpty(prisma, activeLog);
   await assertSessionLedger(ctx, startingBalances);
 
   // 11. Cleanup
@@ -238,6 +245,7 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
     handsCompleted,
     durationMs: Date.now() - startedAt,
     bots,
+    botUserIds: bots.map((b) => b.userId!).filter(Boolean),
   };
 }
 

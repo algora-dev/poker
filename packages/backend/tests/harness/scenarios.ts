@@ -8,6 +8,7 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import { createSigner } from 'fast-jwt';
 import { runOrchestration, type OrchestrationResult } from './orchestrator';
+import type { RunLog } from './runLog';
 import {
   Aggro,
   AlwaysAllIn,
@@ -24,6 +25,8 @@ export interface ScenarioEnv {
   adminSecret: string;
   /** Suffix appended to bot emails so re-runs reuse the same accounts. */
   runSuffix?: string;
+  /** Run log for forensics. */
+  runLog?: RunLog;
 }
 
 export interface Scenario {
@@ -429,6 +432,7 @@ const moneyLockScenario: Scenario = {
       handsCompleted: 0,
       durationMs: Date.now() - t0,
       bots: [],
+      botUserIds: [user.id],
     };
   },
 };

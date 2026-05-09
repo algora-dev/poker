@@ -16,6 +16,8 @@ loadEnv({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 import { getScenario, listScenarios, SCENARIOS, type ScenarioEnv } from './scenarios';
 import { harnessPrisma } from './orchestrator';
+import { RunLog, setActiveRunLog } from './runLog';
+import { autoFileIssue, snapshotFailure } from './dbSnapshot';
 
 /**
  * Phase 10: ensure each scenario starts from a known-clean game state.
@@ -48,7 +50,13 @@ async function main() {
   // Override with HARNESS_RUN_SUFFIX=fresh_$(date) when you need cleanroom users.
   const runSuffix = process.env.HARNESS_RUN_SUFFIX ?? 'persist1';
 
-  const env: ScenarioEnv = { baseUrl, adminSecret, runSuffix };
+  const profile = process.env.HARNESS_PROFILE ?? 'local';
+  const runLog = new RunLog();
+  setActiveRunLog(runLog);
+  runLog.write({ kind: 'run.start', data: { baseUrl, profile, runSuffix } });
+  console.log(`[harness] runId=${runLog.runId}  profile=${profile}  runDir=${runLog.runDir}`);
+
+  const env: ScenarioEnv = { baseUrl, adminSecret, runSuffix, runLog };
 
   // Quick reachability check.
   try {
@@ -96,9 +104,12 @@ async function main() {
       }
     }
     process.stdout.write(`\n▶ ${s.name}\n  ${s.description}\n  `);
+    runLog.startScenario(s.name);
     const t0 = Date.now();
+    let lastResult: any = null;
     try {
       const res = await s.run(env);
+      lastResult = res;
       const ms = Date.now() - t0;
       console.log(
         `PASS in ${ms}ms — gameId=${res.gameId.slice(-8)} hands=${res.handsCompleted}`
@@ -109,19 +120,47 @@ async function main() {
         console.log(
           `      ${tag}  ${b.cfg.email.padEnd(34)}  acts=${b.actionsTaken
             .toString()
-            .padStart(3)}  reconn=${b.reconnects}`
+            .padStart(3)}  reconn=${b.reconnects}  watchdog=${b.watchdogResyncs}`
         );
       }
       results.push({ name: s.name, ok: true, ms, hands: res.handsCompleted });
+      runLog.endScenario(s.name, true, { ms, hands: res.handsCompleted, gameId: res.gameId });
     } catch (e: any) {
       const ms = Date.now() - t0;
       console.log(`FAIL in ${ms}ms`);
       console.log(`  ${e?.stack || e?.message || e}`);
+      const invariantId = e?.invariantId;
       results.push({ name: s.name, ok: false, ms, err: e?.message || String(e) });
       failures++;
+      // Snapshot DB state for forensics.
+      try {
+        const snap = await snapshotFailure({
+          prisma: harnessPrisma,
+          runDir: runLog.runDir,
+          scenario: s.name,
+          gameId: lastResult?.gameId,
+          botUserIds: lastResult?.botUserIds,
+          errorMessage: e?.message || String(e),
+          invariantId,
+        });
+        const issue = autoFileIssue({
+          scenario: s.name,
+          runId: runLog.runId,
+          runDir: runLog.runDir,
+          errorMessage: e?.message || String(e),
+          invariantId,
+          snapshotPath: snap,
+        });
+        console.log(`  [snapshot] ${snap}`);
+        console.log(`  [issue]    ${issue}`);
+      } catch (snapErr: any) {
+        console.log(`  [snapshot] FAILED: ${snapErr?.message}`);
+      }
+      runLog.endScenario(s.name, false, { ms, error: e?.message, invariantId });
     }
   }
 
+  const totalMs = results.reduce((a, r) => a + r.ms, 0);
   console.log('\n' + '='.repeat(72));
   console.log('SUMMARY');
   for (const r of results) {
@@ -133,6 +172,25 @@ async function main() {
   }
   console.log('='.repeat(72));
   console.log(failures === 0 ? '\nALL GREEN ✅\n' : `\n${failures} FAILED ❌\n`);
+
+  runLog.write({ kind: 'run.end', data: { failures, totalMs, results } });
+  runLog.writeSummary({
+    runId: runLog.runId,
+    profile,
+    baseUrl,
+    failures,
+    totalMs,
+    results,
+  });
+  runLog.appendResultsRow({
+    runId: runLog.runId,
+    profile,
+    scenarios: results.length,
+    passed: results.length - failures,
+    failed: failures,
+    totalMs,
+  });
+  runLog.close();
 
   await harnessPrisma.$disconnect();
   process.exit(failures === 0 ? 0 : 1);
