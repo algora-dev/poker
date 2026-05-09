@@ -132,8 +132,11 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
     startingBalances.set(b.userId!, after?.chips ?? 0n);
   }
 
-  // 3. Connect all sockets
-  for (const b of bots) await b.connectSocket();
+  // 3. Connect all sockets and start watchdogs
+  for (const b of bots) {
+    await b.connectSocket();
+    b.startWatchdog();
+  }
 
   // 4. First bot creates the game
   const creator = bots[0];
@@ -228,7 +231,7 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   await assertSessionLedger(ctx, startingBalances);
 
   // 11. Cleanup
-  for (const b of bots) b.disconnect(true);
+  for (const b of bots) b.shutdown();
 
   return {
     gameId,
