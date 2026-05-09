@@ -1,2 +1,0 @@
-{"ts":"2026-05-09T11:24:01.519Z","runId":"2026-05-09T11-19-53-904Z","scenario":"heads_up_walk","kind":"scenario.start","data":{"name":"heads_up_walk"}}
-{"ts":"2026-05-09T11:25:20.954Z","runId":"2026-05-09T11-19-53-904Z","scenario":"heads_up_walk","kind":"scenario.end","data":{"name":"heads_up_walk","ok":true,"ms":79435,"hands":12,"gameId":"cmoy9ah7k02z6twzbn7b8eq30"}}

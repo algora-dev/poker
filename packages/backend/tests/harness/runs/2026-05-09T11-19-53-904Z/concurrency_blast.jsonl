@@ -1,2 +1,0 @@
-{"ts":"2026-05-09T11:23:22.476Z","runId":"2026-05-09T11-19-53-904Z","scenario":"concurrency_blast","kind":"scenario.start","data":{"name":"concurrency_blast"}}
-{"ts":"2026-05-09T11:23:24.791Z","runId":"2026-05-09T11-19-53-904Z","scenario":"concurrency_blast","kind":"scenario.end","data":{"name":"concurrency_blast","ok":true,"ms":2315,"hands":6,"gameId":"cmoy99n4t028vtwzbmjqvz9if"}}

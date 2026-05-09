@@ -1,2 +1,0 @@
-{"ts":"2026-05-09T11:22:12.302Z","runId":"2026-05-09T11-19-53-904Z","scenario":"cashout_mid_game","kind":"scenario.start","data":{"name":"cashout_mid_game"}}
-{"ts":"2026-05-09T11:23:22.459Z","runId":"2026-05-09T11-19-53-904Z","scenario":"cashout_mid_game","kind":"scenario.end","data":{"name":"cashout_mid_game","ok":true,"ms":70157,"hands":52,"gameId":"cmoy984xi01h7twzbea6328b7"}}

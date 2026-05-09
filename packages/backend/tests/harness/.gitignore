@@ -1,2 +1,7 @@
 # Diagnostic SQL helpers used during harness investigation. Disposable.
 diag*.sql
+
+# Per-run artefacts: structured logs, DB snapshots, and auto-filed issue
+# markdowns. Useful locally but should not be committed.
+runs/
+issues/

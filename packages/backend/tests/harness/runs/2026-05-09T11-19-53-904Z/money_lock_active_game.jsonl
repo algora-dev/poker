@@ -1,2 +1,0 @@
-{"ts":"2026-05-09T11:26:44.428Z","runId":"2026-05-09T11-19-53-904Z","scenario":"money_lock_active_game","kind":"scenario.start","data":{"name":"money_lock_active_game"}}
-{"ts":"2026-05-09T11:26:44.514Z","runId":"2026-05-09T11-19-53-904Z","scenario":"money_lock_active_game","kind":"scenario.end","data":{"name":"money_lock_active_game","ok":true,"ms":86,"hands":0,"gameId":"cmoy9dyvl0002g5rl3fff3s7m"}}

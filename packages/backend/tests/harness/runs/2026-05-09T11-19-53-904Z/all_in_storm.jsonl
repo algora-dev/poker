@@ -1,2 +1,0 @@
-{"ts":"2026-05-09T11:21:55.157Z","runId":"2026-05-09T11-19-53-904Z","scenario":"all_in_storm","kind":"scenario.start","data":{"name":"all_in_storm"}}
-{"ts":"2026-05-09T11:21:56.350Z","runId":"2026-05-09T11-19-53-904Z","scenario":"all_in_storm","kind":"scenario.end","data":{"name":"all_in_storm","ok":true,"ms":1192,"hands":4,"gameId":"cmoy97rq100wttwzbkosery3y"}}

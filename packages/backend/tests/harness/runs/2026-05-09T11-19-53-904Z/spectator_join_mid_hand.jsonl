@@ -1,2 +1,0 @@
-{"ts":"2026-05-09T11:25:45.937Z","runId":"2026-05-09T11-19-53-904Z","scenario":"spectator_join_mid_hand","kind":"scenario.start","data":{"name":"spectator_join_mid_hand"}}
-{"ts":"2026-05-09T11:26:05.524Z","runId":"2026-05-09T11-19-53-904Z","scenario":"spectator_join_mid_hand","kind":"scenario.end","data":{"name":"spectator_join_mid_hand","ok":true,"ms":19587,"hands":8,"gameId":"cmoy9cpt704rctwzb92qpxuzj"}}

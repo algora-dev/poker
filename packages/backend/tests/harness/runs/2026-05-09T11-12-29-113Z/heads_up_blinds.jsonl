@@ -1,2 +1,0 @@
-{"ts":"2026-05-09T11:12:29.201Z","runId":"2026-05-09T11-12-29-113Z","scenario":"heads_up_blinds","kind":"scenario.start","data":{"name":"heads_up_blinds"}}
-{"ts":"2026-05-09T11:13:25.159Z","runId":"2026-05-09T11-12-29-113Z","scenario":"heads_up_blinds","kind":"scenario.end","data":{"name":"heads_up_blinds","ok":true,"ms":55958,"hands":10,"gameId":"cmoy8vn0w000e6tpb6hsyp8q2"}}

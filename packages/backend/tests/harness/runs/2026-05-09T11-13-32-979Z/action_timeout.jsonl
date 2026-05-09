@@ -1,2 +1,0 @@
-{"ts":"2026-05-09T11:17:40.622Z","runId":"2026-05-09T11-13-32-979Z","scenario":"action_timeout","kind":"scenario.start","data":{"name":"action_timeout"}}
-{"ts":"2026-05-09T11:17:42.816Z","runId":"2026-05-09T11-13-32-979Z","scenario":"action_timeout","kind":"scenario.end","data":{"name":"action_timeout","ok":true,"ms":2193,"hands":3,"gameId":"cmoy92bbv01uw6tpbzpx47fts"}}
