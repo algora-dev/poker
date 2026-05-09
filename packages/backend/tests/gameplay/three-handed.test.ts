@@ -414,4 +414,60 @@ describe('Layer B — 3-handed scenarios', () => {
     });
     assertScriptedOk('TH-06', r);
   });
+
+  it('TH-07: fold leaves zero non-all-in players — hand fast-forwards to showdown (Gerald audit-22 H-01)', async () => {
+    // Setup: P1 (BTN, 30) and P2 (SB, 30) both shove preflop with their
+    // small stacks. P3 (BB, 200) considers the action and FOLDS.
+    // After P3 folds: P1 and P2 are both all-in; P3 is folded.
+    //   remainingActive (non-folded, non-eliminated) = 2 (both all-in).
+    //   remainingNonAllIn = 0.
+    // Pre-fix behaviour: engine fell through to "find next active
+    // player", couldn't find one (everyone is all-in or folded), and
+    // either stalled or set activePlayerIndex to a bogus seat.
+    // Post-fix: fold branch detects remainingNonAllIn <= 1 and runs
+    // showdown fast-forward immediately. Both all-in players' equity
+    // is contested.
+    //
+    // Forced deck makes P1 win outright (KK > 22 unimproved).
+    setForcedDeck(
+      buildPartialDeck([
+        'Ks', 'Kh',          // P1 (BTN, seat 0): pocket kings
+        '2c', '3c',          // P2 (SB, seat 1): junk
+        'Ad', 'Qd',          // P3 (BB, seat 2): hole cards (folds, doesn't matter)
+        '7s', '8s', '9s',    // flop
+        'Jh',                // turn
+        '4c',                // river
+      ])
+    );
+    const r = await runScripted({
+      name: 'TH-07_fold_leaves_zero_non_allin',
+      players: 3,
+      stacks: [30, 30, 200],
+      hands: [
+        {
+          // 3-handed preflop order: BTN (seat 0), SB (seat 1), BB (seat 2).
+          preflop: [
+            { actor: 'BTN', action: 'all-in' }, // P1 shoves 30
+            { actor: 'SB',  action: 'all-in' }, // P2 shoves 30 (call all-in)
+            { actor: 'BB',  action: 'fold' },   // P3 folds; both remaining are all-in.
+            // Engine MUST now fast-forward to showdown. No further actions.
+          ],
+        },
+      ],
+      expect: {
+        handsCompleted: 1,
+        // Pot = 30 + 30 + 1 = 61. Side pot construction with
+        // contributions [30, 30, 1]:
+        //   Pot 0 (cap 1): 1*3 = 3, eligible to all 3.
+        //   Pot 1 (cap 30): 29*2 = 58, eligible to seat 0 + seat 1.
+        // P1=BTN(KK) wins both pots over P2=SB(junk + 7-J board doesn't help).
+        // P1=seat 0: 0 + 3 + 58 = 61.
+        // P2=seat 1 (SB): 0 (busted, but game continues since 2 players still alive).
+        // P3=seat 2 (BB folded): 200 - 1 = 199.
+        // Game continues because 2 non-eliminated players remain (61, 199).
+        finalStacks: [61, 0, 199],
+      },
+    });
+    assertScriptedOk('TH-07', r);
+  });
 });

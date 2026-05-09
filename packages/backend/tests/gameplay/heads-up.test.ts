@@ -70,6 +70,9 @@ function assertScriptedOk(name: string, r: Awaited<ReturnType<typeof runScripted
     ...(r.invariantViolations.length
       ? [`Invariants: ${r.invariantViolations.map((v) => `[${v.id}] ${v.message}`).join(' | ')}`]
       : []),
+    ...(r.legalityFailures.length
+      ? [`Legality: ${r.legalityFailures.map((f) => `hand ${f.handNumber} ${f.stage} seat${f.seat} intended=${f.intended.kind}${f.intended.raiseTotal != null ? '@' + f.intended.raiseTotal : ''}; ${f.reason}; legal=[${f.legalKinds.join(',')}]`).join(' | ')}`]
+      : []),
     `FinalStacks: ${JSON.stringify(r.report.finalStacks.map((s) => ({ uid: s.userId, chips: Number(s.chipStack) / 1_000_000 })))}`,
     `Hands: ${r.report.hands.length}`,
   ];

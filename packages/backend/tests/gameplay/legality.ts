@@ -55,12 +55,15 @@ export function legalActions(view: PlayerView, lastRaiseIncrement: bigint): Lega
     kinds.push('check');
     why.push('owed=0 → check legal');
   } else {
+    // 'call' is always legal when owed > 0. The engine normalizes a
+    // call to an all-in when owed >= stack (you put your remaining
+    // chips in to match what you can). Both 'call' and 'all-in' are
+    // accepted forms; we expose both so scripts can use whichever
+    // reads better.
+    kinds.push('call');
     if (owed >= stack) {
-      // Can only call all-in (treated as 'all-in' by the engine when stack < owed).
-      kinds.push('all-in');
-      why.push(`owed=${owed} >= stack=${stack} → call is all-in`);
+      why.push(`owed=${owed} >= stack=${stack} → call legal (engine will normalize to all-in)`);
     } else {
-      kinds.push('call');
       why.push(`owed=${owed} < stack=${stack} → call legal`);
     }
   }

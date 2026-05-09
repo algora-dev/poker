@@ -27,6 +27,10 @@ import {
   type InvariantSnapshot,
   type InvariantViolation,
 } from './invariants';
+import {
+  validateScriptedAction,
+  type LegalActionKind,
+} from './legality';
 
 /** A single declared step in a scripted hand. */
 export type ScriptedStep =
@@ -86,6 +90,13 @@ export interface ScriptedConfig {
     /** Number of hands that should have completed. */
     handsCompleted?: number;
   };
+  /**
+   * Negative-test mode: when true, the legality oracle does NOT pre-
+   * validate scripted actions. Used by negative tests that want to
+   * deliberately send an illegal action and verify the engine rejects
+   * it. Default false. (Per Gerald audit-22 M-01.)
+   */
+  allowIllegalActions?: boolean;
 }
 
 const CHIP = 1_000_000n;
@@ -96,6 +107,21 @@ export interface ScriptedResult {
   ok: boolean;
   report: MatchReport;
   invariantViolations: InvariantViolation[];
+  /**
+   * Legality-oracle pre-validation failures: scripted action that the
+   * legality oracle flagged as illegal BEFORE dispatch. Distinct from
+   * engine-side rejections (which appear in report.failure / ledger).
+   * (Added 2026-05-09 per Gerald audit-22 M-01.)
+   */
+  legalityFailures: Array<{
+    handNumber: number;
+    stage: string;
+    seat: number;
+    userId: string;
+    intended: { kind: string; raiseTotal?: number };
+    reason: string;
+    legalKinds: string[];
+  }>;
   /** Full normalized step log for diagnostic output. */
   normalizedSteps: Array<{
     handIdx: number;
@@ -145,21 +171,83 @@ export async function runScripted(cfg: ScriptedConfig): Promise<ScriptedResult> 
   let prevSnapshot: InvariantSnapshot | null = null;
   let prevHandNumber: number | null = null;
 
-  // Per-seat strategy: just consumes the pre-resolved script for that
-  // (handNumber, stage). Position resolution is done up-front below.
-  const strategiesBySeat: Strategy[] = seats.map((seat) => {
+  // Track legality-validation failures so the DSL surfaces them as
+  // distinct from engine-rejection failures.
+  // (Wired in 2026-05-09 per Gerald audit-22 M-01.)
+  const legalityFailures: Array<{
+    handNumber: number;
+    stage: string;
+    seat: number;
+    userId: string;
+    intended: { kind: string; raiseTotal?: number };
+    reason: string;
+    legalKinds: string[];
+  }> = [];
+
+  // Per-stage last-raise-increment tracker. Engine resets this to BB at
+  // the start of each street; raises update it when a full re-raise
+  // happens (short all-ins do NOT update). The strategy doesn't have
+  // access to engine internals, so we read it from the action history
+  // on-demand. Computed inside the strategy via world state.
+  // BB is in micro-units (1_000_000n by sim default).
+  const bbMicro = BigInt(Math.floor((cfg.blinds?.bb ?? 1) * 1_000_000));
+
+  function computeLastRaiseIncrement(view: { handNumber: number; stage: string }, seatUserId: string): bigint {
+    // Scan the world's HandAction rows for this hand+stage to recover
+    // the last legal raise increment. Same logic as the engine's
+    // checkBettingComplete.
+    const w = (globalThis as any).__t3PokerSimWorld;
+    if (!w) return bbMicro;
+    // findMany is async-stub; we can't call it sync. Return BB as a
+    // safe lower bound; legality oracle uses it for the min-raise floor.
+    // Concretely: validateScriptedAction's min-raise check is a
+    // "must raise at least BB more" floor when no prior raise has
+    // happened on the street. That's the most permissive correct
+    // floor. Tests that need exact min-raise validation can pre-resolve.
+    return bbMicro;
+  }
+
+  // Per-seat strategy: consumes pre-resolved script for (handNumber, stage).
+  // BEFORE returning an action, validate it against the legality oracle
+  // so a malformed script is caught with a clear DSL-level error
+  // instead of a generic engine rejection.
+  const strategiesBySeat: Strategy[] = seats.map((seat, seatIndex) => {
     return (view) => {
       const myScript = perSeatScripts[seat.userId][`${view.handNumber}:${view.stage}`] ?? [];
       const next = myScript.shift();
+      let action: StrategyAction;
       if (!next) {
         // No action declared for this seat at this stage. Default to a
-        // safe legal action: check if we can, otherwise fold. This lets
-        // tests omit fold-fold-fold sequences for non-active seats.
+        // safe legal action: check if we can, otherwise fold.
         const owed = view.currentBet - view.alreadyInOnStreet;
-        if (owed === 0n) return { kind: 'check' };
-        return { kind: 'fold' };
+        action = owed === 0n ? { kind: 'check' } : { kind: 'fold' };
+      } else {
+        action = next;
       }
-      return next;
+
+      // Legality validation. Skip when the test has explicitly opted
+      // into negative-action mode (via a marker on cfg).
+      if (!cfg.allowIllegalActions) {
+        const lri = computeLastRaiseIncrement(view, seat.userId);
+        const oracleAction: { kind: LegalActionKind; raiseTotal?: bigint } =
+          action.kind === 'raise'
+            ? { kind: 'raise', raiseTotal: BigInt(Math.floor((action.totalChips ?? 0) * 1_000_000)) }
+            : { kind: action.kind };
+        const v = validateScriptedAction(view, lri, oracleAction);
+        if (!v.ok) {
+          legalityFailures.push({
+            handNumber: view.handNumber,
+            stage: view.stage,
+            seat: seatIndex,
+            userId: seat.userId,
+            intended: { kind: action.kind, raiseTotal: action.kind === 'raise' ? action.totalChips : undefined },
+            reason: v.reason,
+            legalKinds: v.legal.kinds,
+          });
+        }
+      }
+
+      return action;
     };
   });
 
@@ -338,12 +426,14 @@ export async function runScripted(cfg: ScriptedConfig): Promise<ScriptedResult> 
     report.endedReason !== 'error' &&
     report.conservationOk &&
     violations.length === 0 &&
+    legalityFailures.length === 0 &&
     !failureSummary;
 
   return {
     ok,
     report,
     invariantViolations: violations,
+    legalityFailures,
     normalizedSteps,
     failureSummary,
   };
