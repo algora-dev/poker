@@ -170,9 +170,20 @@ export function assertBotsHealthy(ctx: InvariantContext) {
  *   - sum(GamePlayer.chipStack) == 0 (no chips locked at the table)
  *   - no Hand row whose stage != 'completed' with pot > 0
  */
-export async function assertClosedGamesAreEmpty(prisma: PrismaClient, runLog?: RunLog) {
+export async function assertClosedGamesAreEmpty(
+  prisma: PrismaClient,
+  runLog?: RunLog,
+  scopeUserIds?: string[],
+) {
+  // When scopeUserIds is provided we only check games where at least one
+  // of those users was a player. Lets parallel scenarios coexist without
+  // cross-talk on this invariant.
+  const where: any = { status: { in: ['completed', 'cancelled'] } };
+  if (scopeUserIds && scopeUserIds.length) {
+    where.players = { some: { userId: { in: scopeUserIds } } };
+  }
   const closedGames = await prisma.game.findMany({
-    where: { status: { in: ['completed', 'cancelled'] } },
+    where,
     select: {
       id: true,
       status: true,
@@ -205,8 +216,14 @@ export async function assertClosedGamesAreEmpty(prisma: PrismaClient, runLog?: R
  * HandEvent sequence numbers must be monotonic per scopeId.
  * Tests Gerald's Item 4 fix end-to-end (under live concurrency).
  */
-export async function assertHandEventSequencesMonotonic(prisma: PrismaClient, runLog?: RunLog) {
+export async function assertHandEventSequencesMonotonic(
+  prisma: PrismaClient,
+  runLog?: RunLog,
+  scopeIds?: string[],
+) {
+  const where: any = scopeIds && scopeIds.length ? { scopeId: { in: scopeIds } } : {};
   const events = await prisma.handEvent.findMany({
+    where,
     select: { scopeId: true, sequenceNumber: true, serverTime: true },
     orderBy: [{ scopeId: 'asc' }, { sequenceNumber: 'asc' }],
   });

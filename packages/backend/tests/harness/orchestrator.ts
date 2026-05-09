@@ -199,8 +199,10 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
     runLog: opts.runLog ?? getActiveRunLog() ?? undefined,
   };
 
-  const maxHands = opts.maxHands ?? 10;
-  const deadline = startedAt + (opts.timeoutMs ?? 5 * 60_000);
+  const handMultiplier = Math.max(1, parseFloat(process.env.HARNESS_HAND_MULTIPLIER ?? '1') || 1);
+  const timeoutMultiplier = Math.max(1, handMultiplier);
+  const maxHands = Math.ceil((opts.maxHands ?? 10) * handMultiplier);
+  const deadline = startedAt + (opts.timeoutMs ?? 5 * 60_000) * timeoutMultiplier;
 
   while (handsCompleted < maxHands && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 1000));
@@ -231,10 +233,16 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
 
   // 10. Final invariants
   const activeLog = opts.runLog ?? getActiveRunLog() ?? undefined;
+  const botUserIds = bots.map((b) => b.userId!).filter(Boolean);
+  // Scope per-user invariants so parallel scenarios don't cross-talk.
+  // We pass hand IDs as scopeIds for the sequence-monotonic check.
+  const handIdsForScope = (
+    await prisma.hand.findMany({ where: { gameId }, select: { id: true } })
+  ).map((h) => h.id);
   await assertChipsConserved(ctx);
   assertBotsHealthy(ctx);
-  await assertHandEventSequencesMonotonic(prisma, activeLog);
-  await assertClosedGamesAreEmpty(prisma, activeLog);
+  await assertHandEventSequencesMonotonic(prisma, activeLog, handIdsForScope);
+  await assertClosedGamesAreEmpty(prisma, activeLog, botUserIds);
   await assertSessionLedger(ctx, startingBalances);
 
   // 11. Cleanup
