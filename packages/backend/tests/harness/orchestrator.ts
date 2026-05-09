@@ -160,6 +160,15 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   const created = await createRes.json();
   const gameId: string = created.game.id;
 
+  // Wrap the rest of orchestration in a try/finally so we ALWAYS close
+  // the game on the way out — even on assertion failure. Without this,
+  // a failed scenario leaves bots seated at an in_progress game, which
+  // then 409s every subsequent /games/create from the same accounts.
+  // (Gerald 2026-05-09 follow-up: surfaced by HARNESS_PARALLEL=4 run.)
+  let orchestrationError: any = null;
+  let result: OrchestrationResult | null = null;
+  try {
+
   // 5. Creator socket joins room first (creator is auto-seated by createGame).
   await creator.joinGameRoom(gameId);
 
@@ -260,16 +269,46 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   await assertClosedGamesAreEmpty(prisma, activeLog, botUserIds);
   await assertSessionLedger(ctx, startingBalances);
 
-  // 11. Cleanup
-  for (const b of bots) b.shutdown();
-
-  return {
+  result = {
     gameId,
     handsCompleted,
     durationMs: Date.now() - startedAt,
     bots,
     botUserIds: bots.map((b) => b.userId!).filter(Boolean),
   };
+  } catch (e) {
+    orchestrationError = e;
+  } finally {
+    // Tear down bot sockets.
+    for (const b of bots) {
+      try { b.shutdown(); } catch { /* ignore */ }
+    }
+    // If the game is still open, close it so subsequent scenarios
+    // (and the same bot accounts in later passes) aren't lock-blocked.
+    try {
+      const game = await prisma.game.findUnique({ where: { id: gameId } });
+      if (game && game.status !== 'completed' && game.status !== 'cancelled') {
+        const { closeGame } = await import('../../src/services/closeGame');
+        await closeGame({
+          gameId,
+          reason: orchestrationError ? 'admin_cancel' : 'admin_cancel',
+          notes: orchestrationError
+            ? `harness scenario cleanup after failure: ${(orchestrationError?.message ?? '').slice(0, 200)}`
+            : 'harness scenario cleanup',
+        });
+      }
+    } catch (closeErr: any) {
+      // Closing fails (e.g. game already closed mid-flight) is non-fatal.
+      // Log via runLog if we have one.
+      const log = opts.runLog ?? getActiveRunLog();
+      log?.write({
+        kind: 'note',
+        data: { msg: 'closeGame on cleanup failed', error: closeErr?.message },
+      });
+    }
+  }
+  if (orchestrationError) throw orchestrationError;
+  return result!;
 }
 
 export { prisma as harnessPrisma };

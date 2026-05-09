@@ -325,7 +325,7 @@ const SCENARIOS: Scenario[] = [
   // -------- Phase 4 batch C: money flow + resilience --------
   {
     name: 'withdraw_at_showdown',
-    description: '4 bots; repeatedly try /withdraw while game in_progress. Every attempt must 409 active_game_money_locked.',
+    description: '4 bots (with wallets) repeatedly try /withdraw while game in_progress. Every attempt must 409 active_game_money_locked.',
     run: (env) =>
       runOrchestration({
         baseUrl: env.baseUrl,
@@ -335,6 +335,21 @@ const SCENARIOS: Scenario[] = [
         buyInChips: 100,
         maxHands: 8,
         timeoutMs: 4 * 60_000,
+        onFirstHand: async ({ bots }) => {
+          // Attach a deterministic wallet to each bot so /withdraw doesn't
+          // short-circuit on "No wallet connected" before the lock check
+          // runs. (Gerald 2026-05-09: strict 409 assertion exposed that
+          // the bots were hitting an earlier validation, not the lock.)
+          for (const b of bots) {
+            if (!b.userId) continue;
+            const u = await prisma.user.findUnique({ where: { id: b.userId } });
+            if (u?.walletAddress) continue;
+            const wa = (
+              '0x' + Buffer.from(`was-${b.userId}`).toString('hex').padEnd(40, '0').slice(0, 40)
+            ).toLowerCase();
+            await prisma.user.update({ where: { id: b.userId }, data: { walletAddress: wa } });
+          }
+        },
         onTick: async ({ bots, gameId }) => {
           // Every tick (~1s), every bot tries to withdraw 1 chip. While
           // the game is in_progress, every attempt MUST return 409 with
