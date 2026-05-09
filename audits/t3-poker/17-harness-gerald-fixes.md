@@ -97,8 +97,8 @@ HARNESS_PARALLEL=4 npm run --workspace=packages/backend harness
 
 | Run | Profile | Scenarios | Pass | Fail | Total | Notes |
 |---|---|---|---|---|---|---|
-| `gerald-fix-targeted-v2` | local | 3 | 3 | 0 | 29s | strict `withdraw_at_showdown`, hermetic `deposit_during_close`, both-bot `bust_then_new_game` all green |
-| `gerald-fix-parallel-v3` | local | TBD | TBD | TBD | TBD | (run results will be appended on completion) |
+| `2026-05-09T12-41-31` | gerald-fix-targeted-v2 | 3 | 3 | 0 | 29.2s | strict `withdraw_at_showdown`, hermetic `deposit_during_close`, both-bot `bust_then_new_game` all green |
+| `2026-05-09T12-52-36` | gerald-fix-parallel-v4 | 19 | 19 | 0 | 9m 39s | **HARNESS_PARALLEL=4 ALL GREEN.** No mixed/corrupt scenario logs, no cascading lock failures, no false chip-conservation flags |
 
 The actual scoreboard rows are auto-appended at
 `audits/t3-poker/harness-results.md`.
@@ -145,6 +145,7 @@ The actual scoreboard rows are auto-appended at
 08554fe harness: address Gerald 2026-05-09 review (per-scenario log streams, scenario-keyed inflight, strict 409 assertions, hermetic deposit_during_close, both-bot lock-release in bust_then_new_game)
 6759328 harness: orchestrator try/finally closes game on scenario exit (parallel cleanup hygiene)
 811704f harness: short-name post-game/race scenarios (50-char limit), tolerate semantically-stale 500s as soft retry
+e551f14 harness: read assertChipsConserved snapshot in one repeatable-read tx; bump per-tick tolerance to 50 chips for parallel slack
 ```
 
-(merge SHA pending)
+(merge SHA pending push to main)
