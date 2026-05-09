@@ -138,10 +138,12 @@ export async function runScripted(cfg: ScriptedConfig): Promise<ScriptedResult> 
   const perSeatScripts: Record<string, Record<string, StrategyAction[]>> = {};
   for (const s of seats) perSeatScripts[s.userId] = {};
 
-  // Snapshot tracking.
+  // Snapshot tracking. We reset prev across hand boundaries because the
+  // stage-monotonic invariant only makes sense within a single hand.
   const violations: InvariantViolation[] = [];
   const normalizedSteps: ScriptedResult['normalizedSteps'] = [];
   let prevSnapshot: InvariantSnapshot | null = null;
+  let prevHandNumber: number | null = null;
 
   // Per-seat strategy: just consumes the pre-resolved script for that
   // (handNumber, stage). Position resolution is done up-front below.
@@ -282,7 +284,13 @@ export async function runScripted(cfg: ScriptedConfig): Promise<ScriptedResult> 
         recordedContributions,
         expectedTotalChips,
       };
-      const found = checkInvariants(prevSnapshot, snapshot);
+      // Reset prev across hand boundaries (the engine increments handNumber
+      // when initializeHand() runs for the next hand; if we kept prev from
+      // hand N-1 the stage-monotonic check would fire on hand N's preflop).
+      const handNumberNow = hand?.handNumber ?? prevHandNumber ?? 1;
+      const prevForCheck = handNumberNow !== prevHandNumber ? null : prevSnapshot;
+      prevHandNumber = handNumberNow;
+      const found = checkInvariants(prevForCheck, snapshot);
       if (found.length) {
         violations.push(...found);
         // Throw to stop the match — runMatch's onAfterAction wrapper turns

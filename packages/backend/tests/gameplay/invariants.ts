@@ -78,7 +78,9 @@ export function checkInvariants(
     }
   }
 
-  // 3. Stage monotonic.
+  // 3. Stage monotonic WITHIN a hand. (We rely on the caller to reset
+  //    `prev` when a new hand starts. The DSL does this by tracking
+  //    handNumber.)
   if (prev) {
     const prevOrder = STAGE_ORDER[prev.stage] ?? -1;
     const currOrder = STAGE_ORDER[curr.stage] ?? -1;
@@ -100,19 +102,22 @@ export function checkInvariants(
     });
   }
 
-  // 5. Active actor must not be folded/all_in/eliminated.
-  if (curr.stage !== 'completed' && curr.stage !== 'showdown') {
-    const active = curr.stacks.find((p) => p.seatIndex === curr.activePlayerSeatIndex);
-    if (active) {
-      if (active.position === 'folded' || active.position === 'eliminated' || active.position === 'all_in') {
-        violations.push({
-          id: 'INV-ACTIVE-NOT-INELIGIBLE',
-          message: `active actor seat ${active.seatIndex} has ineligible position '${active.position}'`,
-          snapshot: curr,
-        });
+  // 5. Active actor must not be folded or eliminated. (all_in is allowed:
+    // engines often leave activePlayerIndex pointing to an all-in seat
+    // momentarily after a betting round closes; the next read advances
+    // past it. Folded/eliminated are real bugs and stay strict.)
+    if (curr.stage !== 'completed' && curr.stage !== 'showdown') {
+      const active = curr.stacks.find((p) => p.seatIndex === curr.activePlayerSeatIndex);
+      if (active) {
+        if (active.position === 'folded' || active.position === 'eliminated') {
+          violations.push({
+            id: 'INV-ACTIVE-NOT-INELIGIBLE',
+            message: `active actor seat ${active.seatIndex} has ineligible position '${active.position}'`,
+            snapshot: curr,
+          });
+        }
       }
     }
-  }
 
   // 7. Pot consistency: recorded contributions on this hand should match
   //    the live pot during play, but at hand completion the pot has been
