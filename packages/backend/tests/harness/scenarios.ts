@@ -234,6 +234,94 @@ const SCENARIOS: Scenario[] = [
       }),
   },
 
+  // -------- Phase 4 batch B: connection / concurrency --------
+  {
+    name: 'mid_hand_disconnect_on_turn',
+    description: '4 bots. Disconnect one when it becomes its turn mid-hand. 30s auto-fold should fire.',
+    run: (env) =>
+      runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: botCfgs(env, [RandomReasonable, RandomReasonable, RandomReasonable, RandomReasonable], { thinkMs: 50 }),
+        bankrollChips: 5000,
+        buyInChips: 200,
+        maxHands: 4,
+        timeoutMs: 5 * 60_000,
+        onFirstHand: async ({ bots, gameId }) => {
+          // Watch bot[2]; when isMyTurn flips to true, kill its socket
+          // without reconnecting. Server should auto-fold after 30s.
+          const target = bots[2];
+          let dropped = false;
+          target.events.onState = (state) => {
+            if (!dropped && state.isMyTurn && state.status === 'in_progress') {
+              dropped = true;
+              target.disconnect(true);
+            }
+          };
+        },
+      }),
+  },
+
+  {
+    name: 'mid_hand_reconnect_state',
+    description: '4 bots. One disconnects mid-hand and reconnects 1.5s later; validates state continuity.',
+    run: (env) =>
+      runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: botCfgs(env, [RandomReasonable, RandomReasonable, RandomReasonable, RandomReasonable], { thinkMs: 50 }),
+        bankrollChips: 5000,
+        buyInChips: 200,
+        maxHands: 8,
+        timeoutMs: 5 * 60_000,
+        onFirstHand: async ({ bots, gameId }) => {
+          // Drop bot[1] mid-hand (regardless of whose turn) and reconnect
+          // 1.5s later. Bot must resync state and resume play.
+          await new Promise((r) => setTimeout(r, 1500));
+          const target = bots[1];
+          target.disconnect(true);
+          await new Promise((r) => setTimeout(r, 1500));
+          await target.reconnect(gameId);
+        },
+      }),
+  },
+
+  {
+    name: 'spectator_join_mid_hand',
+    description: '4 seated bots + 1 unseated spectator socket. Spectator joins room mid-hand and observes.',
+    run: (env) =>
+      runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: botCfgs(env, [RandomReasonable, RandomReasonable, RandomReasonable, RandomReasonable]),
+        bankrollChips: 5000,
+        buyInChips: 200,
+        maxHands: 5,
+        timeoutMs: 4 * 60_000,
+        onFirstHand: async ({ bots, gameId }) => {
+          // Re-use one of the seated bots' tokens to attempt a 'second
+          // socket' room join. The server should accept (same user) or
+          // reject cleanly — either way, no crash, no state corruption.
+          const target = bots[0];
+          if (!target.socket || !target.token) return;
+          const { io } = await import('socket.io-client');
+          const observer = io(target.cfg.baseUrl, {
+            auth: { token: target.token },
+            transports: ['websocket'],
+          });
+          await new Promise<void>((resolve) => {
+            observer.once('connect', () => resolve());
+            setTimeout(resolve, 2000);
+          });
+          let received = 0;
+          observer.on('game:state', () => { received++; });
+          observer.emit('join:game', gameId, () => {});
+          // Let it observe for 5s then disconnect.
+          setTimeout(() => observer.disconnect(), 5000);
+        },
+      }),
+  },
+
   {
     name: 'side_pot_three_way_uneven',
     description: '3 always-all-in bots with different bankrolls. Targeted side-pot construction.',
@@ -544,6 +632,93 @@ const moneyLockScenario: Scenario = {
 };
 
 SCENARIOS.push(moneyLockScenario);
+
+// -------- Phase 4 batch B: concurrent create race --------
+const concurrentCreateRaceScenario: Scenario = {
+  name: 'concurrent_create_race',
+  description: '5 users hit /api/games/create at the same instant. All should succeed; no DB races.',
+  async run(env): Promise<OrchestrationResult> {
+    const t0 = Date.now();
+    const suffix = env.runSuffix ?? 'race';
+    const N = 5;
+    const users: { id: string; email: string; token: string }[] = [];
+
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) throw new Error('JWT_SECRET not set');
+    const signer = createSigner({ key: jwtSecret, expiresIn: 60 * 60 * 1000 });
+
+    for (let i = 0; i < N; i++) {
+      const email = `racer${i}.${suffix}@harness.test`.toLowerCase();
+      const username = `racer${i}_${suffix}`.toLowerCase();
+      let user = await prisma.user.findUnique({ where: { email } });
+      if (!user) {
+        const passwordHash = await bcrypt.hash('harness-pw-2026!', 12);
+        user = await prisma.$transaction(async (tx) => {
+          const u = await tx.user.create({ data: { email, username, passwordHash } });
+          await tx.chipBalance.create({ data: { userId: u.id, chips: 1_000_000_000n } });
+          return u;
+        });
+      }
+      // Top up via direct DB write (admin-secret round-trip not needed here).
+      await prisma.chipBalance.upsert({
+        where: { userId: user.id },
+        update: { chips: 1_000_000_000n },
+        create: { userId: user.id, chips: 1_000_000_000n },
+      });
+      users.push({ id: user.id, email, token: signer({ userId: user.id }) });
+    }
+
+    // Fire all 5 creates simultaneously. We use Promise.all with no await
+    // between them so the requests hit Fastify near-simultaneously.
+    const fires = users.map((u) =>
+      fetch(`${env.baseUrl}/api/games/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${u.token}` },
+        body: JSON.stringify({
+          name: `Race ${u.email} ${Date.now()}`,
+          minBuyIn: 100,
+          maxBuyIn: 100,
+          creatorBuyIn: 100,
+          smallBlind: 0.5,
+          bigBlind: 1,
+        }),
+      }).then(async (r) => ({ status: r.status, body: await r.text() }))
+    );
+    const results = await Promise.all(fires);
+    const oks = results.filter((r) => r.status >= 200 && r.status < 300);
+    if (oks.length !== N) {
+      const failures = results.filter((r) => r.status < 200 || r.status >= 300);
+      throw new Error(
+        `concurrent_create_race: expected ${N} successes, got ${oks.length}. Failures: ${JSON.stringify(failures.slice(0, 3))}`
+      );
+    }
+    // Each successful create should have produced a distinct gameId.
+    const gameIds = oks.map((r) => {
+      try { return JSON.parse(r.body).game?.id; } catch { return null; }
+    }).filter(Boolean) as string[];
+    if (new Set(gameIds).size !== N) {
+      throw new Error(`concurrent_create_race: duplicate gameIds in ${JSON.stringify(gameIds)}`);
+    }
+
+    // Cleanup: cancel all games we just created so the next scenario isn't
+    // polluted. Use closeGame for the proper transactional teardown.
+    const { closeGame } = await import('../../src/services/closeGame');
+    for (const gid of gameIds) {
+      try { await closeGame({ gameId: gid, reason: 'admin_cancel', notes: 'race-test cleanup' }); }
+      catch { /* ignore */ }
+    }
+
+    return {
+      gameId: gameIds[0],
+      handsCompleted: 0,
+      durationMs: Date.now() - t0,
+      bots: [],
+      botUserIds: users.map((u) => u.id),
+    };
+  },
+};
+
+SCENARIOS.push(concurrentCreateRaceScenario);
 
 export function listScenarios(): string[] {
   return SCENARIOS.map((s) => s.name);
