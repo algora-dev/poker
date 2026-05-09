@@ -22,7 +22,7 @@ import {
   assertNoStalls,
   assertSessionLedger,
 } from './invariants';
-import { getActiveRunLog, type RunLog } from './runLog';
+import { getActiveRunLog, RunLog } from './runLog';
 
 export interface OrchestrationOptions {
   baseUrl: string;
@@ -200,12 +200,15 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   };
   // Track in-flight game info on a process-wide map so the failure handler
   // in runHarness can grab gameId/botUserIds even when runOrchestration
-  // throws before returning a result. Keyed by activeRunLog runId for
-  // parallel-safety.
+  // throws before returning a result. Keyed by runId + scenarioKey so
+  // parallel slots cannot read each other's breadcrumb (Gerald 2026-05-09).
   const activeLogForBreadcrumb = opts.runLog ?? getActiveRunLog();
+  const scenarioKeyForBreadcrumb = RunLog.currentScenarioKey() ?? '__unscoped__';
   if (activeLogForBreadcrumb) {
-    (globalThis as any).__harness_inflight = (globalThis as any).__harness_inflight ?? {};
-    (globalThis as any).__harness_inflight[activeLogForBreadcrumb.runId] = {
+    const root = ((globalThis as any).__harness_inflight =
+      (globalThis as any).__harness_inflight ?? {});
+    const runBucket = (root[activeLogForBreadcrumb.runId] = root[activeLogForBreadcrumb.runId] ?? {});
+    runBucket[scenarioKeyForBreadcrumb] = {
       gameId,
       botUserIds: bots.map((b) => b.userId!).filter(Boolean),
     };
