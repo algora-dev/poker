@@ -450,7 +450,9 @@ const SCENARIOS: Scenario[] = [
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${b.token}` },
           body: JSON.stringify({
-            name: `Post-bust ${b.cfg.email} ${Date.now()}`,
+            // Server enforces name <= 50 chars; keep this short so the
+            // longer parallel-slot bot suffixes don't blow the limit.
+            name: `pb-${b.userId?.slice(-6) ?? 'na'}-${Date.now() % 1_000_000}`,
             minBuyIn: 1,
             maxBuyIn: 1,
             creatorBuyIn: 1,
@@ -956,7 +958,8 @@ const concurrentCreateRaceScenario: Scenario = {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${u.token}` },
         body: JSON.stringify({
-          name: `Race ${u.email} ${Date.now()}`,
+          // Server enforces name <= 50 chars; keep short for parallel.
+          name: `rc-${u.id.slice(-6)}-${Date.now() % 1_000_000}`,
           minBuyIn: 100,
           maxBuyIn: 100,
           creatorBuyIn: 100,
