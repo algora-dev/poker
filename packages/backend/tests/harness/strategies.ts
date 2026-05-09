@@ -138,4 +138,46 @@ export const AlwaysAllIn: BotStrategy = {
   },
 };
 
-export const ALL_STRATEGIES = [CallingStation, RandomReasonable, Aggro, Nit, AlwaysAllIn];
+/**
+ * AlwaysFold: folds whenever facing any bet, checks otherwise. Used for
+ * heads-up walk testing (SB folds, BB takes blinds).
+ */
+export const AlwaysFold: BotStrategy = {
+  name: 'always-fold',
+  decide(state) {
+    const owe = chips(state.amountToCall);
+    if (owe === 0) return { action: 'check' };
+    return { action: 'fold' };
+  },
+};
+
+/**
+ * MinRaiser: always min-raises (or calls if can't). Used for reopening-action
+ * edge cases where we want predictable raise sizing.
+ */
+export const MinRaiser: BotStrategy = {
+  name: 'min-raiser',
+  decide(state) {
+    const owe = chips(state.amountToCall);
+    const stack = chips(state.myPlayer.chipStack);
+    const bb = chips(state.bigBlind);
+    if (stack === 0) return owe === 0 ? { action: 'check' } : { action: 'fold' };
+    // Min-raise: target = call amount + one bigBlind (server enforces actual
+    // min-raise rules; this just sends a small legal bump every time).
+    const target = Math.max(bb * 2, Math.floor(owe + bb));
+    if (target >= stack) return { action: 'all-in' };
+    return { action: 'raise', raiseAmount: target };
+  },
+};
+
+/**
+ * Slowpoke: deliberately variable thinkMs (handled by botClient via cfg);
+ * decision-wise behaves like RandomReasonable. The harness varies thinkMs
+ * for clock-drift coverage.
+ */
+export const Slowpoke: BotStrategy = {
+  name: 'slowpoke',
+  decide: RandomReasonable.decide,
+};
+
+export const ALL_STRATEGIES = [CallingStation, RandomReasonable, Aggro, Nit, AlwaysAllIn, AlwaysFold, MinRaiser, Slowpoke];

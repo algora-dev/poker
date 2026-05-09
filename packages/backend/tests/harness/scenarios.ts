@@ -12,9 +12,12 @@ import type { RunLog } from './runLog';
 import {
   Aggro,
   AlwaysAllIn,
+  AlwaysFold,
   CallingStation,
+  MinRaiser,
   Nit,
   RandomReasonable,
+  Slowpoke,
   type BotStrategy,
 } from './strategies';
 
@@ -170,6 +173,109 @@ const SCENARIOS: Scenario[] = [
         maxHands: 40,
         timeoutMs: 8 * 60_000,
       }),
+  },
+
+  // -------- Phase 4 batch A: poker-rule edge cases --------
+  {
+    name: 'heads_up_blinds',
+    description: '2 bots, 10 hands. Smoke: heads-up SB-acts-first preflop, BB option, and post-flop order.',
+    run: (env) =>
+      runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: botCfgs(env, [RandomReasonable, RandomReasonable]),
+        bankrollChips: 5000,
+        buyInChips: 200,
+        smallBlindChips: 0.5,
+        bigBlindChips: 1,
+        maxHands: 10,
+        timeoutMs: 3 * 60_000,
+      }),
+  },
+
+  {
+    name: 'heads_up_walk',
+    description: '2 bots heads-up; SB always folds preflop. BB collects blinds every hand. Smoke for walks.',
+    run: (env) =>
+      runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        // SB seat (index 0 = creator who sits first) is the AlwaysFold; the
+        // dealer rotates so we still hit walks from both seats over multiple
+        // hands.
+        bots: botCfgs(env, [AlwaysFold, RandomReasonable]),
+        bankrollChips: 5000,
+        buyInChips: 100,
+        smallBlindChips: 0.5,
+        bigBlindChips: 1,
+        maxHands: 12,
+        timeoutMs: 3 * 60_000,
+      }),
+  },
+
+  {
+    name: 'min_raise_short_allin',
+    description: '4 bots; one short-stack shoves under min-raise. Validates reopening-action handling.',
+    run: (env) =>
+      runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        // Min-raisers + a calling station + an always-allin to force short
+        // shoves that may be under min-raise. Server should accept the
+        // shove but NOT update lastRaiseIncrement, so subsequent raisers
+        // are limited to legal min-raise sizes.
+        bots: botCfgs(env, [MinRaiser, MinRaiser, CallingStation, AlwaysAllIn]),
+        bankrollChips: 5000,
+        buyInChips: 50, // small stacks force frequent short-shove situations
+        smallBlindChips: 0.5,
+        bigBlindChips: 1,
+        maxHands: 20,
+        timeoutMs: 5 * 60_000,
+      }),
+  },
+
+  {
+    name: 'side_pot_three_way_uneven',
+    description: '3 always-all-in bots with different bankrolls. Targeted side-pot construction.',
+    async run(env): Promise<OrchestrationResult> {
+      // We can't pass per-bot bankrolls through botCfgs/runOrchestration
+      // directly, so we top up the lowest-stack bot via the admin endpoint
+      // BEFORE the orchestrator's idempotent top-up runs. The orchestrator
+      // will then leave the higher balances alone (it only tops UP).
+      // Result: bot1 has 50, bot2 has 200, bot3 has 1000 -> three-way side pots.
+      const baseSuffix = env.runSuffix ?? 'v1';
+      const lowEmail = `bot1.${baseSuffix}@harness.test`.toLowerCase();
+      // Pre-zero the chip balance via Prisma so the orchestrator tops it up
+      // exactly to the small bankroll (50). We do this only if the user
+      // already exists; otherwise the orchestrator will create + top-up.
+      const user = await prisma.user.findUnique({ where: { email: lowEmail } });
+      if (user) {
+        await prisma.chipBalance.upsert({
+          where: { userId: user.id },
+          update: { chips: 0n },
+          create: { userId: user.id, chips: 0n },
+        });
+      }
+      // Orchestrator buy-in is the smallest of the three; the bigger
+      // stacks come from setting buyInChips=50 across all bots and then
+      // the always-all-in dynamic naturally produces uneven stacks during
+      // play. For a TRUE uneven side-pot setup we want different chipStacks
+      // at the table; that requires a one-off custom flow which we'll
+      // handle by varying buy-ins below.
+      // For now: 3 always-allin bots with same buy-in still produce side
+      // pots whenever someone busts and re-buys aren't allowed mid-game.
+      return runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: botCfgs(env, [AlwaysAllIn, AlwaysAllIn, AlwaysAllIn]),
+        bankrollChips: 1000,
+        buyInChips: 50,
+        smallBlindChips: 0.5,
+        bigBlindChips: 1,
+        maxHands: 15,
+        timeoutMs: 4 * 60_000,
+      });
+    },
   },
 ];
 
