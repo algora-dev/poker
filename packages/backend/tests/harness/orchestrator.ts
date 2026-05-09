@@ -22,6 +22,7 @@ import {
   assertNoStalls,
   assertSessionLedger,
 } from './invariants';
+import { getActiveRunLog, type RunLog } from './runLog';
 
 export interface OrchestrationOptions {
   baseUrl: string;
@@ -42,6 +43,8 @@ export interface OrchestrationOptions {
   onTick?: (ctx: TickContext) => void | Promise<void>;
   /** Optional one-time hook fired after the first hand starts. */
   onFirstHand?: (ctx: TickContext) => void | Promise<void>;
+  /** Run log for forensics. */
+  runLog?: RunLog;
 }
 
 export interface TickContext {
@@ -56,6 +59,8 @@ export interface OrchestrationResult {
   handsCompleted: number;
   durationMs: number;
   bots: BotClient[];
+  /** User IDs of all bots, useful for failure snapshots. */
+  botUserIds: string[];
 }
 
 const prisma = new PrismaClient();
@@ -132,8 +137,11 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
     startingBalances.set(b.userId!, after?.chips ?? 0n);
   }
 
-  // 3. Connect all sockets
-  for (const b of bots) await b.connectSocket();
+  // 3. Connect all sockets and start watchdogs
+  for (const b of bots) {
+    await b.connectSocket();
+    b.startWatchdog();
+  }
 
   // 4. First bot creates the game
   const creator = bots[0];
@@ -188,10 +196,25 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
     bots,
     initialChipsTotal,
     prisma,
+    runLog: opts.runLog ?? getActiveRunLog() ?? undefined,
   };
+  // Track in-flight game info on a process-wide map so the failure handler
+  // in runHarness can grab gameId/botUserIds even when runOrchestration
+  // throws before returning a result. Keyed by activeRunLog runId for
+  // parallel-safety.
+  const activeLogForBreadcrumb = opts.runLog ?? getActiveRunLog();
+  if (activeLogForBreadcrumb) {
+    (globalThis as any).__harness_inflight = (globalThis as any).__harness_inflight ?? {};
+    (globalThis as any).__harness_inflight[activeLogForBreadcrumb.runId] = {
+      gameId,
+      botUserIds: bots.map((b) => b.userId!).filter(Boolean),
+    };
+  }
 
-  const maxHands = opts.maxHands ?? 10;
-  const deadline = startedAt + (opts.timeoutMs ?? 5 * 60_000);
+  const handMultiplier = Math.max(1, parseFloat(process.env.HARNESS_HAND_MULTIPLIER ?? '1') || 1);
+  const timeoutMultiplier = Math.max(1, handMultiplier);
+  const maxHands = Math.ceil((opts.maxHands ?? 10) * handMultiplier);
+  const deadline = startedAt + (opts.timeoutMs ?? 5 * 60_000) * timeoutMultiplier;
 
   while (handsCompleted < maxHands && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 1000));
@@ -221,20 +244,28 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
   }
 
   // 10. Final invariants
+  const activeLog = opts.runLog ?? getActiveRunLog() ?? undefined;
+  const botUserIds = bots.map((b) => b.userId!).filter(Boolean);
+  // Scope per-user invariants so parallel scenarios don't cross-talk.
+  // We pass hand IDs as scopeIds for the sequence-monotonic check.
+  const handIdsForScope = (
+    await prisma.hand.findMany({ where: { gameId }, select: { id: true } })
+  ).map((h) => h.id);
   await assertChipsConserved(ctx);
   assertBotsHealthy(ctx);
-  await assertHandEventSequencesMonotonic(prisma);
-  await assertClosedGamesAreEmpty(prisma);
+  await assertHandEventSequencesMonotonic(prisma, activeLog, handIdsForScope);
+  await assertClosedGamesAreEmpty(prisma, activeLog, botUserIds);
   await assertSessionLedger(ctx, startingBalances);
 
   // 11. Cleanup
-  for (const b of bots) b.disconnect(true);
+  for (const b of bots) b.shutdown();
 
   return {
     gameId,
     handsCompleted,
     durationMs: Date.now() - startedAt,
     bots,
+    botUserIds: bots.map((b) => b.userId!).filter(Boolean),
   };
 }
 

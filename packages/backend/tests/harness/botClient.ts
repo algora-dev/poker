@@ -81,10 +81,56 @@ export class BotClient {
   reconnects = 0;
   /** Errors collected for invariant reporting. */
   errors: string[] = [];
+  /** Heartbeat watchdog timer; runs while the bot is alive. */
+  private watchdogTimer: NodeJS.Timeout | null = null;
+  /** Last time we successfully refreshed state (any source). */
+  private lastStateAt = 0;
+  /** Stall counter for diagnostics. */
+  watchdogResyncs = 0;
 
   constructor(cfg: BotConfig, events: BotEvents = {}) {
     this.cfg = cfg;
     this.events = events;
+  }
+
+  /**
+   * Heartbeat watchdog — handles the rare case where the socket is silently
+   * behind. Every 2s while the bot has a known game, if it's been > 4s since
+   * we saw any state and (we believe it's our turn OR we have no state at
+   * all), refetch via REST. Cheap; only re-acts when the refetch shows
+   * isMyTurn=true.
+   */
+  startWatchdog() {
+    if (this.watchdogTimer) return;
+    this.watchdogTimer = setInterval(async () => {
+      try {
+        if (this.cfg.silent) return;
+        const state = this.lastState;
+        if (!state) return;
+        if (state.status !== 'in_progress') return;
+        const sinceState = Date.now() - this.lastStateAt;
+        // Only kick in if it's our turn AND we've been silent for a while.
+        // 4s is well below the 30s auto-fold but well above normal jitter.
+        if (state.isMyTurn && sinceState > 4_000) {
+          this.watchdogResyncs++;
+          const fresh = await this.fetchState(state.gameId);
+          this.lastState = fresh;
+          this.lastStateAt = Date.now();
+          if (fresh.isMyTurn && this.turnStartedAt === null) this.turnStartedAt = Date.now();
+          if (!fresh.isMyTurn) this.turnStartedAt = null;
+          await this.maybeAct();
+        }
+      } catch {
+        /* watchdog must never throw */
+      }
+    }, 2_000);
+  }
+
+  stopWatchdog() {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
   }
 
   /** Log in (account is pre-seeded by the orchestrator). Retries 429s. */
@@ -147,6 +193,7 @@ export class BotClient {
 
       this.socket.on('game:state', (state: GameState) => {
         this.lastState = state;
+        this.lastStateAt = Date.now();
         if (state.isMyTurn && this.turnStartedAt === null) {
           this.turnStartedAt = Date.now();
         }
@@ -165,6 +212,7 @@ export class BotClient {
         this.fetchState(gid)
           .then((s) => {
             this.lastState = s;
+            this.lastStateAt = Date.now();
             if (s.isMyTurn && this.turnStartedAt === null) this.turnStartedAt = Date.now();
             if (!s.isMyTurn) this.turnStartedAt = null;
             return this.maybeAct();
@@ -198,7 +246,9 @@ export class BotClient {
   async fetchState(gameId: string): Promise<GameState> {
     const res = await this.getJson(`/api/games/${gameId}/state`);
     if (!res.ok) throw new Error(`fetchState ${res.status}`);
-    return (await res.json()) as GameState;
+    const state = (await res.json()) as GameState;
+    this.lastStateAt = Date.now();
+    return state;
   }
 
   /** Decide + send action when it is our turn. Idempotent + dedupes per turn key. */
@@ -254,6 +304,15 @@ export class BotClient {
     const text = await res.text();
     // "Stale action" is expected when state was racy; not a real error.
     if (text.includes('Stale action')) return false;
+    // 429: the bot got rate-limited by the per-user action limiter.
+    // Don't pollute the errors list — just back off. The next state push
+    // (or watchdog tick) will retry on a new lastActedKey.
+    if (res.status === 429) {
+      // Note as a soft-error tag for debugging without failing health.
+      // Pace ourselves: brief sleep so we don't immediately re-fire.
+      await new Promise((r) => setTimeout(r, 1000));
+      return false;
+    }
     this.errors.push(
       `action ${decision.action}@${gameId.slice(-6)} -> ${res.status} ${text.slice(0, 200)}`
     );
@@ -278,6 +337,13 @@ export class BotClient {
     } catch {
       /* ignore */
     }
+  }
+
+  /** Cleanly tear down (call from orchestrator after session ends). */
+  shutdown() {
+    this.stopWatchdog();
+    this.intentionalDisconnect = true;
+    this.socket?.disconnect();
   }
 
   // ---------- HTTP helpers ----------
