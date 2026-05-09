@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authMiddleware } from '../../middleware/auth';
+import { CONFIG } from '../../config';
 import {
   createGame,
   getGame,
@@ -473,11 +474,13 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
     {
       preHandler: authMiddleware,
       config: {
-        rateLimit: {
-          max: 60,
-          timeWindow: '1 minute',
-          keyGenerator: (req: any) => (req.user?.id ? `u:${req.user.id}` : `ip:${req.ip}`),
-        },
+        rateLimit: CONFIG.HARNESS_BYPASS_GLOBAL_RATELIMIT
+          ? false
+          : {
+              max: 60,
+              timeWindow: '1 minute',
+              keyGenerator: (req: any) => (req.user?.id ? `u:${req.user.id}` : `ip:${req.ip}`),
+            },
       },
     },
     async (request, reply) => {

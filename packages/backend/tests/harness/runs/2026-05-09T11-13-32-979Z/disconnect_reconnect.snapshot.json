@@ -1,0 +1,6 @@
+{
+  "scenario": "disconnect_reconnect",
+  "invariantId": "INV-BOTS-HEALTHY",
+  "errorMessage": "[INV-BOTS-HEALTHY] Bot bot2.persist1@harness.test accumulated 6 errors (allowed 3). First few: action all-in@x22mas -> 429 {\"statusCode\":429,\"error\":\"Too Many Requests\",\"message\":\"Rate limit exceeded, retry in 1 minute\"} | action all-in@x22mas -> 429 {\"statusCode\":429,\"error\":\"Too Many Requests\",\"message\":\"Rate limit exceeded, retry in 1 minute\"} | action all-in@x22mas -> 429 {\"statusCode\":429,\"error\":\"Too Many Requests\",\"message\":\"Rate limit exceeded, retry in 1 minute\"} | action all-in@x22mas -> 429 {\"statusCode\":429,\"error\":\"Too Many Requests\",\"message\":\"Rate limit exceeded, retry in 1 minute\"} | action all-in@x22mas -> 429 {\"statusCode\":429,\"error\":\"Too Many Requests\",\"message\":\"Rate limit exceeded, retry in 1 minute\"}",
+  "capturedAt": "2026-05-09T11:17:40.588Z"
+}

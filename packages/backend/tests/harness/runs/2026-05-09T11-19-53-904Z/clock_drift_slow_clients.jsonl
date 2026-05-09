@@ -1,0 +1,2 @@
+{"ts":"2026-05-09T11:26:07.873Z","runId":"2026-05-09T11-19-53-904Z","scenario":"clock_drift_slow_clients","kind":"scenario.start","data":{"name":"clock_drift_slow_clients"}}
+{"ts":"2026-05-09T11:26:24.366Z","runId":"2026-05-09T11-19-53-904Z","scenario":"clock_drift_slow_clients","kind":"scenario.end","data":{"name":"clock_drift_slow_clients","ok":true,"ms":16493,"hands":15,"gameId":"cmoy9d6r105eitwzbu201x2cr"}}

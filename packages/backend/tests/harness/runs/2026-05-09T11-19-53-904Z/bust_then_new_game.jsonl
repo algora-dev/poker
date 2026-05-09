@@ -1,0 +1,2 @@
+{"ts":"2026-05-09T11:26:24.395Z","runId":"2026-05-09T11-19-53-904Z","scenario":"bust_then_new_game","kind":"scenario.start","data":{"name":"bust_then_new_game"}}
+{"ts":"2026-05-09T11:26:25.581Z","runId":"2026-05-09T11-19-53-904Z","scenario":"bust_then_new_game","kind":"scenario.end","data":{"name":"bust_then_new_game","ok":true,"ms":1186,"hands":2,"gameId":"cmoy9djge05qutwzb1i7f9vxm"}}

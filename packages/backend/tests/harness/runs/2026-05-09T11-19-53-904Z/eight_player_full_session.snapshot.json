@@ -1,0 +1,6 @@
+{
+  "scenario": "eight_player_full_session",
+  "invariantId": "INV-NO-STALLS",
+  "errorMessage": "[INV-NO-STALLS] Bot bot4.persist1@harness.test stalled on its turn for 90295ms",
+  "capturedAt": "2026-05-09T11:21:55.121Z"
+}

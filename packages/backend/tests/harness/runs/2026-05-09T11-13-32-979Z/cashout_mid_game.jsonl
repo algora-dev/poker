@@ -1,0 +1,2 @@
+{"ts":"2026-05-09T11:17:42.841Z","runId":"2026-05-09T11-13-32-979Z","scenario":"cashout_mid_game","kind":"scenario.start","data":{"name":"cashout_mid_game"}}
+{"ts":"2026-05-09T11:19:54.951Z","runId":"2026-05-09T11-13-32-979Z","scenario":"cashout_mid_game","kind":"scenario.fail","data":{"name":"cashout_mid_game","ok":false,"ms":132104,"error":"Game cmoy92d17020k6tpbbg5ol48i disappeared"}}

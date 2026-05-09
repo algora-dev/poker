@@ -304,6 +304,15 @@ export class BotClient {
     const text = await res.text();
     // "Stale action" is expected when state was racy; not a real error.
     if (text.includes('Stale action')) return false;
+    // 429: the bot got rate-limited by the per-user action limiter.
+    // Don't pollute the errors list — just back off. The next state push
+    // (or watchdog tick) will retry on a new lastActedKey.
+    if (res.status === 429) {
+      // Note as a soft-error tag for debugging without failing health.
+      // Pace ourselves: brief sleep so we don't immediately re-fire.
+      await new Promise((r) => setTimeout(r, 1000));
+      return false;
+    }
     this.errors.push(
       `action ${decision.action}@${gameId.slice(-6)} -> ${res.status} ${text.slice(0, 200)}`
     );

@@ -1,0 +1,123 @@
+{
+  "runId": "2026-05-09T11-19-53-904Z",
+  "profile": "local",
+  "baseUrl": "http://localhost:3000",
+  "failures": 1,
+  "totalMs": 411057,
+  "results": [
+    {
+      "name": "eight_player_full_session",
+      "ok": false,
+      "ms": 121141,
+      "err": "[INV-NO-STALLS] Bot bot4.persist1@harness.test stalled on its turn for 90295ms"
+    },
+    {
+      "name": "all_in_storm",
+      "ok": true,
+      "ms": 1192,
+      "hands": 4
+    },
+    {
+      "name": "disconnect_reconnect",
+      "ok": true,
+      "ms": 9633,
+      "hands": 8
+    },
+    {
+      "name": "action_timeout",
+      "ok": true,
+      "ms": 6249,
+      "hands": 3
+    },
+    {
+      "name": "cashout_mid_game",
+      "ok": true,
+      "ms": 70157,
+      "hands": 52
+    },
+    {
+      "name": "concurrency_blast",
+      "ok": true,
+      "ms": 2315,
+      "hands": 6
+    },
+    {
+      "name": "heads_up_blinds",
+      "ok": true,
+      "ms": 36670,
+      "hands": 10
+    },
+    {
+      "name": "heads_up_walk",
+      "ok": true,
+      "ms": 79435,
+      "hands": 12
+    },
+    {
+      "name": "min_raise_short_allin",
+      "ok": true,
+      "ms": 1228,
+      "hands": 4
+    },
+    {
+      "name": "mid_hand_disconnect_on_turn",
+      "ok": true,
+      "ms": 9297,
+      "hands": 6
+    },
+    {
+      "name": "mid_hand_reconnect_state",
+      "ok": true,
+      "ms": 14328,
+      "hands": 8
+    },
+    {
+      "name": "spectator_join_mid_hand",
+      "ok": true,
+      "ms": 19587,
+      "hands": 8
+    },
+    {
+      "name": "withdraw_at_showdown",
+      "ok": true,
+      "ms": 2284,
+      "hands": 4
+    },
+    {
+      "name": "clock_drift_slow_clients",
+      "ok": true,
+      "ms": 16493,
+      "hands": 15
+    },
+    {
+      "name": "bust_then_new_game",
+      "ok": true,
+      "ms": 1186,
+      "hands": 2
+    },
+    {
+      "name": "deposit_during_close",
+      "ok": true,
+      "ms": 11556,
+      "hands": 4
+    },
+    {
+      "name": "side_pot_three_way_uneven",
+      "ok": true,
+      "ms": 7221,
+      "hands": 6
+    },
+    {
+      "name": "money_lock_active_game",
+      "ok": true,
+      "ms": 86,
+      "hands": 0
+    },
+    {
+      "name": "concurrent_create_race",
+      "ok": true,
+      "ms": 999,
+      "hands": 0
+    }
+  ]
+}

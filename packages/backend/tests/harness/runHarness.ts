@@ -151,12 +151,15 @@ async function main() {
       results.push({ name: scenarioKey, ok: false, ms, err: e?.message || String(e) });
       failures++;
       try {
+        // If runOrchestration threw before returning, fall back to the
+        // in-flight breadcrumb the orchestrator left on globalThis.
+        const inflight = (globalThis as any).__harness_inflight?.[runLog.runId];
         const snap = await snapshotFailure({
           prisma: harnessPrisma,
           runDir: runLog.runDir,
           scenario: scenarioKey,
-          gameId: lastResult?.gameId,
-          botUserIds: lastResult?.botUserIds,
+          gameId: lastResult?.gameId ?? inflight?.gameId,
+          botUserIds: lastResult?.botUserIds ?? inflight?.botUserIds,
           errorMessage: e?.message || String(e),
           invariantId,
         });

@@ -198,6 +198,18 @@ export async function runOrchestration(opts: OrchestrationOptions): Promise<Orch
     prisma,
     runLog: opts.runLog ?? getActiveRunLog() ?? undefined,
   };
+  // Track in-flight game info on a process-wide map so the failure handler
+  // in runHarness can grab gameId/botUserIds even when runOrchestration
+  // throws before returning a result. Keyed by activeRunLog runId for
+  // parallel-safety.
+  const activeLogForBreadcrumb = opts.runLog ?? getActiveRunLog();
+  if (activeLogForBreadcrumb) {
+    (globalThis as any).__harness_inflight = (globalThis as any).__harness_inflight ?? {};
+    (globalThis as any).__harness_inflight[activeLogForBreadcrumb.runId] = {
+      gameId,
+      botUserIds: bots.map((b) => b.userId!).filter(Boolean),
+    };
+  }
 
   const handMultiplier = Math.max(1, parseFloat(process.env.HARNESS_HAND_MULTIPLIER ?? '1') || 1);
   const timeoutMultiplier = Math.max(1, handMultiplier);

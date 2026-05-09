@@ -1,0 +1,2 @@
+{"ts":"2026-05-09T11:26:05.556Z","runId":"2026-05-09T11-19-53-904Z","scenario":"withdraw_at_showdown","kind":"scenario.start","data":{"name":"withdraw_at_showdown"}}
+{"ts":"2026-05-09T11:26:07.841Z","runId":"2026-05-09T11-19-53-904Z","scenario":"withdraw_at_showdown","kind":"scenario.end","data":{"name":"withdraw_at_showdown","ok":true,"ms":2284,"hands":4,"gameId":"cmoy9d4y005antwzbmhsf2sxr"}}

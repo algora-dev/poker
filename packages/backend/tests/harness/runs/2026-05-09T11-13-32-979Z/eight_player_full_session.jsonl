@@ -1,0 +1,3 @@
+{"ts":"2026-05-09T11:13:33.052Z","runId":"2026-05-09T11-13-32-979Z","scenario":"eight_player_full_session","kind":"scenario.start","data":{"name":"eight_player_full_session"}}
+{"ts":"2026-05-09T11:16:06.495Z","runId":"2026-05-09T11-13-32-979Z","scenario":"eight_player_full_session","kind":"invariant.fail","invariantId":"INV-NO-STALLS","data":{"msg":"Bot bot4.persist1@harness.test stalled on its turn for 90659ms"}}
+{"ts":"2026-05-09T11:16:06.503Z","runId":"2026-05-09T11-13-32-979Z","scenario":"eight_player_full_session","kind":"scenario.fail","data":{"name":"eight_player_full_session","ok":false,"ms":153443,"error":"[INV-NO-STALLS] Bot bot4.persist1@harness.test stalled on its turn for 90659ms","invariantId":"INV-NO-STALLS"}}

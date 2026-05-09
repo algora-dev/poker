@@ -1,0 +1,2 @@
+{"ts":"2026-05-09T11:21:56.375Z","runId":"2026-05-09T11-19-53-904Z","scenario":"disconnect_reconnect","kind":"scenario.start","data":{"name":"disconnect_reconnect"}}
+{"ts":"2026-05-09T11:22:06.008Z","runId":"2026-05-09T11-19-53-904Z","scenario":"disconnect_reconnect","kind":"scenario.end","data":{"name":"disconnect_reconnect","ok":true,"ms":9633,"hands":8,"gameId":"cmoy97so100zqtwzbqpzcf5hr"}}

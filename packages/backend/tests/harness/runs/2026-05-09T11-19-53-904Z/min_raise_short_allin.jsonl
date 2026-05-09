@@ -1,0 +1,2 @@
+{"ts":"2026-05-09T11:25:21.001Z","runId":"2026-05-09T11-19-53-904Z","scenario":"min_raise_short_allin","kind":"scenario.start","data":{"name":"min_raise_short_allin"}}
+{"ts":"2026-05-09T11:25:22.229Z","runId":"2026-05-09T11-19-53-904Z","scenario":"min_raise_short_allin","kind":"scenario.end","data":{"name":"min_raise_short_allin","ok":true,"ms":1228,"hands":4,"gameId":"cmoy9c6kj03w1twzb2qpz4f39"}}

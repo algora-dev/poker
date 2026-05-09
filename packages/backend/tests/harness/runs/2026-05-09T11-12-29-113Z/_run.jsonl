@@ -1,0 +1,2 @@
+{"ts":"2026-05-09T11:12:29.113Z","runId":"2026-05-09T11-12-29-113Z","kind":"run.start","data":{"baseUrl":"http://localhost:3000","profile":"local","runSuffix":"persist1"}}
+{"ts":"2026-05-09T11:13:25.160Z","runId":"2026-05-09T11-12-29-113Z","kind":"run.end","data":{"failures":0,"totalMs":55958,"results":[{"name":"heads_up_blinds","ok":true,"ms":55958,"hands":10}]}}
