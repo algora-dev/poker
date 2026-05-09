@@ -43,9 +43,8 @@ vi.mock('../../src/socket', () => ({
 import { runScripted } from './dsl';
 
 describe('Layer A — DSL smoke', () => {
-  beforeEach(() => {
-    vi.resetModules();
-  });
+  // Note: do NOT call vi.resetModules() here. See heads-up.test.ts for why.
+  // (vi.resetModules would invalidate the deck-mock module identity.)
 
   it('heads-up: SB folds preflop, BB takes blinds', async () => {
     const r = await runScripted({

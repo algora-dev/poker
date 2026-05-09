@@ -247,7 +247,6 @@ export async function runScripted(cfg: ScriptedConfig): Promise<ScriptedResult> 
       // Build snapshot from current world state.
       const w = (globalThis as any).__t3PokerSimWorld;
       const hand = await w.hand.findUnique({ where: { id: ctx.handId } });
-      const game = await w.game.findUnique({ where: { id: ctx.gameId } });
       const players = await w.gamePlayer.findMany({ where: { gameId: ctx.gameId } });
 
       // Sum all HandAction.amounts on this hand for the contribution check.
@@ -257,6 +256,15 @@ export async function runScripted(cfg: ScriptedConfig): Promise<ScriptedResult> 
         0n
       );
 
+      // Off-table balances for all seats (chip-conservation must include
+      // these once the game ends and closeGame refunds stacks back).
+      // World stub doesn't support chipBalance.findMany, so query one by one.
+      const balanceRows: Array<{ userId: string; chips: bigint }> = [];
+      for (const s of seats) {
+        const b = await w.chipBalance.findUnique({ where: { userId: s.userId } });
+        if (b) balanceRows.push(b);
+      }
+
       const snapshot: InvariantSnapshot = {
         stage: hand?.stage ?? 'unknown',
         pot: BigInt(hand?.pot ?? 0n),
@@ -265,6 +273,10 @@ export async function runScripted(cfg: ScriptedConfig): Promise<ScriptedResult> 
           userId: p.userId,
           chipStack: BigInt(p.chipStack),
           position: p.position,
+        })),
+        balances: balanceRows.map((b: any) => ({
+          userId: b.userId,
+          chips: BigInt(b.chips),
         })),
         activePlayerSeatIndex: hand?.activePlayerIndex ?? -1,
         recordedContributions,

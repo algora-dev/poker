@@ -28,6 +28,8 @@ export interface InvariantSnapshot {
   stage: string;
   pot: bigint;
   stacks: Array<{ seatIndex: number; userId: string; chipStack: bigint; position: string }>;
+  /** Off-table balances for all seats. closeGame moves stacks back here on game end. */
+  balances: Array<{ userId: string; chips: bigint }>;
   activePlayerSeatIndex: number;
   /** Sum of all HandAction.amount rows so far on this hand (excluding folds/checks). */
   recordedContributions: bigint;
@@ -47,16 +49,20 @@ export function checkInvariants(
 ): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
 
-  // 1. Chip conservation: stacks + pot == expected.
+  // 1. Chip conservation: balances + stacks + (pot if mid-hand) == expected.
   // When a hand is `completed`, its `pot` field still records the pot AT
   // SETTLEMENT TIME, but the chips have already moved back to winning
   // stacks. Don't double-count.
+  // When the GAME completes, closeGame moves stacks back into off-table
+  // ChipBalance, so we MUST include balances in the conservation check.
   const stackSum = curr.stacks.reduce((a, p) => a + p.chipStack, 0n);
-  const liveTotal = curr.stage === 'completed' ? stackSum : stackSum + curr.pot;
+  const balanceSum = curr.balances.reduce((a, b) => a + b.chips, 0n);
+  const potPart = curr.stage === 'completed' ? 0n : curr.pot;
+  const liveTotal = stackSum + balanceSum + potPart;
   if (liveTotal !== curr.expectedTotalChips) {
     violations.push({
       id: 'INV-CHIPS-CONSERVED',
-      message: `chips: stacks(${stackSum}) + pot(${curr.pot}) = ${liveTotal} (stage=${curr.stage}) != expected(${curr.expectedTotalChips})`,
+      message: `chips: balances(${balanceSum}) + stacks(${stackSum}) + pot(${potPart}) = ${liveTotal} (stage=${curr.stage}) != expected(${curr.expectedTotalChips})`,
       snapshot: curr,
     });
   }
@@ -109,12 +115,12 @@ export function checkInvariants(
   }
 
   // 7. Pot consistency: recorded contributions on this hand should match
-  //    the live pot, allowing for the fact that the engine may pre-credit
-  //    blinds before any HandAction rows exist for them. We allow a small
-  //    relaxation: pot >= recordedContributions, and they converge as the
-  //    hand progresses. A pot that's LESS than recorded contributions is
-  //    a bug.
-  if (curr.pot < curr.recordedContributions) {
+  //    the live pot during play, but at hand completion the pot has been
+  //    distributed to winning stacks while the `hand.pot` field may still
+  //    show a residual value (engine retains it for ledger). Skip this
+  //    invariant when stage=completed; chip-conservation already covers
+  //    that path.
+  if (curr.stage !== 'completed' && curr.pot < curr.recordedContributions) {
     violations.push({
       id: 'INV-POT-VS-CONTRIB',
       message: `pot(${curr.pot}) < recordedContributions(${curr.recordedContributions}) — chips going somewhere they shouldn't`,
