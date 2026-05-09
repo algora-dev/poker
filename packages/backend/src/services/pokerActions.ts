@@ -123,6 +123,16 @@ export async function processAction(
           p => p.position !== 'folded' && p.position !== 'eliminated'
         );
 
+        // Only fold-win when EVERY remaining player can still act (none
+        // all-in). If any remaining player is all-in they have live equity
+        // in pots they contributed to and a showdown is mandatory —
+        // otherwise the surviving non-folded player would steal the all-in
+        // player's main-pot equity by folding the field.
+        // (Discovered 2026-05-09 via gameplay/three-handed test TH-05.)
+        const remainingNonAllIn = remainingActive.filter(
+          p => p.position !== 'all_in'
+        );
+
         if (remainingActive.length === 1) {
           const winner = remainingActive[0];
           await handleFoldWin(tx, game, currentHand, winner);
@@ -137,7 +147,76 @@ export async function processAction(
           };
         }
 
-        // Multiple players still active â€” find next active player
+        // If exactly 1 player can still act AND there's at least one
+        // all-in player, we cannot fold-win. We must run out the board
+        // and go to showdown so the all-in player's eligible pots are
+        // contested. The all-in fast-forward path below handles this.
+        if (remainingNonAllIn.length === 1) {
+          // First, refund the uncontested side-pot portion to the lone
+          // non-all-in player. That portion is the chips they contributed
+          // ABOVE the highest all-in contribution. The remainder must be
+          // split via showdown side-pot construction.
+          // Easiest correct path: do nothing here; let the existing
+          // post-fold flow advance to next-active-player which will
+          // detect canStillAct.length<=1 and trigger fast-forward to
+          // showdown. handleShowdown calls calculateSidePots which
+          // correctly assigns uncontested side pots and contested main
+          // pots.
+          // Fall through to the multi-player branch below.
+        }
+
+        // If only 1 player can STILL ACT (everyone else is folded or
+        // all-in), there are no more decision points. We must fast-
+        // forward through remaining streets and run a showdown so all-in
+        // players' main-pot equity is contested.
+        // (Fix 2026-05-09: previously the engine would set
+        //  activePlayerIndex to an all-in seat and the next processAction
+        //  call would error or silently let the lone non-all-in player
+        //  steal the pot via the fold-win path. Discovered via TH-05.)
+        if (remainingNonAllIn.length === 1) {
+          let stage = currentHand.stage;
+          let board: any[] = JSON.parse(currentHand.board);
+          const deckArr: any[] = JSON.parse(currentHand.deck);
+          let deckIdx = 0;
+          while (stage !== 'river') {
+            const nextStg = getNextStage(stage);
+            if (nextStg === 'showdown') break;
+            const cards = nextStg === 'flop' ? 3 : 1;
+            board = [...board, ...deckArr.slice(deckIdx, deckIdx + cards)];
+            deckIdx += cards;
+            stage = nextStg;
+          }
+          await tx.hand.update({
+            where: { id: currentHand.id },
+            data: {
+              board: JSON.stringify(board),
+              deck: JSON.stringify(deckArr.slice(deckIdx)),
+              pot: newPot,
+              stage: 'river',
+            },
+          });
+          await recordHandEvent(tx, {
+            gameId: game.id,
+            handId: currentHand.id,
+            eventType: 'street_advanced',
+            payload: {
+              fromStage: currentHand.stage,
+              toStage: 'river',
+              foldFastForward: true,
+              board,
+            },
+          });
+          const showdownResults = await handleShowdown(tx, game, {
+            ...currentHand,
+            board: JSON.stringify(board),
+            pot: newPot,
+          });
+          return { action: 'fold', gameOver: true, showdownResults };
+        }
+
+        // Multiple players still able to act — find next active player.
+        // Skip folded, eliminated, AND all-in (all-in players have no
+        // more decisions to make).
         {
           const currentPlayerIndex = freshPlayers.findIndex(p => p.userId === userId);
           const numPlayers = freshPlayers.length;
@@ -147,6 +226,7 @@ export async function processAction(
             safety < numPlayers &&
             (freshPlayers[nextIdx].position === 'folded' ||
              freshPlayers[nextIdx].position === 'eliminated' ||
+             freshPlayers[nextIdx].position === 'all_in' ||
              freshPlayers[nextIdx].userId === userId)
           ) {
             nextIdx = (nextIdx + 1) % numPlayers;

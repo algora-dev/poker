@@ -45,6 +45,21 @@ export interface MatchConfig {
    * match can continue.
    */
   strict?: boolean;
+  /**
+   * Optional hook called AFTER every successful processAction. Lets the
+   * gameplay DSL (audit 20) run per-step invariants between actions.
+   * If the hook throws, the match aborts with that error.
+   */
+  onAfterAction?: (ctx: {
+    gameId: string;
+    handId: string;
+    actionIndex: number; // monotonic across the whole match
+    actorUserId: string;
+    actorSeatIndex: number;
+    action: string;
+    raiseTotal?: number;
+    stage: string;
+  }) => Promise<void> | void;
 }
 
 /**
@@ -250,6 +265,37 @@ export async function runMatch(cfg: MatchConfig): Promise<MatchReport> {
           amount: null,
           stage: fresh.stage,
         });
+        if (cfg.onAfterAction) {
+          try {
+            await cfg.onAfterAction({
+              gameId,
+              handId,
+              actionIndex: actionsTaken,
+              actorUserId: activePlayer.userId,
+              actorSeatIndex: activeSeat,
+              action: actionName,
+              raiseTotal,
+              stage: fresh.stage,
+            });
+          } catch (hookErr: any) {
+            // Hook failure is hard — it usually means an invariant
+            // tripped. Fail with a SimFailure so the test reports the
+            // exact action and step.
+            const failure: SimFailure = {
+              scenarioName: cfg.scenarioName,
+              seed: cfg.seed,
+              handNumber: hand.handNumber,
+              activeUserId: activePlayer.userId,
+              activeSeat,
+              attemptedAction: actionName,
+              attemptedRaiseTotal: raiseTotal,
+              reason: 'invariant_violation',
+              underlyingError: String(hookErr?.message ?? hookErr),
+            };
+            endedReason = 'error';
+            return finalReportWithFailure(world, hands, endedReason, failure);
+          }
+        }
       } catch (err: any) {
         // Phase 9 follow-up [item 5]: in strict mode, fail hard with full
         // metadata so the scenario can be reproduced. Otherwise fall back
