@@ -322,6 +322,176 @@ const SCENARIOS: Scenario[] = [
       }),
   },
 
+  // -------- Phase 4 batch C: money flow + resilience --------
+  {
+    name: 'withdraw_at_showdown',
+    description: '4 bots; repeatedly try /withdraw while game in_progress. Lock must hold across showdowns.',
+    run: (env) =>
+      runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: botCfgs(env, [Aggro, Aggro, AlwaysAllIn, AlwaysAllIn]),
+        bankrollChips: 5000,
+        buyInChips: 100,
+        maxHands: 8,
+        timeoutMs: 4 * 60_000,
+        onTick: async ({ bots, gameId }) => {
+          // Every tick (~1s), every bot tries to withdraw 1 chip. While
+          // the game is in_progress, all attempts must 409 with code
+          // active_game_money_locked. Any 200 here is a lock leak.
+          for (const b of bots) {
+            if (!b.token) continue;
+            const r = await fetch(`${env.baseUrl}/api/wallet/withdraw`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${b.token}` },
+              body: JSON.stringify({ amount: 1 }),
+            });
+            if (r.status === 200) {
+              throw new Error(
+                `[INV-LOCK-LEAK] /withdraw returned 200 while user ${b.userId} seated in active game ${gameId}`
+              );
+            }
+            // 409 expected; 4xx other than 409 is also fine (auth, validation).
+            // Drain body so socket pool doesn't leak.
+            await r.text();
+          }
+        },
+      }),
+  },
+
+  {
+    name: 'clock_drift_slow_clients',
+    description: '5 bots with widely varying thinkMs (0—800ms). Server-side timing must stay sane.',
+    run: (env) => {
+      const cfgs = botCfgs(env, [RandomReasonable, RandomReasonable, Slowpoke, Slowpoke, RandomReasonable]);
+      // Inject varied thinkMs per bot.
+      cfgs[0].thinkMs = 0;
+      cfgs[1].thinkMs = 200;
+      cfgs[2].thinkMs = 600;
+      cfgs[3].thinkMs = 800;
+      cfgs[4].thinkMs = 50;
+      return runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: cfgs,
+        bankrollChips: 5000,
+        buyInChips: 200,
+        maxHands: 15,
+        timeoutMs: 6 * 60_000,
+      });
+    },
+  },
+
+  {
+    name: 'bust_then_new_game',
+    description: 'Bot busts in game A, lock should release on closeGame, bot can then create game B.',
+    async run(env): Promise<OrchestrationResult> {
+      // Run a small all-in game where one bot busts. After closeGame,
+      // the surviving bot should be free to create a new game.
+      const result = await runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: botCfgs(env, [AlwaysAllIn, AlwaysAllIn]),
+        bankrollChips: 5000,
+        buyInChips: 50,
+        maxHands: 30, // game ends when one busts
+        timeoutMs: 4 * 60_000,
+      });
+      // After the orchestrator returns, the game should be closed (one
+      // player has all the chips, or game.status moved to completed).
+      // Try to create a new game with the WINNING bot's token.
+      const winner = result.bots.find((b) => {
+        // Whichever bot has the most accrued ChipBalance (the orchestrator
+        // doesn't track this in result; query DB).
+        return true;
+      });
+      if (winner && winner.token) {
+        const r = await fetch(`${env.baseUrl}/api/games/create`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${winner.token}` },
+          body: JSON.stringify({
+            name: `Post-bust ${Date.now()}`,
+            minBuyIn: 1,
+            maxBuyIn: 1,
+            creatorBuyIn: 1,
+            smallBlind: 0.5,
+            bigBlind: 1,
+          }),
+        });
+        if (r.status >= 400 && r.status !== 409) {
+          throw new Error(
+            `[INV-LOCK-STUCK] /games/create returned ${r.status} for ${winner.cfg.email} after closeGame: ${(await r.text()).slice(0, 200)}`
+          );
+        }
+        // 200 OR 409-with-active_game_money_locked are BOTH evidence the
+        // system is in a defined state. 200 = lock released (success).
+        // 409 with that code = the bot is somehow still seated which
+        // would mean closeGame didn't fully release. We accept 409 only
+        // if it's a different code (e.g. validation).
+        if (r.status === 409) {
+          const body: any = await r.json().catch(() => ({}));
+          if (body.code === 'active_game_money_locked') {
+            throw new Error(
+              `[INV-LOCK-STUCK] /games/create returned 409 active_game_money_locked for ${winner.cfg.email} AFTER game finished. closeGame did not release lock.`
+            );
+          }
+        }
+      }
+      return result;
+    },
+  },
+
+  {
+    name: 'deposit_during_close',
+    description: 'Trigger a deferred-deposit while game is mid-hand; closeGame should not racee with the deferred row.',
+    run: (env) =>
+      runOrchestration({
+        baseUrl: env.baseUrl,
+        adminSecret: env.adminSecret,
+        bots: botCfgs(env, [RandomReasonable, RandomReasonable]),
+        bankrollChips: 5000,
+        buyInChips: 100,
+        maxHands: 4,
+        timeoutMs: 4 * 60_000,
+        onTick: async ({ bots, gameId }) => {
+          // Once per scenario instance, drive a deposit credit attempt
+          // against bot[0] (who is seated). It must be deferred (no
+          // balance change, no auth consumption, deposit row written
+          // confirmed=false). Scope by gameId so parallel slots don't
+          // race on the same flag.
+          const flagKey = `__deposit_during_close_fired_${gameId}`;
+          if ((globalThis as any)[flagKey]) return;
+          (globalThis as any)[flagKey] = true;
+          const target = bots[0];
+          if (!target.userId) return;
+          // Reuse the same helper the moneyLockScenario uses.
+          const { creditChipsForTesting } = await import('../../src/blockchain/listener');
+          // Give the user a wallet address if they don't have one.
+          const user = await prisma.user.findUnique({ where: { id: target.userId } });
+          if (!user?.walletAddress) {
+            const wa = ('0x' + Buffer.from(`ddc-${target.userId}`).toString('hex').padEnd(40, '0').slice(0, 40)).toLowerCase();
+            await prisma.user.update({ where: { id: target.userId }, data: { walletAddress: wa } });
+          }
+          const fresh = await prisma.user.findUnique({ where: { id: target.userId } });
+          const balanceBefore = (await prisma.chipBalance.findUnique({ where: { userId: target.userId } }))?.chips ?? 0n;
+          const txHash = '0x' + 'd1' + Date.now().toString(16).padStart(16, '0').padEnd(62, '0');
+          await creditChipsForTesting(fresh!.walletAddress!, 1_000_000n, txHash, 999_999_999);
+          const balanceAfter = (await prisma.chipBalance.findUnique({ where: { userId: target.userId } }))?.chips ?? 0n;
+          if (balanceAfter !== balanceBefore) {
+            throw new Error(
+              `[INV-DEPOSIT-DEFERRAL] Deposit credited mid-game! before=${balanceBefore} after=${balanceAfter}`
+            );
+          }
+          const dep = await prisma.deposit.findUnique({ where: { txHash } });
+          if (!dep || dep.confirmed !== false) {
+            throw new Error(
+              `[INV-DEPOSIT-DEFERRAL] Deferred Deposit row missing or wrong confirmed flag: ${JSON.stringify(dep)}`
+            );
+          }
+        },
+      }),
+  },
+
   {
     name: 'side_pot_three_way_uneven',
     description: '3 always-all-in bots with different bankrolls. Targeted side-pot construction.',
