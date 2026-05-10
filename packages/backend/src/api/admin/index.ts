@@ -6,6 +6,15 @@ import { cleanupStuckGames, cancelGame } from '../../services/admin';
 import { logger } from '../../utils/logger';
 import { CONFIG } from '../../config';
 import { prisma } from '../../db/client';
+import {
+  spawnBots,
+  killBotsAtGame,
+  listBots,
+  isBotFillAllowed,
+  BotFillError,
+  validateSpawnRequest,
+  MAX_BOTS_PER_CALL,
+} from '../../services/botFill/registry';
 
 /**
  * Constant-time admin secret check that ALSO refuses to authenticate if
@@ -263,6 +272,185 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     } catch (error) {
       logger.error('Add chips failed', { error });
       return reply.code(500).send({ error: 'Failed to add chips' });
+    }
+  });
+
+  /**
+   * POST /api/admin/spawn-bots
+   * Dev-only: fill remaining seats at a game with bots driven by the same
+   * harness-style logic, so a human can play-test from the frontend.
+   *
+   * Body: { secret, gameId, count, strategy?, buyInChips?, bankrollChips?,
+   *         thinkMs? }
+   *
+   * Auth: requires the same ADMIN_SECRET as the rest of the admin surface.
+   * Production hard-block: refuses unless ALLOW_BOT_FILL=1 is set.
+   */
+  fastify.post('/spawn-bots', async (request, reply) => {
+    try {
+      if (!isBotFillAllowed()) {
+        return reply.code(403).send({
+          error: 'Forbidden',
+          code: 'bot_fill_disabled',
+          message:
+            'Bot-fill is disabled in this environment (set ALLOW_BOT_FILL=1 to enable in production).',
+        });
+      }
+
+      const body = z
+        .object({
+          secret: z.string(),
+          gameId: z.string(),
+          count: z.number().int().min(1).max(MAX_BOTS_PER_CALL),
+          strategy: z.enum(['random', 'tight', 'loose']).optional(),
+          buyInChips: z.number().min(0.01).optional(),
+          bankrollChips: z.number().min(0.01).optional(),
+          thinkMs: z.number().int().min(0).max(10_000).optional(),
+        })
+        .parse(request.body);
+
+      if (!isAdminSecretValid(body.secret)) {
+        return reply.code(403).send({ error: 'Forbidden', message: 'Invalid admin secret' });
+      }
+
+      // Re-validate (defense in depth) and also normalize the strategy field.
+      validateSpawnRequest({
+        gameId: body.gameId,
+        count: body.count,
+        strategy: body.strategy ?? 'random',
+      });
+
+      // Default buy-in / bankroll to whatever the game requires. We read
+      // the game record so callers don't have to know the table's blinds.
+      const game = await prisma.game.findUnique({
+        where: { id: body.gameId },
+        select: {
+          minBuyIn: true,
+          maxBuyIn: true,
+          status: true,
+          maxPlayers: true,
+          players: { select: { id: true } },
+        },
+      });
+      if (!game) {
+        return reply.code(404).send({ error: 'Not found', message: 'Game not found' });
+      }
+      if (game.status !== 'waiting' && game.status !== 'in_progress') {
+        return reply.code(409).send({
+          error: 'Conflict',
+          code: 'invalid_game_status',
+          message: `Cannot spawn bots into a game with status ${game.status}`,
+        });
+      }
+      const freeSeats = Math.max(0, game.maxPlayers - game.players.length);
+      if (freeSeats <= 0) {
+        return reply.code(409).send({
+          error: 'Conflict',
+          code: 'table_full',
+          message: 'No seats available at this table',
+        });
+      }
+      const requestedCount = Math.min(body.count, freeSeats);
+
+      const minBuyInChips = Number(game.minBuyIn) / 1_000_000;
+      const maxBuyInChips = Number(game.maxBuyIn) / 1_000_000;
+      const buyInChips = body.buyInChips ?? minBuyInChips;
+      if (buyInChips < minBuyInChips || buyInChips > maxBuyInChips) {
+        return reply.code(400).send({
+          error: 'Bad request',
+          code: 'invalid_buy_in',
+          message: `buyInChips must be between ${minBuyInChips} and ${maxBuyInChips}`,
+        });
+      }
+      // Default bankroll = 5x buy-in so a bot can rebuy a few times if the
+      // table loops. Caller can override.
+      const bankrollChips = body.bankrollChips ?? buyInChips * 5;
+
+      // Bot HTTP calls go to localhost so we never depend on external DNS
+      // for a feature that's already gated to dev.
+      const botBaseUrl = `http://127.0.0.1:${CONFIG.PORT}`;
+
+      const result = await spawnBots({
+        gameId: body.gameId,
+        count: requestedCount,
+        strategy: body.strategy ?? 'random',
+        baseUrl: botBaseUrl,
+        buyInChips,
+        bankrollChips,
+        adminSecret: body.secret,
+        thinkMs: body.thinkMs,
+      });
+
+      return reply.send({
+        success: true,
+        batchId: result.batchId,
+        requested: body.count,
+        spawned: result.spawned.length,
+        clamped: requestedCount < body.count,
+        bots: result.spawned,
+      });
+    } catch (error) {
+      if (error instanceof BotFillError) {
+        return reply.code(error.httpStatus).send({
+          error: 'Bot-fill error',
+          code: error.code,
+          message: error.message,
+        });
+      }
+      if (error instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Validation failed', details: error.errors });
+      }
+      logger.error('[BOT_FILL] spawn-bots failed', { error: (error as Error)?.message });
+      return reply.code(500).send({
+        error: 'Internal server error',
+        message: 'Failed to spawn bots',
+      });
+    }
+  });
+
+  /**
+   * POST /api/admin/kill-bots
+   * Terminate all bot sessions at a game. Body: { secret, gameId }.
+   */
+  fastify.post('/kill-bots', async (request, reply) => {
+    try {
+      const { secret, gameId } = z
+        .object({ secret: z.string(), gameId: z.string() })
+        .parse(request.body);
+      if (!isAdminSecretValid(secret)) {
+        return reply.code(403).send({ error: 'Forbidden', message: 'Invalid admin secret' });
+      }
+      const killed = killBotsAtGame(gameId);
+      return reply.send({ success: true, killed });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Validation failed', details: error.errors });
+      }
+      logger.error('[BOT_FILL] kill-bots failed', { error: (error as Error)?.message });
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
+
+  /**
+   * GET /api/admin/bots?secret=...
+   * List active bot sessions across the process.
+   */
+  fastify.get('/bots', async (request, reply) => {
+    try {
+      const { secret } = z.object({ secret: z.string() }).parse(request.query);
+      if (!isAdminSecretValid(secret)) {
+        return reply.code(403).send({ error: 'Forbidden', message: 'Invalid admin secret' });
+      }
+      return reply.send({
+        success: true,
+        allowed: isBotFillAllowed(),
+        bots: listBots(),
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return reply.code(400).send({ error: 'Validation failed', details: error.errors });
+      }
+      return reply.code(500).send({ error: 'Internal server error' });
     }
   });
 }

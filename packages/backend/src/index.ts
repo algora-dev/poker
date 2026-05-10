@@ -10,6 +10,7 @@ import authRoutes from './api/auth';
 import walletRoutes from './api/wallet';
 import gamesRoutes from './api/games';
 import adminRoutes from './api/admin';
+import { killAllBots } from './services/botFill/registry';
 
 async function start() {
   const port = Number(process.env.PORT) || CONFIG.PORT || 3000;
@@ -102,11 +103,14 @@ async function start() {
   import('./jobs/autoStartGames');
   import('./jobs/turnTimer');
 
-  process.on('SIGTERM', async () => {
+  const shutdown = async (signal: string) => {
+    try { killAllBots(`signal_${signal.toLowerCase()}`); } catch { /* ignore */ }
     stopBlockchainListener();
     await app.close();
     process.exit(0);
-  });
+  };
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.on('SIGINT', () => { void shutdown('SIGINT'); });
 }
 
 start().catch((err) => {

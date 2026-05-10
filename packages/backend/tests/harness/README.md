@@ -52,6 +52,83 @@ Defined in `scenarios.ts`. Each is a self-contained playtest:
 - `cashout_mid_game` — 4 bots, one cashes out / busts before others
 - `concurrency_blast` — 6 bots, multiple games in parallel
 
+## Bot fill mode (live, dev-only)
+
+Different from the harness: a small admin surface that lets a human play
+from the frontend with bots filling the remaining seats. Implemented at
+`src/services/botFill/` (the harness and bot-fill share `BotGameState` /
+`Decision` types so neither implementation drifts).
+
+Gated behind the **same** `ADMIN_SECRET` the rest of `/api/admin` uses.
+In `NODE_ENV=production` the entire feature is **blocked** unless
+`ALLOW_BOT_FILL=1` is also set — by design, this is meant for dev / Railway
+dev / preview, not the live game.
+
+Endpoints (all under `/api/admin`):
+
+| Method | Path           | Body                                                                 |
+|--------|----------------|----------------------------------------------------------------------|
+| POST   | `/spawn-bots`  | `{ secret, gameId, count, strategy?, buyInChips?, bankrollChips?, thinkMs? }` |
+| POST   | `/kill-bots`   | `{ secret, gameId }`                                                 |
+| GET    | `/bots?secret=…` | (no body)                                                          |
+
+Limits:
+- `count` ≤ 9 per call (also clamped to free seats; response includes `clamped: true` when truncated).
+- Max 2 concurrent spawn batches across the process.
+- Strategies: `random` (default), `tight`, `loose`. Sizing rules in `src/services/botFill/strategies.ts`.
+
+Lifecycle:
+- Each bot gets a real `User` row (`bot_<uuid>@bots.local`), is bankroll-topped
+  via the existing `/api/admin/add-chips` audited path, joins via
+  `POST /games/:id/join` (so the active-game money lock + per-user mutex
+  apply), and reacts to `your_turn` events through the same Socket.io pipeline
+  as a real client.
+- Bots auto-shutdown when the game completes/cancels.
+- `SIGTERM` and `SIGINT` flush every active bot via `killAllBots()` before
+  the Fastify server closes.
+
+Logs are tagged `[BOT_FILL]` for easy filtering.
+
+### PowerShell snippet (dev/local)
+
+```powershell
+$secret = '<your ADMIN_SECRET>'
+$base   = 'http://localhost:3000'
+$gameId = '<gameId-shaun-just-created>'
+
+# Spawn 3 random-strategy bots into the game
+Invoke-RestMethod -Method POST -Uri "$base/api/admin/spawn-bots" -ContentType 'application/json' -Body (@{
+  secret   = $secret
+  gameId   = $gameId
+  count    = 3
+  strategy = 'random'
+} | ConvertTo-Json)
+
+# List active bot sessions
+Invoke-RestMethod -Method GET -Uri "$base/api/admin/bots?secret=$secret"
+
+# Kill them when done
+Invoke-RestMethod -Method POST -Uri "$base/api/admin/kill-bots" -ContentType 'application/json' -Body (@{
+  secret = $secret
+  gameId = $gameId
+} | ConvertTo-Json)
+```
+
+### curl snippet (Railway dev)
+
+```bash
+SECRET=<admin-secret>
+BASE=https://poker-gamebackend-production.up.railway.app
+GAME=<gameId>
+
+curl -sS -X POST "$BASE/api/admin/spawn-bots" \
+  -H 'content-type: application/json' \
+  -d "{\"secret\":\"$SECRET\",\"gameId\":\"$GAME\",\"count\":3,\"strategy\":\"random\"}"
+```
+
+For Railway dev specifically: set `ALLOW_BOT_FILL=1` in the service env and
+redeploy. The endpoint refuses to spawn anything in production without it.
+
 ## Invariants checked
 
 After every hand and at session end:

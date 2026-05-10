@@ -6,6 +6,9 @@
  */
 import { io, Socket } from 'socket.io-client';
 import type { BotStrategy, Decision } from './strategies';
+// Re-export shared shapes from the runtime bot-fill module so harness +
+// production share a single source of truth (src/services/botFill/types.ts).
+import type { BotGameState } from '../../src/services/botFill/types';
 
 export interface BotConfig {
   baseUrl: string;
@@ -23,32 +26,9 @@ export interface BotConfig {
   reconnectAfterMs?: number;
 }
 
-export interface GameState {
-  gameId: string;
-  status: string;
-  pot: string;
-  currentBet: string;
-  amountToCall: string;
-  stage: string;
-  board: string[];
-  isMyTurn: boolean;
-  myPlayer: {
-    userId: string;
-    chipStack: string;
-    holeCards: string[];
-    position: string;
-    currentStageBet: string;
-  };
-  opponents: Array<{
-    userId: string;
-    chipStack: string;
-    position: string;
-    currentStageBet: string;
-  }>;
-  smallBlind: string;
-  bigBlind: string;
-  activePlayerUserId: string | null;
-}
+// Harness's GameState is now an alias of the canonical BotGameState shape.
+// Keep the local name to avoid churning every existing scenario import.
+export type GameState = BotGameState;
 
 export interface BotEvents {
   onState?: (state: GameState) => void;
