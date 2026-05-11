@@ -55,15 +55,43 @@ const SEAT_POSITIONS: { top: string; left: string }[] = [
   { top: '75%', left: '87%' },   // 8: bottom-right
 ];
 
-function getRelativeSeatPositions(mySeatIndex: number, totalPlayers: number) {
-  const allPlayers: { seatIndex: number; positionIndex: number }[] = [];
-  const spacing = 9 / totalPlayers;
-  for (let i = 0; i < totalPlayers; i++) {
-    const actualSeat = (mySeatIndex + i) % totalPlayers;
-    const posIdx = Math.round(i * spacing) % 9;
-    allPlayers.push({ seatIndex: actualSeat, positionIndex: posIdx });
-  }
-  return allPlayers;
+/**
+ * Map each actually-occupied seat to a CSS layout slot (0..8) around the
+ * oval table, with the local player always rendered at slot 0 (bottom
+ * centre).
+ *
+ * BUG fix 2026-05-11: previous version did `(mySeatIndex + i) % totalPlayers`,
+ * which (a) used the wrong modulus (max table is 9 seats, not totalPlayers)
+ * and (b) assumed seats were dense and started at mySeatIndex. When any
+ * seat was empty (e.g. 6 of 9 seats taken with sparse indices), the wrong
+ * seatIndex was computed for every other player and seatToPlayer.get()
+ * returned undefined, dropping bots from the UI even though the server
+ * reported them in the players array. Reported by Shaun: "the bots weren't
+ * showing on the UX, but apparently they were in the match".
+ *
+ * New approach: take the actual occupied seat indices, rotate so mine is
+ * first, then evenly space them across the 9 CSS slots clockwise.
+ */
+function getRelativeSeatPositions(
+  mySeatIndex: number,
+  occupiedSeats: number[]
+): { seatIndex: number; positionIndex: number }[] {
+  if (occupiedSeats.length === 0) return [];
+
+  // Sort ascending so the visual rotation around the table matches the
+  // server's seat order. Then rotate so my seat is first.
+  const sorted = [...occupiedSeats].sort((a, b) => a - b);
+  const myIdx = sorted.indexOf(mySeatIndex);
+  const rotated = myIdx >= 0
+    ? [...sorted.slice(myIdx), ...sorted.slice(0, myIdx)]
+    : sorted; // spectator fallback: don't rotate
+
+  const total = rotated.length;
+  const spacing = 9 / total;
+  return rotated.map((seatIndex, i) => ({
+    seatIndex,
+    positionIndex: Math.round(i * spacing) % 9,
+  }));
 }
 
 // ── Card rendering with colored suits ──
@@ -135,13 +163,15 @@ export function PokerTable({
   actionLoading,
 }: PokerTableProps) {
   const allPlayers = [myPlayer, ...opponents];
-  const totalPlayers = allPlayers.length;
-  const seatLayout = getRelativeSeatPositions(myPlayer.seatIndex, totalPlayers);
 
+  // Build the seat lookup BEFORE computing layout so the layout uses the
+  // actual occupied seat indices (not a 0..N-1 dense assumption).
   const seatToPlayer = new Map<number, Player>();
   for (const p of allPlayers) {
     seatToPlayer.set(p.seatIndex, p);
   }
+  const occupiedSeats = Array.from(seatToPlayer.keys());
+  const seatLayout = getRelativeSeatPositions(myPlayer.seatIndex, occupiedSeats);
 
 
 
