@@ -185,6 +185,26 @@ describe('botFill — strategies', () => {
     }
   });
 
+  it('respects engine min-raise floor: raiseAmount >= currentBet + max(lastInc, currentBet, bb)', () => {
+    // Reproduces production case from 2026-05-11 logs:
+    //   currentBet=1.00, lastRaiseIncrement absent (engine sees=1.00 because
+    //   the initial bet itself is the first increment), bb=0.20.
+    //   Bot must propose raiseAmount >= 2.00 (1.00 + 1.00).
+    const state = baseState({
+      amountToCall: '1000000',
+      currentBet: '1000000',
+      bigBlind: '200000',
+      // lastRaiseIncrement deliberately omitted to simulate the missing-field
+      // case where the engine still floors at currentBet.
+      myPlayer: { ...baseState().myPlayer, chipStack: '50000000', currentStageBet: '0' },
+    });
+    const d = decideForStrategy('loose', state, () => 0.99); // raise slot
+    expect(d.action === 'raise' || d.action === 'all-in').toBe(true);
+    if (d.action === 'raise') {
+      expect(d.raiseAmount!).toBeGreaterThanOrEqual(2.0);
+    }
+  });
+
   it('all-ins when min-raise would commit entire remaining stack', () => {
     // Stack = 10 chips, BB = 1 chip, currentBet = 5, lastInc = 5.
     // minRaiseTarget = 5 + 5 = 10. additionalCost = 10 - 0 = 10 == stack => all-in.

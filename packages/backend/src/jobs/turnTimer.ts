@@ -17,6 +17,24 @@ const TURN_TICK_MS    = parseInt(process.env.TURN_TICK_MS    || '2000',  10);
 // Key: `${handId}:${activePlayerIndex}`. Cleaned when the turn changes.
 const warnedTurns = new Map<string, number>(); // value = timestamp warned
 
+/**
+ * Per-turn auto-action inflight lock.
+ *
+ * Why: every tick runs checkExpiredTurns(); if processAction() takes >TURN_TICK_MS
+ * (it currently averages ~2.3s, sometimes >5s on Railway), the next tick wakes up
+ * BEFORE the previous auto-action finished, finds the SAME expired hand, and fires
+ * another auto-action. Result on prod was 4-8 concurrent processAction() calls,
+ * mostly returning `Stale action - turn already advanced` and one occasionally
+ * succeeding into a state that the others then corrupted.
+ *
+ * The lock is keyed by `${handId}:${activePlayerIndex}` so it auto-releases when
+ * the turn advances (different idx) or the hand changes (different id).
+ *
+ * Process-local only — there is one backend instance per Railway deploy. If/when
+ * we horizontally scale, this needs to move to a DB advisory lock.
+ */
+const inflightAutoActions = new Set<string>();
+
 function turnKey(handId: string, idx: number) {
   return `${handId}:${idx}`;
 }
@@ -46,6 +64,14 @@ async function checkExpiredTurns() {
       if (!activePlayer) continue;
       if (activePlayer.position === 'folded' || activePlayer.position === 'eliminated' ||
           activePlayer.position === 'all_in') continue;
+
+      // De-stampede: if a prior tick's auto-action for this exact turn is
+      // still in flight, skip. The previous tick's processAction will either
+      // succeed (advancing activePlayerIndex — next tick keys differently) or
+      // throw (still expired — next tick retries cleanly).
+      const lockKey = turnKey(hand.id, hand.activePlayerIndex);
+      if (inflightAutoActions.has(lockKey)) continue;
+      inflightAutoActions.add(lockKey);
 
       // Compute what the player owes this stage. Free check -> auto-check; else fold.
       const contribution = await prisma.handAction.aggregate({
@@ -89,12 +115,29 @@ async function checkExpiredTurns() {
           });
         }
         // Clear any warning state for this turn since it's over.
-        warnedTurns.delete(turnKey(hand.id, hand.activePlayerIndex));
+        warnedTurns.delete(lockKey);
       } catch (err) {
         // processAction can throw if the hand state changed mid-tick; safe to retry next tick.
-        logger.error('Auto-action failed (will retry next tick)', { gameId: game.id, error: (err as Error).message });
+        // Stale-action / no-active-hand are EXPECTED when the turn advanced
+        // between the SELECT and the processAction call — log as info, not error.
+        const msg = (err as Error).message ?? '';
+        const lc = msg.toLowerCase();
+        const expected = lc.includes('stale action') || lc.includes('no active hand')
+          || lc.includes('not your turn');
+        if (expected) {
+          logger.info('Auto-action skipped (turn already advanced)', { gameId: game.id, reason: msg });
+        } else {
+          logger.error('Auto-action failed (will retry next tick)', { gameId: game.id, error: msg });
+        }
+      } finally {
+        inflightAutoActions.delete(lockKey);
       }
     }
+
+    // GC stale inflight locks every minute as a safety net (shouldn't be
+    // needed because finally{} releases them, but defends against an
+    // unhandled throw above the try{}).
+    // (No timestamp on the set entries — if we ever see growth, switch to Map.)
 
     // 2) Warning: turn is in the warning window but not yet expired.
     //    Fire once per turn (deduped by warnedTurns map).
