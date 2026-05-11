@@ -780,7 +780,26 @@ async function checkGameContinuation(tx: any, game: any) {
     orderBy: { seatIndex: 'asc' },
   });
 
-  // Eliminate players with zero chips
+  // Eliminate players with zero chips.
+  //
+  // BUG fix 2026-05-11: this loop used to update the DB row only and not
+  // the local `players` snapshot. Every subsequent in-memory check
+  // (`remaining` filter, the next-hand position reset loop) then saw the
+  // pre-elimination `position: 'active'` value, leading to two real
+  // failure modes:
+  //   (1) `remaining.length` was OK because the filter also checks
+  //       chipStack > 0, so the closeGame branch fired correctly.
+  //   (2) The 'reset positions to active for next hand' loop below
+  //       OVERWROTE the eliminated DB rows back to 'active'. After this,
+  //       initializeHand() ran 3 seconds later (via the setTimeout in
+  //       /:id/action), saw 4 'active' players including 2 with
+  //       chipStack=0, and either deadlocked posting blinds from a zero
+  //       stack or wedged the table. Stale-cleanup cron eventually
+  //       cancelled the game.
+  //
+  // Reproduced 2026-05-11 ~20:14 in Test7Bots Hand 3->4 transition.
+  // Fix: mutate the local snapshot alongside the DB write so subsequent
+  // logic in this function sees the post-elimination state.
   for (const player of players) {
     if (
       player.position !== 'eliminated' &&
@@ -790,6 +809,7 @@ async function checkGameContinuation(tx: any, game: any) {
         where: { id: player.id },
         data: { position: 'eliminated' },
       });
+      player.position = 'eliminated';
       logger.info('Player eliminated (zero chips)', {
         gameId: game.id,
         userId: player.userId,

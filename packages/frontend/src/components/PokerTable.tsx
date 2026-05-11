@@ -104,28 +104,42 @@ const SUIT_COLORS: Record<string, string> = {
   clubs: 'text-gray-900', spades: 'text-gray-900',
 };
 
-function CardFace({ card, small }: { card: any; small?: boolean }) {
+function CardFace({ card, small, large }: { card: any; small?: boolean; large?: boolean }) {
   const suit = card.suit as string;
   const rank = card.rank as string;
   const symbol = SUIT_SYMBOLS[suit] || '?';
   const color = SUIT_COLORS[suit] || 'text-gray-900';
-  const w = small ? 'w-9 h-[52px]' : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
+  // Playtest 2026-05-11: enlarge YOUR hole cards ~50% so they're easy to
+  // read at a glance. Opponent backs stay `small`. Default keeps the
+  // previous size for board cards.
+  const w = large
+    ? 'w-14 sm:w-[72px] h-[84px] sm:h-[102px]'
+    : small
+      ? 'w-9 h-[52px]'
+      : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
+  const rankSize = large ? 'text-base sm:text-lg font-bold' : 'text-[10px] sm:text-[11px] font-bold';
+  const suitSmallSize = large ? 'text-base sm:text-lg' : 'text-[11px] sm:text-xs';
+  const suitBigSize = large ? 'text-3xl sm:text-4xl' : 'text-lg sm:text-2xl';
 
   return (
     <div className={`relative bg-white rounded-md shadow-md select-none border border-gray-200 overflow-hidden ${w}`}>
       <div className={`absolute top-0.5 left-0.5 leading-tight ${color}`}>
-        <div className="text-[10px] sm:text-[11px] font-bold">{rank}</div>
-        <div className="text-[11px] sm:text-xs -mt-0.5">{symbol}</div>
+        <div className={rankSize}>{rank}</div>
+        <div className={`${suitSmallSize} -mt-0.5`}>{symbol}</div>
       </div>
-      <div className={`absolute inset-0 flex items-center justify-center text-lg sm:text-2xl ${color}`}>
+      <div className={`absolute inset-0 flex items-center justify-center ${suitBigSize} ${color}`}>
         {symbol}
       </div>
     </div>
   );
 }
 
-function CardBack({ small }: { small?: boolean }) {
-  const w = small ? 'w-9 h-[52px]' : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
+function CardBack({ small, large }: { small?: boolean; large?: boolean }) {
+  const w = large
+    ? 'w-14 sm:w-[72px] h-[84px] sm:h-[102px]'
+    : small
+      ? 'w-9 h-[52px]'
+      : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
   return (
     <div className={`relative rounded-md shadow-md overflow-hidden border border-blue-800 ${w}`}>
       <div className="absolute inset-0 bg-gradient-to-br from-blue-800 to-blue-950" />
@@ -326,7 +340,7 @@ export function PokerTable({
                   isMe ? 'bg-green-900/80 border border-green-600/40' :
                   'bg-gray-900/80 border border-gray-700/40'}
               `}>
-                <div className={`text-xs sm:text-sm font-semibold truncate max-w-[90px] sm:max-w-[140px] ${
+                <div className={`${isMe ? 'text-sm sm:text-base' : 'text-xs sm:text-sm'} font-semibold truncate max-w-[110px] sm:max-w-[160px] ${
                   isActive ? 'text-yellow-200' :
                   isMe ? 'text-green-300' :
                   isFolded ? 'text-gray-500' :
@@ -334,7 +348,8 @@ export function PokerTable({
                 }`}>
                   {player.username}{isMe ? ' (You)' : ''}
                 </div>
-                <div className={`text-[11px] sm:text-xs ${isEliminated ? 'text-gray-600' : 'text-yellow-400/80'}`}>
+                {/* Balance in gold, ~50% larger for own seat per playtest feedback. */}
+                <div className={`${isMe ? 'text-sm sm:text-base font-semibold' : 'text-[11px] sm:text-xs'} ${isEliminated ? 'text-gray-600' : 'text-amber-400'}`}>
                   {formatChips(player.chipStack)}
                 </div>
 
@@ -346,12 +361,13 @@ export function PokerTable({
 
               </div>
 
-              {/* Cards */}
+              {/* Cards. YOUR hole cards ~50% larger (large prop) for
+                  readability. Opponent backs stay `small`. */}
               <div className="flex gap-0.5 sm:gap-1 mt-1">
                 {isMe ? (
                   player.holeCards.length > 0 ? (
                     player.holeCards.map((card: any, i: number) => (
-                      <CardFace key={i} card={card} small />
+                      <CardFace key={i} card={card} large />
                     ))
                   ) : null
                 ) : (
@@ -365,20 +381,19 @@ export function PokerTable({
               </div>
 
               {/* Last action + bet indicator.
-                  Font sizes upsized ~50% (playtest 2026-05-11 feedback:
-                  text was unreadable). chip-bet now text-sm, action label
-                  now text-xs-semibold and given its own row so the chip
-                  amount + action don't crowd each other. */}
+                  Playtest 2026-05-11 v3: text upsized again ~50%.
+                  Chip glyph height matched to the bet number height.
+                  Action label is now base size for easy reading. */}
               {(player.lastAction || (player.currentStageBet && parseInt(player.currentStageBet) > 0)) && (
                 <div className="flex flex-col items-center mt-1">
                   {player.currentStageBet && parseInt(player.currentStageBet) > 0 && (
-                    <div className="flex items-center gap-1">
-                      <img src="/assets/musd-chip.png" alt="" className="w-4 h-4" />
-                      <span className="text-sm font-semibold text-white">{formatChips(player.currentStageBet)}</span>
+                    <div className="flex items-center gap-1.5">
+                      <img src="/assets/musd-chip.png" alt="" className="w-5 h-5" />
+                      <span className="text-base font-semibold text-white leading-5">{formatChips(player.currentStageBet)}</span>
                     </div>
                   )}
                   {player.lastAction && player.lastAction !== 'blind' && (
-                    <span className={`text-xs font-bold uppercase mt-0.5 ${
+                    <span className={`text-base font-bold uppercase mt-0.5 ${
                       player.lastAction === 'fold' ? 'text-red-400' :
                       player.lastAction === 'raise' ? 'text-yellow-400' :
                       player.lastAction === 'all-in' ? 'text-purple-400' :

@@ -232,11 +232,23 @@ export default function GameRoom() {
       // Full state refresh handled by game:state broadcast from server
     });
 
-    // Full game state from server
+    // Full game state from server. Fire the turn alert here too —
+    // game:state pushes can arrive before/instead of game:action when the
+    // server broadcasts a fresh personalized state, so without this the
+    // alert can still feel laggy. previousTurn.current acts as a 1-trip
+    // dedupe key, matching the game:action path.
     socket.on('game:state', (state: any) => {
-      if (state) {
-        setGameState(state);
-        setLoading(false);
+      if (!state) return;
+      const wasMyTurn = previousTurn.current;
+      const isNowMyTurn = !!state.isMyTurn;
+      setGameState(state);
+      setLoading(false);
+      if (isNowMyTurn && !wasMyTurn) {
+        previousTurn.current = true;
+        try { playTurnNotification(); } catch { /* audio context not ready */ }
+        try { showTurnNotification(); } catch { /* notifications denied */ }
+      } else if (!isNowMyTurn && wasMyTurn) {
+        previousTurn.current = false;
       }
     });
 
@@ -658,19 +670,27 @@ export default function GameRoom() {
         {/* Raise Modal */}
         {showRaiseModal && (() => {
           const stack = parseFloat(formatChips(gameState?.myPlayer.chipStack || '0'));
+          const pot = parseFloat(formatChips(gameState?.pot || '0'));
           const currentBetNum = parseFloat(formatChips(gameState?.currentBet || '0'));
           const bbNum = parseFloat(formatChips(gameState?.bigBlind || '200000'));
           const minRaise = Math.max(currentBetNum + bbNum, bbNum * 2); // At least current bet + BB
           const currentAmount = parseFloat(raiseAmount) || minRaise;
 
-          const setQuick = (pct: number) => {
-            if (pct === 1) {
-              setRaiseAmount(stack.toFixed(2));
-              return;
-            }
-            const val = Math.round(stack * pct * 100) / 100;
-            // Clamp between minRaise and stack
+          /**
+           * Playtest 2026-05-11 feedback (Shaun): quick buttons should
+           * size the raise as a fraction of the POT (the conventional
+           * poker shorthand), NOT a fraction of remaining stack.
+           *   25% = quarter pot, 50% = half pot, 100% = full pot.
+           * All-In stays stack-based (no pot reference).
+           * All values are clamped to [minRaise, stack] so the slider
+           * stays in legal-action territory.
+           */
+          const setQuickPotPct = (pct: number) => {
+            const val = Math.round(pot * pct * 100) / 100;
             setRaiseAmount(Math.min(stack, Math.max(minRaise, val)).toFixed(2));
+          };
+          const setAllIn = () => {
+            setRaiseAmount(stack.toFixed(2));
           };
 
           return (
@@ -708,28 +728,32 @@ export default function GameRoom() {
                   </div>
                 </div>
 
-                {/* Quick buttons */}
-                <div className="grid grid-cols-4 gap-2 mb-5">
+                {/* Quick buttons — sized off the POT, not the stack.
+                    'All In' is the exception and snaps to remaining stack. */}
+                <div className="grid grid-cols-4 gap-2 mb-2">
                   {[
-                    { label: '25%', pct: 0.25 },
-                    { label: '50%', pct: 0.5 },
-                    { label: '75%', pct: 0.75 },
-                    { label: 'All In', pct: 1 },
+                    { label: '½ pot', pct: 0.5 },
+                    { label: '¾ pot', pct: 0.75 },
+                    { label: 'Pot',  pct: 1.0 },
                   ].map(({ label, pct }) => (
                     <button
                       key={label}
-                      onClick={() => setQuick(pct)}
-                      className={`py-2 rounded-lg text-xs font-semibold transition active:scale-95 ${
-                        pct === 1
-                          ? 'text-white border border-purple-500/30 hover:bg-purple-500/20'
-                          : 'text-white border border-white/10 hover:bg-white/10'
-                      }`}
-                      style={pct === 1 ? {background:'rgba(156,81,255,0.1)'} : {background:'rgba(255,255,255,0.03)'}}
+                      onClick={() => setQuickPotPct(pct)}
+                      className="py-2 rounded-lg text-xs font-semibold text-white border border-white/10 hover:bg-white/10 transition active:scale-95"
+                      style={{background:'rgba(255,255,255,0.03)'}}
                     >
                       {label}
                     </button>
                   ))}
+                  <button
+                    onClick={setAllIn}
+                    className="py-2 rounded-lg text-xs font-semibold text-white border border-purple-500/30 hover:bg-purple-500/20 transition active:scale-95"
+                    style={{background:'rgba(156,81,255,0.1)'}}
+                  >
+                    All In
+                  </button>
                 </div>
+                <p className="text-[10px] text-gray-600 mb-5 text-center">Pot: {pot.toFixed(2)} · Stack: {stack.toFixed(2)}</p>
 
                 {/* Manual input */}
                 <div className="mb-5">

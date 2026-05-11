@@ -42,7 +42,13 @@ export interface BotSessionConfig {
   strategy: StrategyName;
   /** Admin secret used to top up bankroll via /api/admin/add-chips. */
   adminSecret: string;
-  /** Optional artificial think-time in ms before each action (default 300ms). */
+  /**
+   * Optional artificial think-time in ms before each action.
+   * Default lowered 2026-05-11 from 300ms to 100ms after playtest
+   * feedback that bots felt sluggish. The dominant turn latency is
+   * server-side (~5s per processAction round-trip on Railway+Supabase),
+   * not bot think-time, but 200ms x 3-8 bots/hand still adds up.
+   */
   thinkMs?: number;
   /** ID used by the registry for kill/list operations. */
   sessionId: string;
@@ -341,7 +347,7 @@ export class BotSession {
 
     this.actionInFlight = true;
     try {
-      const thinkMs = this.cfg.thinkMs ?? 300;
+      const thinkMs = this.cfg.thinkMs ?? 100;
       if (thinkMs > 0) await sleep(thinkMs);
       if (this.shuttingDown) return;
 
