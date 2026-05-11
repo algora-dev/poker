@@ -38,16 +38,20 @@ interface PokerTableProps {
   actionLoading: boolean;
 }
 
-// Seat positions around an oval table (CSS positions as percentages)
+// Seat positions around an oval table (CSS positions as percentages).
+// Top-row seats lowered from top:2% -> top:12% so player avatars aren't
+// clipped at the top of the browser viewport (reported in playtest
+// 2026-05-11). Side and top-corner seats nudged accordingly to keep the
+// oval shape balanced.
 const SEAT_POSITIONS: { top: string; left: string }[] = [
   { top: '85%', left: '50%' },   // 0: bottom center (YOU)
   { top: '75%', left: '13%' },   // 1: bottom-left
-  { top: '45%', left: '2%' },    // 2: left
-  { top: '12%', left: '10%' },   // 3: top-left
-  { top: '2%', left: '33%' },    // 4: top-left-center
-  { top: '2%', left: '67%' },    // 5: top-right-center
-  { top: '12%', left: '90%' },   // 6: top-right
-  { top: '45%', left: '98%' },   // 7: right
+  { top: '48%', left: '4%' },    // 2: left
+  { top: '18%', left: '12%' },   // 3: top-left
+  { top: '10%', left: '33%' },   // 4: top-left-center
+  { top: '10%', left: '67%' },   // 5: top-right-center
+  { top: '18%', left: '88%' },   // 6: top-right
+  { top: '48%', left: '96%' },   // 7: right
   { top: '75%', left: '87%' },   // 8: bottom-right
 ];
 
@@ -330,20 +334,26 @@ export function PokerTable({
                 )}
               </div>
 
-              {/* Last action + bet indicator */}
+              {/* Last action + bet indicator.
+                  Font sizes upsized ~50% (playtest 2026-05-11 feedback:
+                  text was unreadable). chip-bet now text-sm, action label
+                  now text-xs-semibold and given its own row so the chip
+                  amount + action don't crowd each other. */}
               {(player.lastAction || (player.currentStageBet && parseInt(player.currentStageBet) > 0)) && (
-                <div className="flex items-center gap-1 mt-1">
+                <div className="flex flex-col items-center mt-1">
                   {player.currentStageBet && parseInt(player.currentStageBet) > 0 && (
-                    <>
-                      <img src="/assets/musd-chip.png" alt="" className="w-3.5 h-3.5" />
-                      <span className="text-[10px] font-semibold text-white">{formatChips(player.currentStageBet)}</span>
-                    </>
+                    <div className="flex items-center gap-1">
+                      <img src="/assets/musd-chip.png" alt="" className="w-4 h-4" />
+                      <span className="text-sm font-semibold text-white">{formatChips(player.currentStageBet)}</span>
+                    </div>
                   )}
                   {player.lastAction && player.lastAction !== 'blind' && (
-                    <span className={`text-[9px] font-bold uppercase ml-1 ${
+                    <span className={`text-xs font-bold uppercase mt-0.5 ${
                       player.lastAction === 'fold' ? 'text-red-400' :
                       player.lastAction === 'raise' ? 'text-yellow-400' :
                       player.lastAction === 'all-in' ? 'text-purple-400' :
+                      player.lastAction === 'call' ? 'text-blue-300' :
+                      player.lastAction === 'check' ? 'text-emerald-300' :
                       'text-gray-400'
                     }`}>
                       {player.lastAction === 'call' ? 'Call' :
