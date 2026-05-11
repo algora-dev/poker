@@ -414,12 +414,33 @@ export async function joinGame(userId: string, gameId: string, buyInAmount?: big
       },
     });
 
+    // Find the LOWEST free seatIndex in 0..maxPlayers-1.
+    //
+    // Previously this used `seatIndex: game.players.length`, which assumed
+    // seats were always dense and contiguous from 0. After leaveGame()
+    // shipped (2026-05-11) seats can be sparse — e.g. creator left seat 0
+    // and three bots remain at seats 1, 2, 3. Using `players.length` then
+    // assigned the new joiner to seat 3, which collides with the bot
+    // already at seat 3 and trips the @@unique([gameId, seatIndex]) DB
+    // constraint. The join failed silently from the user's perspective
+    // and they ended up not seated, which is what Shaun hit 2026-05-11 ~19:47.
+    const usedSeats = new Set<number>(game.players.map((p) => p.seatIndex));
+    let chosenSeat = -1;
+    for (let i = 0; i < game.maxPlayers; i++) {
+      if (!usedSeats.has(i)) { chosenSeat = i; break; }
+    }
+    if (chosenSeat === -1) {
+      // Should be caught by the earlier 'game is full' check, but defend
+      // here too — a full table without a free seat is unjoinable.
+      throw new Error('Game is full');
+    }
+
     // Add player to game
     await tx.gamePlayer.create({
       data: {
         gameId: game.id,
         userId,
-        seatIndex: game.players.length, // Next available seat
+        seatIndex: chosenSeat,
         chipStack: buyIn,
         position: 'waiting', // Waiting for game to start
       },
@@ -455,7 +476,7 @@ export async function joinGame(userId: string, gameId: string, buyInAmount?: big
       userId,
       eventType: 'player_joined',
       payload: {
-        seatIndex: game.players.length,
+        seatIndex: chosenSeat,
         buyIn: buyIn.toString(),
       },
     });
