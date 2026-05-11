@@ -22,8 +22,10 @@ const createGameSchema = z.object({
   minBuyIn: z.number().min(0.01, 'Minimum buy-in must be at least 0.01'),
   maxBuyIn: z.number().min(0.01, 'Maximum buy-in must be at least 0.01'),
   creatorBuyIn: z.number().min(0.01).optional(),
-  smallBlind: z.number().min(0.01, 'Small blind must be at least 0.01').optional().default(0.5),
-  bigBlind: z.number().min(0.01, 'Big blind must be at least 0.01').optional().default(1.0),
+  // Server defaults aligned with the lobby UI defaults (0.10/0.20 with a
+  // 10-chip starting buy-in). Updated post-playtest 2026-05-11.
+  smallBlind: z.number().min(0.01, 'Small blind must be at least 0.01').optional().default(0.10),
+  bigBlind: z.number().min(0.01, 'Big blind must be at least 0.01').optional().default(0.20),
 });
 
 export default async function gamesRoutes(fastify: FastifyInstance) {

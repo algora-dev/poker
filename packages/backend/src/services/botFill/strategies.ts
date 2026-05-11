@@ -93,9 +93,19 @@ export function decideForStrategy(
     return { action: 'call' };
   }
   // Min-raise: target total bet for this street.
-  // Note: the engine's `raiseAmount` is the absolute size of this street's
-  // bet target, not the increment. Fall back to BB when lastInc < BB.
-  const minRaiseTarget = currentBet + Math.max(lastInc, bb);
+  // The engine rule (packages/backend/src/services/pokerActions.ts) is:
+  //   raiseTotal >= currentBet + lastRaiseIncrement
+  // where lastRaiseIncrement = max increment of any FULL raise this street,
+  // and defaults to bigBlind only if there has been no betting at all on this
+  // street. Once someone has bet X on a fresh street, X itself becomes the
+  // increment for subsequent raises.
+  //
+  // To stay safe we floor lastRaiseIncrement at max(currentBet, bb): if there
+  // is an existing currentBet, that bet itself is at least the increment.
+  // Adding a +1 micro-chip safety margin guards against float ↔ BigInt
+  // rounding when we serialize raiseAmount back to a Number.
+  const safeLastInc = Math.max(lastInc, currentBet, bb);
+  const minRaiseTarget = currentBet + safeLastInc;
   // Total commitment for the raise = minRaiseTarget; we've already put in
   // `stageBet` this street, so additional cost = minRaiseTarget - stageBet.
   // We can only raise if that additional cost is strictly less than stack

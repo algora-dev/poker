@@ -35,9 +35,13 @@ export default function Lobby() {
   const [joinBuyIn, setJoinBuyIn] = useState('');
   const [createLoading, setCreateLoading] = useState(false);
   const [gameName, setGameName] = useState('');
-  const [minBuyIn, setMinBuyIn] = useState('5');
+  // Defaults updated after playtest 2026-05-11 (Shaun): 5-chip start was
+  // effectively an instant all-in given 0.10/0.20 blinds. 10/20 gives a
+  // working stack-to-BB ratio of 50, which is closer to a normal SNG/MTT
+  // starting depth.
+  const [minBuyIn, setMinBuyIn] = useState('10');
   const [maxBuyIn, setMaxBuyIn] = useState('20');
-  const [creatorBuyIn, setCreatorBuyIn] = useState('5');
+  const [creatorBuyIn, setCreatorBuyIn] = useState('10');
   const [smallBlind, setSmallBlind] = useState('0.10');
   const [bigBlind, setBigBlind] = useState('0.20');
 

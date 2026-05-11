@@ -124,14 +124,29 @@ export default function GameRoom() {
     };
     socket.on('connect', onReconnect);
 
-    // Instant action event — update everything from socket data directly
+    // Instant action event — update everything from socket data directly.
+    //
+    // Playtest 2026-05-11 surfaced two UX bugs in this merge path:
+    //   (a) "Your turn" alert fired up to 5s late because it was only
+    //       wired into the polling loadGameState(), not the socket push.
+    //   (b) Check->Call flicker on the action buttons: when a peer raised
+    //       just before our turn, the UI briefly showed Check (because
+    //       amountToCall was still 0 from before the merge applied) and
+    //       then snapped to Call. Cause was that React batched setState
+    //       didn't apply atomically with the alert-firing block; we now
+    //       compute the new my-state in one place and use it for both.
     socket.on('game:action', (data: any) => {
       if (data?.action === 'check') playCheckSound();
-      
+
+      let firedTurnAlert = false;
       setGameState(prev => {
         if (!prev) return prev;
-        
-        // Update opponents' last action
+
+        const newCurrentBet = data.currentBet || prev.currentBet;
+        const isNowMyTurn = data.nextPlayer === user?.id;
+        const wasMyTurn = prev.isMyTurn;
+
+        // Update opponents' last action + chip-on-felt amount.
         const updatedOpponents = prev.opponents?.map((o: any) => ({
           ...o,
           lastAction: o.userId === data.userId ? data.action : o.lastAction,
@@ -140,25 +155,60 @@ export default function GameRoom() {
             : o.currentStageBet,
         })) || [];
 
-        // Update my player's last action if I was the one who acted
-        const updatedMyPlayer = data.userId === prev.myPlayer.userId
-          ? { ...prev.myPlayer, lastAction: data.action }
-          : prev.myPlayer;
+        // Update my player. If I'm the one who acted, record my lastAction
+        // + grow my own stage bet by data.actionAmount. If a NEW turn just
+        // landed on me (peer's action made me active), clear any stale
+        // lastAction from this hand so the action label doesn't briefly
+        // misrepresent the current button state.
+        let updatedMyPlayer = prev.myPlayer;
+        if (data.userId === prev.myPlayer.userId) {
+          updatedMyPlayer = {
+            ...prev.myPlayer,
+            lastAction: data.action,
+            currentStageBet: data.actionAmount
+              ? String(parseInt(prev.myPlayer.currentStageBet || '0') + parseInt(data.actionAmount || '0'))
+              : prev.myPlayer.currentStageBet,
+          };
+        } else if (isNowMyTurn && !wasMyTurn) {
+          // New turn landed on us. Clear stale lastAction so we don't show
+          // "Check" on our seat while the Call button is mid-flicker.
+          updatedMyPlayer = { ...prev.myPlayer, lastAction: null };
+        }
+
+        // Always recompute amountToCall when it's our turn, from the
+        // authoritative new currentBet + our latest stage contribution.
+        // This is what closes the check->call flicker for good.
+        const myStageBet = parseInt(updatedMyPlayer.currentStageBet || '0');
+        const newCurrentBetN = parseInt(newCurrentBet || '0');
+        const amountToCall = isNowMyTurn
+          ? String(Math.max(0, newCurrentBetN - myStageBet))
+          : prev.amountToCall;
+
+        // Instant turn-alert: socket-driven, no 0-5s polling delay.
+        if (isNowMyTurn && !wasMyTurn) {
+          firedTurnAlert = true;
+        }
 
         return {
           ...prev,
-          isMyTurn: data.nextPlayer === user?.id,
+          isMyTurn: isNowMyTurn,
           activePlayerUserId: data.nextPlayer || prev.activePlayerUserId,
           pot: data.pot || prev.pot,
-          currentBet: data.currentBet || prev.currentBet,
-          amountToCall: data.nextPlayer === user?.id
-            ? String(Math.max(0, parseInt(data.currentBet || '0') - parseInt(updatedMyPlayer.currentStageBet || '0')))
-            : prev.amountToCall,
+          currentBet: newCurrentBet,
+          amountToCall,
           stage: data.stage || prev.stage,
           myPlayer: updatedMyPlayer,
           opponents: updatedOpponents,
         };
       });
+
+      // Side-effect after the state commit, NOT inside the reducer (no
+      // double-fires under StrictMode).
+      if (firedTurnAlert) {
+        previousTurn.current = true;
+        try { playTurnNotification(); } catch { /* audio context not ready */ }
+        try { showTurnNotification(); } catch { /* notifications denied */ }
+      }
 
       // Full state refresh handled by game:state broadcast from server
     });
