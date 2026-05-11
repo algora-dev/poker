@@ -37,6 +37,12 @@ function toChips(microStr: string): number {
   return Number(microStr) / 1_000_000;
 }
 
+/** Safe BigInt parse: returns 0n on falsy/invalid input. */
+function toBig(microStr: string | undefined): bigint {
+  if (!microStr) return 0n;
+  try { return BigInt(microStr); } catch { return 0n; }
+}
+
 /**
  * Pure decision function — pulled out for tests.
  * `rng` defaults to Math.random; tests can inject a deterministic source.
@@ -47,6 +53,14 @@ export function decideForStrategy(
   rng: () => number = Math.random
 ): Decision {
   const w = WEIGHTS[name];
+
+  // BigInt-precise legality checks (chip math is sub-unit; converting to
+  // floats first can collapse tiny owe values to 0 and produce illegal
+  // checks).
+  const oweBig = toBig(state.amountToCall);
+  const stackBig = toBig(state.myPlayer.chipStack);
+  const stageBetBig = toBig(state.myPlayer.currentStageBet);
+
   const owe = toChips(state.amountToCall);
   const stack = toChips(state.myPlayer.chipStack);
   const bb = toChips(state.bigBlind);
@@ -54,13 +68,14 @@ export function decideForStrategy(
   const lastInc = state.lastRaiseIncrement ? toChips(state.lastRaiseIncrement) : bb;
 
   // Defensive: if our stack is gone, the engine should have moved on, but
-  // never send a bet/raise we can't pay.
-  if (stack <= 0) {
-    return owe === 0 ? { action: 'check' } : { action: 'fold' };
+  // never send a bet/raise we can't pay. If we still somehow owe chips, the
+  // only legal move is fold (we can't call with 0 stack).
+  if (stackBig <= 0n) {
+    return oweBig === 0n ? { action: 'check' } : { action: 'fold' };
   }
 
   // No bet to face: never fold (poker rule). 70% check, 30% min-bet.
-  if (owe === 0) {
+  if (oweBig === 0n) {
     if (rng() < 0.7) return { action: 'check' };
     const target = Math.max(bb, 1);
     if (target >= stack) return { action: 'all-in' };
@@ -68,22 +83,26 @@ export function decideForStrategy(
   }
 
   // Facing a bet: weighted random across fold/call/raise.
-  // If we'd have to go all-in just to call, the calling weight folds in
-  // (all-in is a forced version of call here).
+  // If we'd have to go all-in just to call, force all-in.
   const r = rng();
   if (r < w.fold) {
     return { action: 'fold' };
   }
   if (r < w.fold + w.call) {
-    if (owe >= stack) return { action: 'all-in' };
+    if (oweBig >= stackBig) return { action: 'all-in' };
     return { action: 'call' };
   }
   // Min-raise: target total bet for this street.
   // Note: the engine's `raiseAmount` is the absolute size of this street's
   // bet target, not the increment. Fall back to BB when lastInc < BB.
   const minRaiseTarget = currentBet + Math.max(lastInc, bb);
-  if (minRaiseTarget >= stack + toChips(state.myPlayer.currentStageBet)) {
-    // We can't afford a legal min-raise; shove instead.
+  // Total commitment for the raise = minRaiseTarget; we've already put in
+  // `stageBet` this street, so additional cost = minRaiseTarget - stageBet.
+  // We can only raise if that additional cost is strictly less than stack
+  // (equal would be all-in, not a sized raise).
+  const minRaiseTargetBig = BigInt(Math.floor(minRaiseTarget * 1_000_000));
+  const additionalCost = minRaiseTargetBig - stageBetBig;
+  if (additionalCost >= stackBig) {
     return { action: 'all-in' };
   }
   return { action: 'raise', raiseAmount: minRaiseTarget };

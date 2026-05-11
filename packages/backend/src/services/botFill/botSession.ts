@@ -77,6 +77,12 @@ export class BotSession {
   private lastActedKey: string | null = null;
   /** True once shutdown() is called; suppresses reconnect. */
   private shuttingDown = false;
+  /** Coalesce in-flight peer-triggered state refetches. */
+  private peerRefetchInFlight = false;
+  /** Last successful state-fetch timestamp; used to throttle peer pulls. */
+  private lastStateFetchAt = 0;
+  /** Minimum ms between peer-triggered state pulls. */
+  private static readonly PEER_REFETCH_MIN_MS = 250;
   /** Resolves when the game ends naturally so spawn() callers can await it. */
   private endedResolver: (() => void) | null = null;
   endedPromise: Promise<void>;
@@ -249,16 +255,26 @@ export class BotSession {
         void this.maybeAct();
       });
 
-      // Peer events without a state attached: refetch on next tick.
+      // Peer events without a state attached: refetch on next tick,
+      // but coalesce bursts (multiple peers acting in the same window
+      // would otherwise trigger an N^2 refetch storm).
       const onPeer = () => {
         if (this.shuttingDown) return;
+        if (this.peerRefetchInFlight) return;
+        const now = Date.now();
+        if (now - this.lastStateFetchAt < BotSession.PEER_REFETCH_MIN_MS) return;
+        this.peerRefetchInFlight = true;
         this.fetchState()
           .then((s) => {
             this.lastState = s;
+            this.lastStateFetchAt = Date.now();
             this.handleStatePush(s);
             return this.maybeAct();
           })
-          .catch(() => { /* ignore */ });
+          .catch(() => { /* ignore */ })
+          .finally(() => {
+            this.peerRefetchInFlight = false;
+          });
       };
       this.socket.on('game:action', onPeer);
       this.socket.on('game:updated', onPeer);
@@ -293,32 +309,73 @@ export class BotSession {
     }
   }
 
+  /**
+   * Is it actually our turn to act, given a fresh state? Server-side guards
+   * (Not your turn, No active hand, Stale action, hand stage=completed) all
+   * map to "do nothing" here so we never spam the server.
+   */
+  private isActionable(state: BotGameState | null): state is BotGameState {
+    if (!state) return false;
+    if (state.status !== 'in_progress') return false;
+    if (!state.isMyTurn) return false;
+    if (state.activePlayerUserId && state.activePlayerUserId !== this.userId) return false;
+    // Hand-level guards: skip when the hand is between rounds (server is
+    // handling deal/showdown) or already completed.
+    const stage = state.stage?.toLowerCase?.() ?? '';
+    if (stage === 'completed' || stage === 'showdown' || stage === '') return false;
+    return true;
+  }
+
   // ------------------------------------------------------------------
   //  Decide + act
   // ------------------------------------------------------------------
 
   private async maybeAct(): Promise<void> {
     if (this.shuttingDown) return;
-    const s = this.lastState;
-    if (!s || !s.isMyTurn || this.actionInFlight) return;
-    if (s.status !== 'in_progress') return;
+    if (this.actionInFlight) return;
+    if (!this.isActionable(this.lastState)) return;
 
-    const key = `${s.stage}|${s.currentBet}|${s.myPlayer.currentStageBet}`;
+    const s = this.lastState;
+    const key = `${s.stage}|${s.currentBet}|${s.myPlayer.currentStageBet}|${s.amountToCall}`;
     if (key === this.lastActedKey) return;
 
     this.actionInFlight = true;
     try {
       const thinkMs = this.cfg.thinkMs ?? 300;
       if (thinkMs > 0) await sleep(thinkMs);
-      // Re-check after the think delay — state may have moved.
       if (this.shuttingDown) return;
-      if (!this.lastState || !this.lastState.isMyTurn) return;
 
-      const decision = decideForStrategy(this.cfg.strategy, this.lastState);
+      // CRITICAL: refetch authoritative state immediately before acting.
+      // The cached state may be stale by hundreds of ms because of the
+      // think-delay above plus socket lag; acting on a stale cache is the
+      // "Cannot check - you need to call X" / "Raise must be higher" /
+      // stale-action error class we saw in production.
+      let fresh: BotGameState;
+      try {
+        fresh = await this.fetchState();
+        this.lastState = fresh;
+        this.lastStateFetchAt = Date.now();
+      } catch {
+        return; // network blip — next state push will retry.
+      }
+      if (!this.isActionable(fresh)) return;
+
+      // Re-derive the dedupe key against the fresh state so a stale-state
+      // dedupe never blocks a legitimate new turn.
+      const freshKey = `${fresh.stage}|${fresh.currentBet}|${fresh.myPlayer.currentStageBet}|${fresh.amountToCall}`;
+      if (freshKey === this.lastActedKey) return;
+
+      const decision = decideForStrategy(this.cfg.strategy, fresh);
+      // Final-mile legality: if owe>0 and we somehow chose check, downgrade
+      // to call. Belt-and-braces — strategy already enforces this.
+      const owe = BigInt(fresh.amountToCall);
+      if (decision.action === 'check' && owe > 0n) {
+        decision.action = 'call';
+      }
       const ok = await this.sendAction(decision);
       if (ok) {
         this.actionsTaken++;
-        this.lastActedKey = key;
+        this.lastActedKey = freshKey;
       }
     } catch (err: any) {
       logger.warn(`${LOG_PREFIX} action loop error`, {
@@ -338,12 +395,19 @@ export class BotSession {
     const res = await this.postJson(`/api/games/${this.cfg.gameId}/action`, body);
     if (res.ok) return true;
     const text = await res.text();
-    // Soft-retry on these — next state push will give a fresh decision key.
+    const lc = text.toLowerCase();
+    // Soft-retry on any "transient" engine error — these all mean "the
+    // server's view of the table moved since our cached state; back off and
+    // wait for the next state push". Matched case-insensitively because
+    // server messages mix "Not your turn" / "not your turn".
     if (
-      text.includes('Stale action') ||
-      text.includes('Raise must be higher than current bet') ||
-      text.includes('not your turn') ||
-      text.includes('Player not active')
+      lc.includes('stale action') ||
+      lc.includes('raise must be higher than current bet') ||
+      lc.includes('raise must be at least') ||
+      lc.includes('not your turn') ||
+      lc.includes('no active hand') ||
+      lc.includes('cannot check') ||
+      lc.includes('player not active')
     ) {
       return false;
     }

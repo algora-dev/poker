@@ -166,6 +166,39 @@ describe('botFill — strategies', () => {
     expect(d.action).toBe('all-in');
   });
 
+  it('never produces check when amountToCall > 0 (legality)', () => {
+    // Even sub-unit owe (1 micro-chip) must not collapse to check.
+    for (const owe of ['1', '500000', '999999', '1000000', '5000000', '200000000']) {
+      const state = baseState({
+        amountToCall: owe,
+        currentBet: owe,
+        myPlayer: { ...baseState().myPlayer, chipStack: '500000000' }, // 500 chips
+      });
+      // Sweep rng across the whole [0,1] range so all branches are exercised.
+      for (let i = 0; i < 20; i++) {
+        const r = i / 20;
+        for (const name of ['random', 'tight', 'loose'] as const) {
+          const d = decideForStrategy(name, state, () => r);
+          expect(d.action).not.toBe('check');
+        }
+      }
+    }
+  });
+
+  it('all-ins when min-raise would commit entire remaining stack', () => {
+    // Stack = 10 chips, BB = 1 chip, currentBet = 5, lastInc = 5.
+    // minRaiseTarget = 5 + 5 = 10. additionalCost = 10 - 0 = 10 == stack => all-in.
+    const state = baseState({
+      amountToCall: '5000000',
+      currentBet: '5000000',
+      bigBlind: '1000000',
+      lastRaiseIncrement: '5000000',
+      myPlayer: { ...baseState().myPlayer, chipStack: '10000000', currentStageBet: '0' },
+    });
+    const d = decideForStrategy('loose', state, () => 0.99); // raise slot
+    expect(d.action).toBe('all-in');
+  });
+
   it('raise emits a numeric raiseAmount when raising is selected', () => {
     const state = baseState({
       amountToCall: '5000000',
