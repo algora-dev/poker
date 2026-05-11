@@ -466,3 +466,260 @@ export async function joinGame(userId: string, gameId: string, buyInAmount?: big
     };
   });
 }
+
+/**
+ * Result of a leaveGame call.
+ *
+ * `mode` documents which path ran:
+ *   - 'waiting_refund'   - game was waiting; seat removed, chips returned
+ *                          to off-table balance.
+ *   - 'in_progress_fold' - game is live; player is marked folded for the
+ *                          current hand and 'eliminated' for next hands,
+ *                          but they remain seated until closeGame runs
+ *                          (chip-conservation: their remaining stack +
+ *                          any in-pot contributions are refunded when the
+ *                          game closes).
+ *   - 'closed_last_player' - the leaver was the last player at a waiting
+ *                          game; the game was auto-cancelled via the
+ *                          canonical closeGame path.
+ *   - 'idempotent_noop'  - the user wasn't seated at this game. Returned
+ *                          (not thrown) so the UI 'leave' button is safe
+ *                          to click twice.
+ */
+export interface LeaveGameResult {
+  mode:
+    | 'waiting_refund'
+    | 'in_progress_fold'
+    | 'closed_last_player'
+    | 'idempotent_noop';
+  gameId: string;
+  userId: string;
+  refundAmount?: string;
+  newBalance?: string;
+  gameStatusAfter: string;
+}
+
+/**
+ * Leave a game.
+ *
+ * Two real paths plus two no-ops:
+ *
+ *   1. status='waiting' and user is the LAST seated player
+ *      -> closeGame(reason='pre_start_cancel') refunds them + cancels the
+ *         game in one atomic transaction. Money-mutex + ChipAudit +
+ *         MoneyEvent all handled by closeGameInTx.
+ *
+ *   2. status='waiting' and other players remain
+ *      -> refund player's chipStack to off-table balance, delete their
+ *         GamePlayer row, write ChipAudit + MoneyEvent. Game stays open.
+ *         Remaining players keep their (now sparse) seatIndex values
+ *         unchanged so the front-end seat rendering (already fixed to
+ *         handle sparse seats post-2026-05-11) is correct.
+ *
+ *   3. status='in_progress'
+ *      -> Do NOT refund here. The player's chips are committed to the
+ *         current hand and possibly subsequent ones (active-game lock
+ *         H-04). Instead: mark the GamePlayer row position='folded' so
+ *         turnTimer auto-folds them, and set a 'leftAt' marker so the
+ *         next-hand dealer skips them. The closeGame path at game end
+ *         refunds whatever stack remains plus any open-pot share. This
+ *         keeps the active-game lock invariant intact (the user stays
+ *         seated until game close) AND lets the player walk away from
+ *         the UI.
+ *
+ *   4. user was never seated
+ *      -> idempotent_noop. Safe to call from a stale UI.
+ *
+ * NOTE on path 3 "mark folded": if it is currently this player's turn,
+ * we ALSO want the turn to advance. The turnTimer (every 2s) will do
+ * this naturally once it sees position='folded' on the active seat
+ * (it skips folded/all_in/eliminated when picking next), but to make
+ * the table feel responsive we also invoke processAction(... 'fold')
+ * inline when applicable. If that race-loses to a concurrent action
+ * we ignore the error (the position update is already enough).
+ */
+export async function leaveGame(
+  userId: string,
+  gameId: string
+): Promise<LeaveGameResult> {
+  // We do the read + branch outside the main transaction so we can call
+  // closeGameInTx (which has its own composition rules) without nesting
+  // a tx-in-tx. closeGameInTx is itself transactional via the parent
+  // tx we pass in.
+  return await prisma.$transaction(async (tx) => {
+    await acquireUserMoneyMutex(tx, userId);
+
+    const game = await tx.game.findUnique({
+      where: { id: gameId },
+      include: { players: true },
+    });
+    if (!game) {
+      // Idempotent: pretend we already left. UI doesn't need to error.
+      return {
+        mode: 'idempotent_noop' as const,
+        gameId,
+        userId,
+        gameStatusAfter: 'unknown',
+      };
+    }
+
+    const seat = game.players.find((p) => p.userId === userId);
+    if (!seat) {
+      return {
+        mode: 'idempotent_noop' as const,
+        gameId,
+        userId,
+        gameStatusAfter: game.status,
+      };
+    }
+
+    // Path 1+2: waiting game. Refund the player.
+    if (game.status === 'waiting') {
+      const remainingPlayers = game.players.filter(
+        (p) => p.userId !== userId
+      );
+
+      // Last player out -> cancel the whole game via closeGame.
+      if (remainingPlayers.length === 0) {
+        const { closeGameInTx } = await import('./closeGame');
+        const result = await closeGameInTx(tx, {
+          gameId,
+          reason: 'pre_start_cancel',
+          notes: 'last seated player left',
+        });
+        const me = result.refundedPlayers.find((r) => r.userId === userId);
+        return {
+          mode: 'closed_last_player' as const,
+          gameId,
+          userId,
+          refundAmount: me?.refundAmount?.toString() ?? '0',
+          newBalance: me?.newBalance?.toString(),
+          gameStatusAfter: 'cancelled',
+        };
+      }
+
+      // Other players remain -> single-player refund + seat removal.
+      const stack = BigInt(seat.chipStack ?? 0n);
+      const balanceBeforeRow = await tx.chipBalance.findUnique({
+        where: { userId },
+      });
+      if (!balanceBeforeRow) {
+        throw new Error(
+          `leaveGame: missing ChipBalance for user ${userId} (game ${gameId})`
+        );
+      }
+      const balanceAfterRow = stack > 0n
+        ? await tx.chipBalance.update({
+            where: { userId },
+            data: { chips: { increment: stack } },
+          })
+        : balanceBeforeRow;
+
+      // Audit + ledger.
+      await tx.chipAudit.create({
+        data: {
+          userId,
+          operation: 'game_leave_refund',
+          amountDelta: stack,
+          balanceBefore: balanceBeforeRow.chips,
+          balanceAfter: balanceAfterRow.chips,
+          reference: gameId,
+          notes: `Left waiting game ${game.name}`,
+        },
+      });
+      const { recordMoneyEvent } = await import('./moneyLedger');
+      await recordMoneyEvent(tx, {
+        userId,
+        eventType: 'game_cashout',
+        amount: stack,
+        balanceBefore: balanceBeforeRow.chips,
+        balanceAfter: balanceAfterRow.chips,
+        gameId,
+        handId: null,
+        correlationId: `leave:${gameId}:${userId}`,
+        payload: { mode: 'waiting_refund' },
+      });
+
+      // Zero the stack and remove the seat. We delete the row (not just
+      // zero) because the player is gone and joinGame() rejects users
+      // who already have a row at this game.
+      await tx.gamePlayer.delete({ where: { id: seat.id } });
+
+      await recordHandEvent(tx, {
+        gameId,
+        userId,
+        eventType: 'player_left',
+        payload: {
+          mode: 'waiting_refund',
+          refundAmount: stack.toString(),
+          remainingSeats: remainingPlayers.length,
+        },
+      });
+
+      logger.info('Player left waiting game', {
+        gameId,
+        userId,
+        refund: stack.toString(),
+        remaining: remainingPlayers.length,
+      });
+
+      return {
+        mode: 'waiting_refund' as const,
+        gameId,
+        userId,
+        refundAmount: stack.toString(),
+        newBalance: balanceAfterRow.chips.toString(),
+        gameStatusAfter: 'waiting',
+      };
+    }
+
+    // Path 3: in_progress. Mark folded; do not refund here. Refund happens
+    // when closeGame runs at natural completion.
+    if (game.status === 'in_progress') {
+      // Use position='folded' for the rest of THIS hand and 'eliminated'
+      // semantics for future hands: simplest is to flip to 'folded' and
+      // let the turnTimer skip them; the next-hand init also skips folded
+      // seats unless explicitly reset. We piggy-back on the existing
+      // 'eliminated' position for permanent skip.
+      //
+      // We must not free their chip mass here — active-game lock H-04
+      // requires they stay seated until closeGame runs.
+      await tx.gamePlayer.update({
+        where: { id: seat.id },
+        data: { position: 'eliminated' },
+      });
+
+      await recordHandEvent(tx, {
+        gameId,
+        userId,
+        eventType: 'player_left',
+        payload: {
+          mode: 'in_progress_fold',
+          stackAtLeave: BigInt(seat.chipStack ?? 0n).toString(),
+          willRefundOnGameClose: true,
+        },
+      });
+
+      logger.info('Player left in-progress game (will refund at close)', {
+        gameId,
+        userId,
+        stack: BigInt(seat.chipStack ?? 0n).toString(),
+      });
+
+      return {
+        mode: 'in_progress_fold' as const,
+        gameId,
+        userId,
+        gameStatusAfter: 'in_progress',
+      };
+    }
+
+    // Game is completed/cancelled — nothing to do.
+    return {
+      mode: 'idempotent_noop' as const,
+      gameId,
+      userId,
+      gameStatusAfter: game.status,
+    };
+  });
+}

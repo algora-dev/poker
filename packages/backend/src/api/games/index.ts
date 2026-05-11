@@ -8,6 +8,7 @@ import {
   getActiveGames,
   getCompletedGames,
   joinGame,
+  leaveGame,
   cancelGameBeforeStart,
   GameJoinMoneyLockedError,
 } from '../../services/game';
@@ -679,6 +680,83 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         return reply.code(500).send({
           error: 'Internal server error',
           message: 'Failed to cancel game',
+        });
+      }
+    }
+  );
+
+  /**
+   * POST /api/games/:id/leave
+   *
+   * Leave a game you're seated at.
+   *
+   *   - waiting + last player  -> game is cancelled, chips refunded
+   *   - waiting + others remain -> chips refunded, your seat removed
+   *   - in_progress             -> you're marked eliminated; remaining
+   *                                stack + open-pot share will be paid
+   *                                out when the game closes
+   *   - not in this game        -> idempotent 200 with mode=idempotent_noop
+   *
+   * All paths route through services/game.leaveGame which composes the
+   * canonical closeGame + ChipAudit + MoneyEvent ledger writes inside one
+   * transaction. No money is created or destroyed.
+   */
+  fastify.post(
+    '/:id/leave',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      try {
+        const { id } = z.object({ id: z.string() }).parse(request.params);
+        const userId = request.user!.id;
+
+        const result = await leaveGame(userId, id);
+
+        // Broadcast: socket events so peers update without polling.
+        try {
+          emitGameEvent(id, 'game:updated', {
+            gameId: id,
+            playerLeft: userId,
+            mode: result.mode,
+            gameStatusAfter: result.gameStatusAfter,
+          });
+          // If the game was cancelled as a side-effect, fire game:closed
+          // too so spectators can route back to the lobby.
+          if (result.mode === 'closed_last_player') {
+            emitGameEvent(id, 'game:closed', {
+              gameId: id,
+              reason: 'pre_start_cancel',
+            });
+          }
+          if (result.refundAmount && result.refundAmount !== '0') {
+            emitBalanceUpdate(userId, result.newBalance ?? '0');
+          }
+        } catch (e) {
+          logger.warn('leaveGame socket broadcast failed (non-fatal)', {
+            gameId: id,
+            userId,
+            error: (e as Error).message,
+          });
+        }
+
+        logger.info('Player left game', {
+          gameId: id,
+          userId,
+          mode: result.mode,
+          refund: result.refundAmount,
+        });
+
+        return reply.send({ success: true, ...result });
+      } catch (error) {
+        logger.error('Leave game failed', { error });
+        if (error instanceof Error) {
+          return reply.code(400).send({
+            error: 'Bad request',
+            message: error.message,
+          });
+        }
+        return reply.code(500).send({
+          error: 'Internal server error',
+          message: 'Failed to leave game',
         });
       }
     }

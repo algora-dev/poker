@@ -337,6 +337,50 @@ export default function GameRoom() {
     }
   };
 
+  /**
+   * Leave the table.
+   *
+   *  - waiting status: chips are refunded immediately to off-table balance.
+   *    If you're the last player, the game is cancelled.
+   *  - in_progress status: you forfeit any open-hand commitments, but your
+   *    remaining chip stack is paid out when the game ends. This unblocks
+   *    your account so you can join other games / withdraw, once the
+   *    server-side active-game lock releases (i.e. once the table
+   *    eventually closes via natural completion or admin cancel).
+   *
+   * The leave button used to just `navigate('/lobby')` which left the
+   * GamePlayer row intact server-side, locking the user out of new games
+   * with the very confusing error "You are already in this game". Reported
+   * by Shaun 2026-05-11.
+   */
+  const handleLeaveGame = async () => {
+    if (!gameId) return;
+
+    const status = gameState?.status;
+    const message = status === 'in_progress'
+      ? 'Leave the table?\n\nYou will forfeit the current hand. Your remaining chips will be paid out when the game ends (you stay seated until then).'
+      : 'Leave the table? Your buy-in will be refunded.';
+
+    if (!confirm(message)) return;
+
+    try {
+      await api.post(`/api/games/${gameId}/leave`);
+      // Disconnect from the socket room politely on the way out so peers
+      // get an updated player list without waiting for socket timeout.
+      try { socket?.emit('leave:game', gameId); } catch { /* socket may be down */ }
+      navigate('/lobby');
+    } catch (err: any) {
+      // 400 with a message means the server rejected a leave (e.g.
+      // mid-stuck state); fall back to navigating anyway so the user
+      // isn't trapped in the room. The lobby's 'You are already in this
+      // game' guard will surface the truth.
+      const msg = err.response?.data?.message || 'Failed to leave table';
+      setError(msg);
+      // Still navigate — better UX than trapping the user.
+      navigate('/lobby');
+    }
+  };
+
   const formatCard = (card: any) => {
     if (!card || !card.rank || !card.suit) return '??';
     
@@ -404,7 +448,7 @@ export default function GameRoom() {
           <h2 className="text-xl font-bold text-white mb-2">You've Been Eliminated</h2>
           <p className="text-gray-400 text-sm mb-6">You ran out of chips. Better luck next time!</p>
           <button
-            onClick={() => navigate('/lobby')}
+            onClick={handleLeaveGame}
             className="w-full py-3 text-white font-semibold rounded-xl hover:opacity-90 transition"
             style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
           >
@@ -483,7 +527,7 @@ export default function GameRoom() {
               </button>
             )}
             <button
-              onClick={() => navigate('/lobby')}
+              onClick={handleLeaveGame}
               className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition text-sm"
             >
               Leave
@@ -751,7 +795,7 @@ export default function GameRoom() {
                   Play Next Hand
                 </button>
                 <button
-                  onClick={() => navigate('/lobby')}
+                  onClick={handleLeaveGame}
                   className="flex-1 py-2.5 text-gray-400 text-sm rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition"
                 >
                   Leave
@@ -789,10 +833,10 @@ export default function GameRoom() {
               Play Next Hand
             </button>
             <button
-              onClick={() => navigate('/lobby')}
+              onClick={handleLeaveGame}
               className="px-5 py-2.5 text-gray-400 text-sm rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition"
             >
-              Back to Lobby
+              Leave Table
             </button>
           </div>
           {/* Next hand countdown overlay */}
