@@ -84,10 +84,29 @@ export default function GameRoom() {
       previousTurn.current = isNowMyTurn;
     } catch (err: any) {
       console.error('Load game state error:', err);
-      // Only show error if we don't have any game state yet (initial load)
-      // Don't kick player out for transient refresh errors
+      const status = err.response?.status;
+      const msg = err.response?.data?.message || '';
+
+      // Server says we're not in this game (404, or explicit 'You are not
+      // in this game'). This used to fall through silently, leaving the
+      // UI rendering stale gameState.myPlayer at the bottom of the table
+      // forever (the 'phantom seat' bug Shaun hit 2026-05-11 — he saw
+      // himself + no bots even though server-side only the bots were
+      // seated). Bounce to lobby instead.
+      const notInGame =
+        status === 404 ||
+        /not in this game/i.test(msg) ||
+        /game not found/i.test(msg);
+      if (notInGame) {
+        setGameState(null);
+        navigate('/lobby');
+        return;
+      }
+
+      // Only show error if we don't have any game state yet (initial load).
+      // Don't kick player out for transient refresh errors.
       if (!gameState) {
-        setError(err.response?.data?.message || 'Failed to load game');
+        setError(msg || 'Failed to load game');
       }
     } finally {
       setLoading(false);
