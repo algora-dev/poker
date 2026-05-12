@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import { recordHandEvent } from './handLedger';
 import { acquireUserMoneyMutex } from './userMoneyMutex';
 import { checkActiveGameLock } from './activeGameLock';
+import { advanceActivePlayerInTx } from './advanceTurn';
 
 /**
  * Phase 10 [H-04] hardening: error class shared by createGame and joinGame
@@ -721,10 +722,31 @@ export async function leaveGame(
         },
       });
 
+      // If the leaving player was the CURRENT active seat, advance the
+      // turn inline so the table keeps moving. Playtest 2026-05-12 found
+      // 4-5 silent pauses when Shaun left mid-hand: the engine waited the
+      // full 30s turnTimer for each subsequent dead seat. Doing the
+      // advance here means the next player gets the prompt immediately.
+      const openHand = await tx.hand.findFirst({
+        where: { gameId, stage: { notIn: ['completed', 'showdown'] } },
+        orderBy: { createdAt: 'desc' },
+      });
+      let turnAdvanced = false;
+      if (openHand) {
+        const activeSeat = await tx.gamePlayer.findFirst({
+          where: { gameId, seatIndex: openHand.activePlayerIndex },
+        });
+        if (activeSeat && activeSeat.userId === userId) {
+          const r = await advanceActivePlayerInTx(tx, gameId, openHand.id);
+          turnAdvanced = r.advanced;
+        }
+      }
+
       logger.info('Player left in-progress game (will refund at close)', {
         gameId,
         userId,
         stack: BigInt(seat.chipStack ?? 0n).toString(),
+        turnAdvanced,
       });
 
       return {

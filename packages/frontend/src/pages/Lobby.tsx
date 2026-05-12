@@ -66,9 +66,28 @@ export default function Lobby() {
       loadGames();
     });
 
+    // Refresh lobby seat counts when ANY player joins/leaves a game.
+    // Without this, the lobby cards stay stale and a user can click
+    // Join on a game that already filled its last seat - getting a
+    // confusing 'already taken' error. (Playtest 2026-05-12: Shaun
+    // saw an extra real player apparently take his seat; refresh
+    // resolved it.)
+    socket.on('player:joined', () => {
+      loadGames();
+    });
+    socket.on('game:closed', () => {
+      loadGames();
+    });
+    socket.on('game:updated', () => {
+      loadGames();
+    });
+
     return () => {
       socket.off('game:created');
       socket.off('game:started');
+      socket.off('player:joined');
+      socket.off('game:closed');
+      socket.off('game:updated');
     };
   }, [socket]);
 

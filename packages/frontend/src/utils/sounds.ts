@@ -1,4 +1,5 @@
 // Global audio context (initialized on first user interaction)
+import { getAudioPrefs } from './audioPreferences';
 let audioContext: AudioContext | null = null;
 
 /**
@@ -15,6 +16,7 @@ export function initAudioContext() {
  */
 export function playTurnNotification() {
   try {
+    if (!getAudioPrefs().sound) return;
     initAudioContext();
     if (!audioContext) return;
     
@@ -53,6 +55,7 @@ export async function requestNotificationPermission() {
  * Show desktop notification
  */
 export function showTurnNotification() {
+  if (!getAudioPrefs().notify) return;
   if ('Notification' in window && Notification.permission === 'granted') {
     new Notification('Your Turn!', {
       body: 'It\'s your turn to act in the poker game',

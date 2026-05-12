@@ -3,6 +3,8 @@
  * No external files needed — synthesized on the fly.
  */
 
+import { getAudioPrefs } from './audioPreferences';
+
 let audioCtx: AudioContext | null = null;
 
 function getCtx(): AudioContext {
@@ -13,6 +15,7 @@ function getCtx(): AudioContext {
 /** Knock-knock sound for check action */
 export function playCheckSound() {
   try {
+    if (!getAudioPrefs().sound) return;
     const ctx = getCtx();
     const now = ctx.currentTime;
 

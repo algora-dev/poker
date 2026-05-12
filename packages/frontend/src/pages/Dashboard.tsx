@@ -5,6 +5,7 @@ import { authApi, api } from '../services/api';
 import DepositModal from '../components/DepositModal';
 import { WithdrawModal } from '../components/WithdrawModal';
 import { AvatarPicker } from '../components/AvatarPicker';
+import { AudioToggle } from '../components/AudioToggle';
 import { getAvatarSrc } from '../utils/avatars';
 import { useSocket } from '../hooks/useSocket';
 
@@ -248,6 +249,12 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Settings */}
+        <div className="mt-6 bg-white/[0.03] rounded-2xl p-6 border border-white/5">
+          <h2 className="text-base font-bold text-white mb-2">Settings</h2>
+          <AudioToggle variant="settings" />
         </div>
 
         {/* Stats */}

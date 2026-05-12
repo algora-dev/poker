@@ -6,6 +6,8 @@ import { useSocket } from '../hooks/useSocket';
 import { playTurnNotification, showTurnNotification, requestNotificationPermission, initAudioContext } from '../utils/sounds';
 import { ShowdownModal } from '../components/ShowdownModal';
 import { PokerTable } from '../components/PokerTable';
+import { TurnTimer } from '../components/TurnTimer';
+import { AudioToggle } from '../components/AudioToggle';
 import { playCheckSound } from '../utils/gameAudio';
 
 interface PlayerInfo {
@@ -586,7 +588,8 @@ export default function GameRoom() {
               Blinds: {formatChips(gameState.smallBlind)} / {formatChips(gameState.bigBlind)}
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            <AudioToggle variant="compact" />
             {gameState.status === 'waiting' && (gameState.playerCount || 1) <= 1 && (
               <button
                 onClick={handleCancelGame}
@@ -660,6 +663,16 @@ export default function GameRoom() {
         )}
 
 
+
+        {/* Global turn-timer overlay (renders nothing when not
+            in-progress / no turnStartedAt). Glow + big countdown only
+            when it's the local user's turn AND <=10s remain. */}
+        {gameState.status === 'in_progress' && (
+          <TurnTimer
+            turnStartedAt={gameState.turnStartedAt || null}
+            isMyTurn={gameState.isMyTurn}
+          />
+        )}
 
         {/* Poker Table */}
         <PokerTable

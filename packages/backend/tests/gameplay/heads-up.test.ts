@@ -363,4 +363,94 @@ describe('Layer B — heads-up scenarios', () => {
     });
     assertScriptedOk('HU-07', r);
   });
+
+  it('HU-08: short all-in on flop after both check - opponent must call/fold (call path)', async () => {
+    // Same shape as HU-07 but SB CALLS the short all-in. Both must run
+    // to showdown contested. Validates the call path of the fix.
+    setForcedDeck(
+      buildPartialDeck([
+        '2c', '7d',          // SB hole: junk
+        'As', 'Ah',          // BB hole: pocket aces
+        '5h', '6d', 'Td',    // flop
+        'Jc',                // turn
+        'Qs',                // river
+      ])
+    );
+
+    const r = await runScripted({
+      name: 'HU-08_short_allin_called',
+      players: 2,
+      stacks: [200, 1.3],
+      hands: [
+        {
+          preflop: [
+            { actor: 'SB', action: 'call' },
+            { actor: 'BB', action: 'check' },
+          ],
+          flop: [
+            { actor: 'BB', action: 'all-in' }, // shove 0.3 (short)
+            { actor: 'SB', action: 'call' },   // SB must be offered call - takes it
+          ],
+        },
+      ],
+      expect: {
+        handsCompleted: 1,
+        // Pot = SB(1 + 0.3) + BB(1 + 0.3) = 2.6
+        // Board 5h 6d Td Jc Qs. SB has 2c 7d (no pair). BB has AsAh.
+        // BB wins with pair of aces. BB final = 0 + 2.6 = 2.6.
+        // SB final = 200 - 1.3 = 198.7.
+        finalStacks: [198.7, 2.6],
+      },
+    });
+    assertScriptedOk('HU-08', r);
+  });
+
+  it('HU-09: opening all-in (no prior bet) - opponent MUST act, not skipped', async () => {
+    // Generic invariant test (Shaun: "at every stage, players are either
+    // out of the hand, already all-in, or they should be able to call").
+    //
+    // Setup: heads-up flop. BB has 5 chips remaining after preflop and
+    // opens the flop with all-in (a FULL bet relative to BB=1 so it's
+    // NOT short, but tests the no-prior-bet branch). SB has full stack
+    // and must be given the chance to respond. Script SB to fold so
+    // BB collects the pot uncontested - distinguishing this from a
+    // skipped-action fast-forward where SB would 'win' on cards.
+    setForcedDeck(
+      buildPartialDeck([
+        'As', 'Ah',          // SB: pocket aces (would win showdown)
+        '2c', '7d',          // BB: junk
+        '5h', '6d', 'Td',
+        'Jc',
+        'Qs',
+      ])
+    );
+
+    const r = await runScripted({
+      name: 'HU-09_opening_allin_opponent_must_act',
+      players: 2,
+      stacks: [200, 6],
+      hands: [
+        {
+          preflop: [
+            { actor: 'SB', action: 'call' },
+            { actor: 'BB', action: 'check' },
+          ],
+          flop: [
+            { actor: 'BB', action: 'all-in' }, // shove 5 (full bet relative to BB=1)
+            { actor: 'SB', action: 'fold' },   // SB must be offered call - folds
+          ],
+        },
+      ],
+      expect: {
+        handsCompleted: 1,
+        // SB folds; BB wins uncontested.
+        // Pot = SB(1) + BB(1 + 5) = 7. BB final = 0 + 7 = 7.
+        // SB final = 200 - 1 = 199.
+        // Buggy fast-forward would give SB 7 (pocket aces win showdown):
+        //   SB final would be 200 - 1 + 7 = 206 (FAIL).
+        finalStacks: [199, 7],
+      },
+    });
+    assertScriptedOk('HU-09', r);
+  });
 });

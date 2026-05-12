@@ -229,6 +229,20 @@ export function emitGameEvent(gameId: string, event: string, data: any) {
 }
 
 /**
+ * Broadcast a lobby-visibility event to every connected client (default
+ * namespace). Used for player:joined / game:closed / game:updated so the
+ * Lobby's game cards stay in sync without each client polling.
+ *
+ * Note: this is a TINY payload (game id + count) - no private hand data
+ * or private seat info ever rides this channel. The Lobby is public,
+ * the game room is private.
+ */
+export function emitLobbyEvent(event: string, data: any) {
+  if (!io) return;
+  io.emit(event, data);
+}
+
+/**
  * Emit personalized game state to each player in a game.
  * Each player gets their own view (their cards visible, others hidden).
  * Optimized: single DB query, personalize in memory per player.

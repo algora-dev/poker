@@ -44,10 +44,17 @@ export interface BotSessionConfig {
   adminSecret: string;
   /**
    * Optional artificial think-time in ms before each action.
-   * Default lowered 2026-05-11 from 300ms to 100ms after playtest
-   * feedback that bots felt sluggish. The dominant turn latency is
-   * server-side (~5s per processAction round-trip on Railway+Supabase),
-   * not bot think-time, but 200ms x 3-8 bots/hand still adds up.
+   *
+   * History:
+   *   - 300ms (initial): sluggish-feeling but masked by server latency
+   *   - 100ms (2026-05-11): reduced after first speed playtest
+   *   - 1500ms (2026-05-12): server latency is now ~350ms after
+   *     Frankfurt region change, so bots act almost instantly. Shaun
+   *     reported it felt unnatural - bots respond too fast for humans
+   *     to follow. 1.5s is a comfortable poker-feel default.
+   *
+   * Caller may override via /api/admin/spawn-bots `thinkMs` field;
+   * 0 disables the delay entirely (useful for the harness).
    */
   thinkMs?: number;
   /** ID used by the registry for kill/list operations. */
@@ -347,7 +354,7 @@ export class BotSession {
 
     this.actionInFlight = true;
     try {
-      const thinkMs = this.cfg.thinkMs ?? 100;
+      const thinkMs = this.cfg.thinkMs ?? 1500;
       if (thinkMs > 0) await sleep(thinkMs);
       if (this.shuttingDown) return;
 

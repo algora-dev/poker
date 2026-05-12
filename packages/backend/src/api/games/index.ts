@@ -14,7 +14,7 @@ import {
 } from '../../services/game';
 import { initializeHand, getGameState, atomicStartGame } from '../../services/holdemGame';
 import { processAction } from '../../services/pokerActions';
-import { emitBalanceUpdate, emitGameEvent } from '../../socket';
+import { emitBalanceUpdate, emitGameEvent, emitLobbyEvent } from '../../socket';
 import { logger } from '../../utils/logger';
 import { prisma } from '../../db/client';
 
@@ -261,8 +261,17 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         // Emit balance update to joiner
         emitBalanceUpdate(request.user!.id, result.newBalance);
 
-        // Emit player joined event (game stays in "waiting" until started)
+        // Emit player joined event (game stays in "waiting" until started).
+        // Game-room scoped: alerts everyone already at the table.
         emitGameEvent(id, 'player:joined', {
+          gameId: id,
+          playerCount: result.game.players?.length || 0,
+        });
+        // Lobby-wide broadcast: alerts the Lobby pages so their game
+        // cards refresh seat counts in real time. Without this the
+        // Lobby stays stale and users click Join on a card whose seat
+        // was just filled. (Playtest 2026-05-12 phantom-seat report.)
+        emitLobbyEvent('player:joined', {
           gameId: id,
           playerCount: result.game.players?.length || 0,
         });
@@ -719,10 +728,20 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             mode: result.mode,
             gameStatusAfter: result.gameStatusAfter,
           });
+          // Lobby-wide broadcast so seat-count cards refresh in real
+          // time. Same pattern as join.
+          emitLobbyEvent('game:updated', {
+            gameId: id,
+            gameStatusAfter: result.gameStatusAfter,
+          });
           // If the game was cancelled as a side-effect, fire game:closed
           // too so spectators can route back to the lobby.
           if (result.mode === 'closed_last_player') {
             emitGameEvent(id, 'game:closed', {
+              gameId: id,
+              reason: 'pre_start_cancel',
+            });
+            emitLobbyEvent('game:closed', {
               gameId: id,
               reason: 'pre_start_cancel',
             });

@@ -5,6 +5,7 @@
 
 import { prisma } from '../db/client';
 import { processAction } from '../services/pokerActions';
+import { advanceActivePlayerInTx } from '../services/advanceTurn';
 import { broadcastGameState, emitGameEvent } from '../socket';
 import { logger } from '../utils/logger';
 
@@ -39,11 +40,68 @@ function turnKey(handId: string, idx: number) {
   return `${handId}:${idx}`;
 }
 
+/**
+ * Safety net: any in-progress hand whose activePlayerIndex points at a
+ * dead seat (folded / eliminated / all_in) is stalled. The 30s timeout
+ * is the WRONG response here — the seat will never act. Advance the
+ * turn immediately and broadcast.
+ *
+ * This catches:
+ *   - Player left while it was their turn but the inline advance in
+ *     leaveGame raced or was skipped for any reason.
+ *   - A previous-hand fold that didn't roll the index forward cleanly.
+ *   - Any future code path that mutates position without advancing.
+ *
+ * Runs every tick (cheap query) BEFORE the timeout-based scan.
+ */
+async function advanceDeadActiveSeats(nowMs: number) {
+  const liveHands = await prisma.hand.findMany({
+    where: { stage: { notIn: ['completed', 'showdown'] } },
+    include: {
+      game: { include: { players: { orderBy: { seatIndex: 'asc' } } } },
+    },
+  });
+  for (const hand of liveHands) {
+    const game = hand.game;
+    if (game.status !== 'in_progress') continue;
+    const seat = game.players[hand.activePlayerIndex];
+    if (!seat) continue;
+    if (seat.position === 'active' || seat.position === 'all_in') continue;
+    // 'folded' or 'eliminated' — advance the turn immediately.
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        return advanceActivePlayerInTx(tx, game.id, hand.id);
+      });
+      if (result.advanced) {
+        try {
+          const playerIds = game.players.map((p: any) => p.userId);
+          await broadcastGameState(game.id, playerIds);
+        } catch (e) {
+          logger.warn('broadcastGameState after dead-seat advance failed', {
+            gameId: game.id,
+            error: (e as Error).message,
+          });
+        }
+      }
+    } catch (e) {
+      logger.error('advanceDeadActiveSeats failed', {
+        gameId: game.id,
+        handId: hand.id,
+        error: (e as Error).message,
+      });
+    }
+  }
+}
+
 async function checkExpiredTurns() {
   const now = new Date();
   const nowMs = now.getTime();
 
   try {
+    // 0) Safety net: advance any dead active seats first so the rest of
+    //    this tick sees fresh, well-formed state.
+    await advanceDeadActiveSeats(nowMs);
+
     // 1) Hard expiry: turnStartedAt older than the timeout
     const expiredHands = await prisma.hand.findMany({
       where: {

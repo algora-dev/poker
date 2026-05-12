@@ -60,6 +60,7 @@ interface MockState {
   chipBalances: Map<string, bigint>;
   audits: any[];
   deletedSeatIds: string[];
+  openHand?: any;
 }
 
 /** Tiny in-memory prisma with $transaction semantics. */
@@ -70,6 +71,7 @@ function buildPrisma(initial: MockState) {
     chipBalances: new Map(initial.chipBalances),
     audits: [] as any[],
     deletedSeatIds: [] as string[],
+    openHand: initial.openHand ? { ...initial.openHand } : undefined,
   };
 
   const tx: any = {
@@ -96,6 +98,37 @@ function buildPrisma(initial: MockState) {
         if (idx === -1) throw new Error('player not found');
         Object.assign(state.players[idx], args.data);
         return state.players[idx];
+      }),
+      findFirst: vi.fn(async (args: any) => {
+        // Only used by the in_progress turn-advance branch to look up the
+        // current active seat by seatIndex. Return undefined when there
+        // is no open hand (state.openHand absent) so the branch is a
+        // no-op for tests that don't set up a hand.
+        if (args.where?.seatIndex != null) {
+          return state.players.find(
+            (p) => p.gameId === args.where.gameId && p.seatIndex === args.where.seatIndex
+          ) ?? null;
+        }
+        return null;
+      }),
+      findMany: vi.fn(async () => state.players.slice()),
+    },
+    hand: {
+      findFirst: vi.fn(async () => state.openHand ?? null),
+      findUnique: vi.fn(async (args: any) =>
+        state.openHand && state.openHand.id === args.where.id ? state.openHand : null
+      ),
+      update: vi.fn(async (args: any) => {
+        if (state.openHand && state.openHand.id === args.where.id) {
+          Object.assign(state.openHand, args.data);
+          // Handle version increment shape
+          if (args.data.version?.increment != null) {
+            state.openHand.version =
+              (state.openHand.version || 0) + args.data.version.increment;
+          }
+          return state.openHand;
+        }
+        return null;
       }),
     },
     chipBalance: {
