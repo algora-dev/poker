@@ -1013,7 +1013,11 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
         lastAggressorId = action.userId;
         actedSinceLastRaise = new Set([action.userId]);
       } else {
-        // Short all-in: counts as a response but does NOT reopen action.
+        // Short all-in: counts as a response but does NOT reopen action
+        // for players who have already matched the PRIOR high-water bet.
+        // (Players whose bet is still below the new high-water bet must
+        // still respond - that is checked separately below via the
+        // runningHighBet vs cumulativeBetByUser comparison.)
         actedSinceLastRaise.add(action.userId);
       }
     } else {
@@ -1074,7 +1078,29 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
     return false;
   }
   
-  // No raise happened â€” check if everyone who can act has acted
+  // No FULL-RAISE aggressor recorded. But a short all-in may have raised
+  // the running high-water bet without reopening action. In that case,
+  // every still-active player must have a cumulative bet >= runningHighBet
+  // (i.e. they have explicitly matched or exceeded the short all-in's
+  // contribution). Otherwise their action is still owed.
+  //
+  // Without this guard, an opening check followed by a short all-in would
+  // be treated as "all checked" and fast-forwarded to showdown without
+  // letting the checker call/fold. (Real-money bug, playtest 2026-05-12
+  // hand #28: BB=1.0, one player checked the flop, the other shoved 0.4.
+  // Engine returned betting-complete and ran the showdown immediately.)
+  if (runningHighBet > BigInt(0)) {
+    const unmatched = playersWhoCanAct.filter(
+      p => (cumulativeBetByUser.get(p.userId) || BigInt(0)) < runningHighBet
+    );
+    if (unmatched.length > 0) {
+      logger.info(`BETTING_CHECK: short-all-in pending, waiting for: ${unmatched.map(p=>p.userId.slice(-6))} to match highWater=${runningHighBet.toString()}`);
+      return false;
+    }
+  }
+
+  // No raise happened (no aggressor, no short all-in pending) - check if
+  // everyone who can act has acted.
   const playersWhoActed = new Set(Array.from(playerLastAction.keys()));
   const allActed = playersWhoCanAct.every(p => playersWhoActed.has(p.userId));
   
@@ -1083,7 +1109,7 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
     return false;
   }
 
-  // Everyone acted, no raise â€” check if all checked or all bets equal
+  // Everyone acted, no raise - check if all checked or all bets equal
   const allChecked = playersWhoCanAct.every(p => playerLastAction.get(p.userId) === 'check');
   if (allChecked) {
     logger.info('Betting complete: all checked');

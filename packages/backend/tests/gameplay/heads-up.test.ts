@@ -301,4 +301,66 @@ describe('Layer B — heads-up scenarios', () => {
     });
     assertScriptedOk('HU-06', r);
   });
+
+  it('HU-07: short all-in (less than BB) on flop does NOT skip opponent action', async () => {
+    // Regression for the real-money bug observed in playtest 2026-05-12,
+    // hand #28 (BB=1.0): one player checked the flop, the other shoved
+    // an all-in for 0.4 (= 40% of BB -> short all-in). Engine treated
+    // it as "all checked, fast-forward to showdown" and skipped the
+    // checker's call/fold response entirely.
+    //
+    // Setup: SB starts with 200, BB starts with 1.3. Post-blinds:
+    // SB has 199.5 in stack (and 0.5 in pot), BB has 0.3 in stack
+    // (and 1.0 in pot). SB calls 0.5 more, BB checks option. Pot=2.
+    // Flop: SB checks, BB shoves 0.3 (less than BB=1 -> short all-in).
+    // Engine must come back to SB. We script SB to fold.
+    //
+    // Force a deck where SB hand would BEAT BB hand if it ran to
+    // showdown - so if the buggy engine fast-forwards, SB gets the pot
+    // and final stacks look very different from the correct outcome
+    // (BB takes the pot uncontested via SB fold).
+    setForcedDeck(
+      buildPartialDeck([
+        'As', 'Ah',          // seat 0 (SB) hole: pocket aces
+        '2c', '7d',          // seat 1 (BB) hole: 2c 7d (worst hand)
+        '5h', '6d', 'Td',    // flop
+        'Jc',                // turn
+        'Qs',                // river
+      ])
+    );
+
+    const r = await runScripted({
+      name: 'HU-07_short_allin_does_not_skip_action',
+      players: 2,
+      stacks: [200, 1.3],
+      hands: [
+        {
+          preflop: [
+            { actor: 'SB', action: 'call' },   // SB calls 0.5 more, total 1
+            { actor: 'BB', action: 'check' },  // BB option exercised
+          ],
+          flop: [
+            // Heads-up post-flop: BB acts first (out of position).
+            { actor: 'BB', action: 'all-in' }, // shove 0.3 (short of BB=1)
+            { actor: 'SB', action: 'fold' },   // SB MUST be asked - folds
+          ],
+        },
+      ],
+      expect: {
+        handsCompleted: 1,
+        // Correct outcome: SB folds, BB wins pot uncontested.
+        //   Pot = SB(1) + BB(1 preflop + 0.3 shove) = 2.3
+        //   SB final = 200 - 1 = 199
+        //   BB final = 0 (stack after shove) + 2.3 (pot) = 2.3
+        //
+        // Buggy outcome (skipping SB action, fast-forward to showdown):
+        //   SB wins with pocket aces, gets pot 2.3
+        //   SB final = 200 - 1 + 2.3 = 201.3 (FAIL)
+        //   BB final = 0 (FAIL - but same as correct numerically; the
+        //     SB stack delta is the discriminator)
+        finalStacks: [199, 2.3],
+      },
+    });
+    assertScriptedOk('HU-07', r);
+  });
 });
