@@ -57,6 +57,36 @@ export default function GameRoom() {
   const [foldWinData, setFoldWinData] = useState<any>(null);
   const [nextHandCountdown, setNextHandCountdown] = useState<number | null>(null);
   const previousTurn = useRef<boolean>(false);
+  // Final standings snapshot captured BEFORE closeGame zeroes every chipStack.
+  // closeGame refunds in-table chipStack back to off-table ChipBalance and
+  // writes 0 to every GamePlayer.chipStack — so the post-close gameState
+  // legitimately shows everyone at 0. We keep the last in-progress stacks
+  // here so the Game Over modal can show meaningful final standings.
+  const finalStandingsRef = useRef<Array<{ userId: string; username: string; chipStack: string }> | null>(null);
+  const [finalStandings, setFinalStandings] = useState<Array<{ userId: string; username: string; chipStack: string }> | null>(null);
+
+  // Snapshot the last meaningful (non-zero) stacks so the Game Over modal
+  // can render real final standings even after closeGame zeroes chipStack.
+  // Fires on EVERY state push while game is still in_progress; the last
+  // one before status flips to 'completed' wins.
+  const captureFinalStandingsIfNeeded = (state: any) => {
+    if (!state) return;
+    if (state.status !== 'in_progress') return;
+    const allPlayers = [state.myPlayer, ...(state.opponents || [])].filter(Boolean);
+    if (allPlayers.length === 0) return;
+    const totalChips = allPlayers.reduce(
+      (sum: number, p: any) => sum + parseFloat(p.chipStack || '0'),
+      0
+    );
+    if (totalChips <= 0) return;
+    const snap = allPlayers.map((p: any) => ({
+      userId: p.userId,
+      username: p.username,
+      chipStack: p.chipStack,
+    }));
+    finalStandingsRef.current = snap;
+    setFinalStandings(snap);
+  };
 
   // Load game state
   const loadGameState = async (showLoader = false) => {
@@ -65,6 +95,7 @@ export default function GameRoom() {
     try {
       if (showLoader) setLoading(true);
       const response = await api.get(`/api/games/${gameId}/state`);
+      captureFinalStandingsIfNeeded(response.data);
       setGameState(response.data);
       setError('');
       
@@ -241,6 +272,7 @@ export default function GameRoom() {
       if (!state) return;
       const wasMyTurn = previousTurn.current;
       const isNowMyTurn = !!state.isMyTurn;
+      captureFinalStandingsIfNeeded(state);
       setGameState(state);
       setLoading(false);
       if (isNowMyTurn && !wasMyTurn) {
@@ -492,7 +524,13 @@ export default function GameRoom() {
 
   // Show game completed screen
   if (gameState?.status === 'completed') {
-    const allPlayers = [gameState.myPlayer, ...(gameState.opponents || [])];
+    // Prefer the pre-close snapshot (real stacks). Fall back to current
+    // gameState only if no snapshot was captured (shouldn't happen in
+    // normal play but keeps the modal renderable).
+    const allPlayers =
+      finalStandings ?? finalStandingsRef.current
+        ? (finalStandings ?? finalStandingsRef.current)!
+        : ([gameState.myPlayer, ...(gameState.opponents || [])] as any);
     return (
       <div className="min-h-screen flex items-center justify-center" style={{background:'#262626'}}>
         <div className="rounded-2xl p-8 max-w-md w-full mx-4 border border-white/10 shadow-2xl" style={{background:'rgba(255,255,255,0.03)'}}>
