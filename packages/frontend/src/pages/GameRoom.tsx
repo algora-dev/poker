@@ -5,10 +5,12 @@ import { api } from '../services/api';
 import { useSocket } from '../hooks/useSocket';
 import { playTurnNotification, showTurnNotification, requestNotificationPermission, initAudioContext } from '../utils/sounds';
 import { ShowdownModal } from '../components/ShowdownModal';
-import { PokerTable } from '../components/PokerTable';
+import { PokerTable, SEAT_POSITIONS, getRelativeSeatPositions } from '../components/PokerTable';
+import { DealAnimation } from '../components/DealAnimation';
 import { TurnTimer } from '../components/TurnTimer';
 import { AudioToggle } from '../components/AudioToggle';
 import { playCheckSound } from '../utils/gameAudio';
+import { getAudioPrefs, subscribeAudioPrefs } from '../utils/audioPreferences';
 
 interface PlayerInfo {
   userId: string;
@@ -47,7 +49,7 @@ export default function GameRoom() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const { socket, isConnected } = useSocket();
+  const { socket, isConnected, joinGame: joinGameRoom, leaveGame: leaveGameRoom } = useSocket();
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -59,6 +61,22 @@ export default function GameRoom() {
   const [foldWinData, setFoldWinData] = useState<any>(null);
   const [nextHandCountdown, setNextHandCountdown] = useState<number | null>(null);
   const previousTurn = useRef<boolean>(false);
+  // Counter incremented on every game:new-hand. DealAnimation watches this
+  // to (re)trigger the card-flick animation + per-card sound.
+  const [dealTrigger, setDealTrigger] = useState<number>(0);
+  // Subscribe to audio/UI preferences so toggling "Hand-result popups"
+  // off immediately hides the modals (also stops them appearing for
+  // future hands until re-enabled).
+  const [audioPrefs, setAudioPrefs] = useState(() => getAudioPrefs());
+  useEffect(() => subscribeAudioPrefs(setAudioPrefs), []);
+  // When the user disables popups mid-hand, clear any currently-open
+  // hand-result modals so the table is immediately usable.
+  useEffect(() => {
+    if (!audioPrefs.popups) {
+      setFoldWinData(null);
+      setShowdownData(null);
+    }
+  }, [audioPrefs.popups]);
   // Final standings snapshot captured BEFORE closeGame zeroes every chipStack.
   // closeGame refunds in-table chipStack back to off-table ChipBalance and
   // writes 0 to every GamePlayer.chipStack — so the post-close gameState
@@ -166,12 +184,15 @@ export default function GameRoom() {
   useEffect(() => {
     if (!socket || !gameId) return;
 
-    // Join game room
-    socket.emit('join:game', gameId);
+    // Join game room. Use the hook helper (not raw emit) so the room
+    // is tracked in activeGameRooms and auto-rejoined on reconnect.
+    joinGameRoom(gameId);
 
-    // On reconnect, rejoin room and reload state
+    // On reconnect, rejoin room and reload state. The hook already
+    // re-emits join:game on its own connect handler, but we add this
+    // belt-and-braces refetch so stale UI snaps back into sync.
     const onReconnect = () => {
-      socket.emit('join:game', gameId);
+      joinGameRoom(gameId);
       loadGameState();
     };
     socket.on('connect', onReconnect);
@@ -291,7 +312,14 @@ export default function GameRoom() {
     });
 
     socket.on('player:joined', () => {
-      loadGameState(); // Player count changed — need full load
+      // Playtest 2026-05-13: creator could not see joiners until manual
+      // refresh. Belt-and-braces: server now also pushes a full game:state
+      // on join (see api/games/index.ts), but we also force a GET refresh
+      // immediately AND again at 500ms in case of replication lag between
+      // the joinGame transaction commit and the read replica getGameState
+      // hits, OR in case the socket missed the game:state push.
+      loadGameState();
+      setTimeout(() => loadGameState(), 500);
     });
 
     socket.on('game:showdown', (data: any) => {
@@ -318,6 +346,7 @@ export default function GameRoom() {
       setFoldWinData(null);
       setGameCompleted(false);
       setNextHandCountdown(null);
+      setDealTrigger(t => t + 1); // trigger deal animation
       // State will come via game:state event from broadcastGameState
     });
 
@@ -337,7 +366,7 @@ export default function GameRoom() {
       socket.off('game:new-hand');
       socket.off('game:next-hand-countdown');
       socket.off('game:turn-warning');
-      socket.emit('leave:game', gameId);
+      leaveGameRoom(gameId);
     };
   }, [socket, gameId]);
 
@@ -524,8 +553,14 @@ export default function GameRoom() {
     );
   }
 
-  // Show game completed screen
-  if (gameState?.status === 'completed') {
+  // Show game completed screen.
+  // Playtest 2026-05-13 fix: in a heads-up game, when opponent folds the
+  // game.status flips to 'completed' AND a fold-win event fires. Previously
+  // this branch ran first and replaced the table with the Game Over screen,
+  // so the fold-win modal never rendered. We now defer Game Over while a
+  // fold-win or showdown modal is on screen so the player sees the hand
+  // result first, dismisses it, then sees Game Over.
+  if (gameState?.status === 'completed' && !foldWinData && !showdownData) {
     // Prefer the pre-close snapshot (real stacks). Fall back to current
     // gameState only if no snapshot was captured (shouldn't happen in
     // normal play but keeps the modal renderable).
@@ -674,7 +709,34 @@ export default function GameRoom() {
           />
         )}
 
-        {/* Poker Table */}
+        {/* Poker Table — wrapped in a relative container so the
+            DealAnimation overlay can absolute-position its card flights
+            against the same coordinate space as the seats. */}
+        <div className="relative">
+        {/* DealAnimation: card-flick animation + sound on each new hand.
+            Uses the SAME SEAT_POSITIONS and getRelativeSeatPositions logic
+            as PokerTable so cards land where the seats actually render. */}
+        {(() => {
+          const allPlayers = [gameState.myPlayer, ...(gameState.opponents || [])].filter(Boolean);
+          const occupiedSeats = allPlayers.map((p: any) => p.seatIndex);
+          const layout = getRelativeSeatPositions(gameState.myPlayer.seatIndex, occupiedSeats);
+          const seatPositionByIndex: Record<number, { top: string; left: string }> = {};
+          for (const { seatIndex, positionIndex } of layout) {
+            seatPositionByIndex[seatIndex] = SEAT_POSITIONS[positionIndex];
+          }
+          return (
+            <DealAnimation
+              triggerKey={dealTrigger}
+              players={allPlayers.map((p: any) => ({
+                seatIndex: p.seatIndex,
+                position: p.position,
+              }))}
+              seatPositionByIndex={seatPositionByIndex}
+              sbSeatIndex={gameState.sbSeatIndex ?? -1}
+              dealerSeatIndex={gameState.dealerSeatIndex ?? -1}
+            />
+          );
+        })()}
         <PokerTable
           myPlayer={gameState.myPlayer}
           opponents={gameState.opponents || (gameState.opponent ? [gameState.opponent] : [])}
@@ -709,6 +771,7 @@ export default function GameRoom() {
           }}
           actionLoading={actionLoading}
         />
+        </div>
 
         {/* Error Display */}
         {error && (
@@ -726,6 +789,10 @@ export default function GameRoom() {
           const bbNum = parseFloat(formatChips(gameState?.bigBlind || '200000'));
           const minRaise = Math.max(currentBetNum + bbNum, bbNum * 2); // At least current bet + BB
           const currentAmount = parseFloat(raiseAmount) || minRaise;
+          // Bet vs Raise label, matches PokerTable button: postflop with no
+          // current bet = 'Bet'; everything else = 'Raise'.
+          const isBetNotRaise = gameState?.stage !== 'preflop' && currentBetNum === 0;
+          const verb = isBetNotRaise ? 'Bet' : 'Raise';
 
           /**
            * Playtest 2026-05-11 feedback (Shaun): quick buttons should
@@ -749,7 +816,7 @@ export default function GameRoom() {
               <div className="rounded-2xl p-6 max-w-sm w-full border border-white/10 shadow-2xl" style={{background:'#262626'}}>
                 {/* Header */}
                 <div className="flex justify-between items-center mb-5">
-                  <h2 className="text-lg font-bold text-white">Raise</h2>
+                  <h2 className="text-lg font-bold text-white">{verb}</h2>
                   <button onClick={() => setShowRaiseModal(false)} className="text-gray-500 hover:text-white transition text-xl">×</button>
                 </div>
 
@@ -835,7 +902,7 @@ export default function GameRoom() {
                     className="flex-1 py-3 text-white rounded-xl hover:opacity-90 transition disabled:opacity-50 font-semibold text-sm active:scale-[0.98]"
                     style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
                   >
-                    Raise to {raiseAmount || minRaise.toFixed(2)}
+                    {verb} {isBetNotRaise ? '' : 'to '}{raiseAmount || minRaise.toFixed(2)}
                   </button>
                 </div>
               </div>
@@ -844,7 +911,7 @@ export default function GameRoom() {
         })()}
 
       {/* Fold Win Display — same style as showdown modal */}
-      {foldWinData && !showdownData && (
+      {foldWinData && !showdownData && audioPrefs.popups && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-white/10" style={{background:'#262626'}}>
             {/* Header — matches showdown modal */}
@@ -886,7 +953,7 @@ export default function GameRoom() {
                   className="flex-1 py-2.5 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition"
                   style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
                 >
-                  Play Next Hand
+                  {gameState?.status === 'completed' ? 'Continue' : 'Play Next Hand'}
                 </button>
                 <button
                   onClick={handleLeaveGame}
@@ -901,7 +968,7 @@ export default function GameRoom() {
       )}
 
       {/* Showdown Modal */}
-      {showdownData && (
+      {showdownData && audioPrefs.popups && (
         <>
           <ShowdownModal
             isOpen={!!showdownData}

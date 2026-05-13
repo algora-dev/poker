@@ -17,10 +17,18 @@
 
 const KEY_SOUND = 'poker.audio.sound';
 const KEY_NOTIFY = 'poker.audio.notify';
+const KEY_POPUPS = 'poker.ui.popups';
+const KEY_URGENT = 'poker.audio.urgent';
 
 export interface AudioPrefs {
+  /** Master switch for all sound effects (turn ding, deal, check, urgent). */
   sound: boolean;
+  /** Desktop notifications (browser-level toast "Your turn!"). */
   notify: boolean;
+  /** In-table hand-result modals (fold-win, showdown, game-over). */
+  popups: boolean;
+  /** Urgent 3-tone alert when 7s remaining on your turn. */
+  urgentAlert: boolean;
 }
 
 type Listener = (prefs: AudioPrefs) => void;
@@ -49,6 +57,8 @@ export function getAudioPrefs(): AudioPrefs {
   return {
     sound: read(KEY_SOUND, true),
     notify: read(KEY_NOTIFY, true),
+    popups: read(KEY_POPUPS, true),
+    urgentAlert: read(KEY_URGENT, true),
   };
 }
 
@@ -59,6 +69,16 @@ export function setSoundEnabled(v: boolean) {
 
 export function setNotifyEnabled(v: boolean) {
   write(KEY_NOTIFY, v);
+  fire();
+}
+
+export function setPopupsEnabled(v: boolean) {
+  write(KEY_POPUPS, v);
+  fire();
+}
+
+export function setUrgentAlertEnabled(v: boolean) {
+  write(KEY_URGENT, v);
   fire();
 }
 

@@ -43,7 +43,7 @@ interface PokerTableProps {
 // clipped at the top of the browser viewport (reported in playtest
 // 2026-05-11). Side and top-corner seats nudged accordingly to keep the
 // oval shape balanced.
-const SEAT_POSITIONS: { top: string; left: string }[] = [
+export const SEAT_POSITIONS: { top: string; left: string }[] = [
   { top: '85%', left: '50%' },   // 0: bottom center (YOU)
   { top: '75%', left: '13%' },   // 1: bottom-left
   { top: '48%', left: '4%' },    // 2: left
@@ -72,7 +72,7 @@ const SEAT_POSITIONS: { top: string; left: string }[] = [
  * New approach: take the actual occupied seat indices, rotate so mine is
  * first, then evenly space them across the 9 CSS slots clockwise.
  */
-function getRelativeSeatPositions(
+export function getRelativeSeatPositions(
   mySeatIndex: number,
   occupiedSeats: number[]
 ): { seatIndex: number; positionIndex: number }[] {
@@ -443,12 +443,17 @@ export function PokerTable({
                 <span>📞</span> Call {formatChips(amountToCall)}
               </button>
             )}
+            {/* Bet vs Raise label, by poker convention:
+              - Preflop: BB is the opening bet, so any voluntary aggression is a 'Raise'.
+              - Postflop with no bet yet (currentStageBet from prior streets resets to 0): 'Bet'.
+              - Postflop after someone has bet: 'Raise'.
+              Backend action is still 'raise' in both cases (server enforces sizing). */}
             <button
               onClick={onRaise}
               disabled={actionLoading}
               className="px-3 sm:px-5 py-2 sm:py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-semibold disabled:opacity-50 text-sm flex items-center gap-1.5 shadow-lg"
             >
-              <span>⬆</span> Raise
+              <span>⬆</span> {(stage !== 'preflop' && parseInt(currentBet || '0') === 0) ? 'Bet' : 'Raise'}
             </button>
             <button
               onClick={onAllIn}

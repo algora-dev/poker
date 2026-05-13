@@ -2,17 +2,18 @@
  * TurnTimer — countdown display + browser-edge alert glow.
  *
  * The backend sets `Hand.turnStartedAt` whenever the turn advances and
- * has a 30s timeout (TURN_TIMEOUT_MS). We mirror that locally for the
- * UI so players can see how much time they have left without waiting
- * for the server `game:turn-warning` event (which only fires once, at
- * 10s remaining).
+ * has a 17s timeout (TURN_TIMEOUT_MS, was 30s pre-2026-05-13). We mirror
+ * that locally for the UI so players can see how much time they have left
+ * without waiting for the server `game:turn-warning` event.
  *
  * Behaviour:
  *   - Shows a small "Xs" pill near the active player at all times.
- *   - When seconds remaining <= 10 AND it is the LOCAL user's turn,
- *     pulses a purple/pink/cyan glow around the entire viewport edge
- *     plus a large central countdown so the player can't miss it.
- *   - Visible to spectators too (they see the same pill, no glow).
+ *   - When seconds remaining <= 7 AND it is the LOCAL user's turn:
+ *       * Pulses a purple/pink/cyan glow around the entire viewport edge.
+ *       * Shows a large central countdown.
+ *       * Plays a distinct "urgent" 3-tone alert ONCE (when the alert
+ *         window opens, not every second).
+ *   - Visible to spectators too (they see the same pill, no glow/audio).
  *
  * Drift handling: we don't rely on the user's clock being aligned with
  * the server. Instead, on every render we re-evaluate
@@ -20,7 +21,8 @@
  * pill simply ticks once per second via setInterval.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { playUrgentTurnAlert } from '../utils/sounds';
 
 interface Props {
   /** ISO timestamp the current turn began (from server gameState). */
@@ -36,16 +38,25 @@ interface Props {
 export function TurnTimer({
   turnStartedAt,
   isMyTurn,
-  totalMs = 30_000,
-  alertAtSeconds = 10,
+  totalMs = 17_000,
+  alertAtSeconds = 7,
 }: Props) {
   const [now, setNow] = useState(() => Date.now());
+  // Track whether we've already fired the urgent alert for the current
+  // turn so it only plays once per turn (when the alert window opens),
+  // not every render tick during the warning window.
+  const alertFiredForTurn = useRef<string | null>(null);
 
   useEffect(() => {
     // 250ms tick so the seconds digit feels responsive but we don't
     // burn cycles. Cleanup on unmount or when turnStartedAt changes.
     const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
+  }, [turnStartedAt]);
+
+  // Reset the alert-fired marker whenever the turn changes.
+  useEffect(() => {
+    alertFiredForTurn.current = null;
   }, [turnStartedAt]);
 
   if (!turnStartedAt) return null;
@@ -59,6 +70,12 @@ export function TurnTimer({
 
   const isAlert = isMyTurn && remainingSec <= alertAtSeconds && remainingSec > 0;
   const isExpired = remainingMs <= 0;
+
+  // Fire urgent alert once when we cross into the warning window on our turn.
+  if (isAlert && alertFiredForTurn.current !== turnStartedAt) {
+    alertFiredForTurn.current = turnStartedAt;
+    try { playUrgentTurnAlert(); } catch { /* audio not ready */ }
+  }
 
   // The pill colour ramps red as the timer runs down.
   let pillColor = '#a3a3a3';

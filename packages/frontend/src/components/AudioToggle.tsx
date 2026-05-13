@@ -17,6 +17,8 @@ import {
   getAudioPrefs,
   setSoundEnabled,
   setNotifyEnabled,
+  setPopupsEnabled,
+  setUrgentAlertEnabled,
   subscribeAudioPrefs,
   type AudioPrefs,
 } from '../utils/audioPreferences';
@@ -38,15 +40,27 @@ export function AudioToggle({ variant = 'compact', className }: Props) {
       <div className={className}>
         <ToggleRow
           label="Sound effects"
-          description="Turn-alert ding and check knock"
+          description="Turn-alert ding, check knock, and card-deal sounds"
           checked={prefs.sound}
           onChange={setSoundEnabled}
         />
         <ToggleRow
+          label="Urgent turn alert"
+          description="3-tone urgent beep when 7s remain on your turn (requires Sound effects)"
+          checked={prefs.urgentAlert}
+          onChange={setUrgentAlertEnabled}
+        />
+        <ToggleRow
           label="Desktop notifications"
-          description="Popup when it's your turn (browser permission required)"
+          description="Browser popup when it's your turn (browser permission required)"
           checked={prefs.notify}
           onChange={setNotifyEnabled}
+        />
+        <ToggleRow
+          label="Hand-result popups"
+          description="Winner / showdown / game-over modals at the end of each hand"
+          checked={prefs.popups}
+          onChange={setPopupsEnabled}
         />
       </div>
     );

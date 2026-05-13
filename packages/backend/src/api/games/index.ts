@@ -275,6 +275,29 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           gameId: id,
           playerCount: result.game.players?.length || 0,
         });
+        // Playtest 2026-05-13 fix: creator could not see joiners (or start
+        // the game) until manual refresh. Force a full personalized state
+        // push to every seated player so their waiting-room UI updates
+        // immediately, regardless of whether their socket received the
+        // player:joined event in time to trigger a refetch.
+        try {
+          const { broadcastGameState } = await import('../../socket');
+          const playerIds = (result.game.players || [])
+            .map((p: any) => p.userId)
+            .filter((u: any) => typeof u === 'string' && u.length > 0);
+          if (playerIds.length > 0) {
+            // Fire-and-forget; don't block the HTTP response.
+            broadcastGameState(id, playerIds).catch((err) =>
+              logger.warn('broadcastGameState after join failed (non-fatal)', {
+                gameId: id, error: err instanceof Error ? err.message : String(err),
+              })
+            );
+          }
+        } catch (err) {
+          logger.warn('broadcastGameState import failed (non-fatal)', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
 
         logger.info('User joined game', {
           userId: request.user!.id,

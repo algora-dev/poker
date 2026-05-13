@@ -9,8 +9,12 @@ import { advanceActivePlayerInTx } from '../services/advanceTurn';
 import { broadcastGameState, emitGameEvent } from '../socket';
 import { logger } from '../utils/logger';
 
-const TURN_TIMEOUT_MS = parseInt(process.env.TURN_TIMEOUT_MS || '30000', 10); // 30s default
-const TURN_WARNING_MS = parseInt(process.env.TURN_WARNING_MS || '10000', 10); // warn at 10s remaining
+// Playtest 2026-05-13: reduced from 30s -> 17s, warning from 10s -> 7s.
+// Real-money tables don't need 30s of think-time; 17s keeps tempo while
+// still being enough for a deliberate decision. The 7s warning aligns
+// with the new visual glow + urgent audio alert on the frontend.
+const TURN_TIMEOUT_MS = parseInt(process.env.TURN_TIMEOUT_MS || '17000', 10); // 17s default
+const TURN_WARNING_MS = parseInt(process.env.TURN_WARNING_MS || '7000',  10); // warn at 7s remaining
 const TURN_TICK_MS    = parseInt(process.env.TURN_TICK_MS    || '2000',  10);
 
 // Track hands we've already warned for, so the warning fires once per turn

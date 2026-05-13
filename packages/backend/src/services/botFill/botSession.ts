@@ -48,13 +48,14 @@ export interface BotSessionConfig {
    * History:
    *   - 300ms (initial): sluggish-feeling but masked by server latency
    *   - 100ms (2026-05-11): reduced after first speed playtest
-   *   - 1500ms (2026-05-12): server latency is now ~350ms after
-   *     Frankfurt region change, so bots act almost instantly. Shaun
-   *     reported it felt unnatural - bots respond too fast for humans
-   *     to follow. 1.5s is a comfortable poker-feel default.
+   *   - 1500ms (2026-05-12): bumped to soften too-fast bot actions
+   *   - 0ms (2026-05-13): Shaun reported the 1.5s caused inconsistent
+   *     UX - sometimes instant, sometimes piled up so 3 bots fired in
+   *     a burst after a 4-5s pause. Suspected: socket back-pressure or
+   *     queueing interacted badly with the artificial delay. Removed
+   *     entirely; rely on real network/server latency for rhythm.
    *
-   * Caller may override via /api/admin/spawn-bots `thinkMs` field;
-   * 0 disables the delay entirely (useful for the harness).
+   * Caller may override via /api/admin/spawn-bots `thinkMs` field.
    */
   thinkMs?: number;
   /** ID used by the registry for kill/list operations. */
@@ -354,7 +355,9 @@ export class BotSession {
 
     this.actionInFlight = true;
     try {
-      const thinkMs = this.cfg.thinkMs ?? 1500;
+      // Playtest 2026-05-13: removed artificial think-time (was 1500ms).
+      // Bots act as fast as the server allows; humans get a 17s turn timer.
+      const thinkMs = this.cfg.thinkMs ?? 0;
       if (thinkMs > 0) await sleep(thinkMs);
       if (this.shuttingDown) return;
 
