@@ -372,6 +372,18 @@ export default function GameRoom() {
       } catch { /* ignore */ }
     });
 
+    socket.on('game:completed', (data: any) => {
+      // Backend authoritative final standings (winner + cashout amounts).
+      // Replaces the mid-hand chipStack snapshot we'd otherwise display
+      // on the Game Over screen, which could be wrong on all-in fast-
+      // forward (Shaun 2026-05-13: "bot won 5 chips" while Shaun actually
+      // won the whole 20-chip pot with pocket jacks).
+      if (Array.isArray(data?.standings) && data.standings.length > 0) {
+        finalStandingsRef.current = data.standings;
+        setFinalStandings(data.standings);
+      }
+    });
+
     socket.on('game:fold-win', (data: any) => {
       setFoldWinData(data);
       // Only the winner hears the win chime on fold-win. Folders are
@@ -416,6 +428,7 @@ export default function GameRoom() {
       socket.off('player:joined');
       socket.off('game:fold-win');
       socket.off('game:showdown');
+      socket.off('game:completed');
       socket.off('game:new-hand');
       socket.off('game:next-hand-countdown');
       socket.off('game:turn-warning');

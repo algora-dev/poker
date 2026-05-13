@@ -119,14 +119,19 @@ export function computeSeatPositions(
     // Clamp inside the visible container so absolutely-positioned
     // children with -translate-x/y-50% don't hang off the edge.
     //
-    // Lower clamp 92 -> 70 (2026-05-13 follow-up): the bottom seat
-    // renders avatar + name plate + YOUR (large) hole cards downward
-    // from the seat anchor. The whole stack is ~30% of typical wrapper
-    // height, so anchoring at 70 leaves the cards visible above the
-    // action bar without spilling out. Top clamp loosened to 6 to keep
-    // the top seat from feeling cramped under the page header.
+    // Clamp history:
+    //   92 (original) - bottom seat too close to wrapper edge, cards
+    //                    spilled over the action bar
+    //   70 (try 1)    - kept cards clear of buttons, BUT moved the
+    //                    bottom-seat avatar inward, where it overlapped
+    //                    the community cards at the felt centre
+    //                    (Shaun screenshot 2026-05-13 13:00)
+    //   85 (current)  - seat avatar stays at the felt's bottom rail.
+    //                    Cards extending below into the gap-zone is
+    //                    handled by the wrapper's paddingBottom + the
+    //                    action bar's translate-y-full + pt-10.
     x = Math.max(6, Math.min(94, x));
-    y = Math.max(6, Math.min(70, y));
+    y = Math.max(6, Math.min(85, y));
 
     out.push({
       seatIndex: rotated[i],

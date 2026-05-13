@@ -434,7 +434,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           playerCount: game.players.length,
         });
 
-        // ONLY now respond success — the game truly has a first hand.
+        // ONLY now respond success - the game truly has a first hand.
         reply.send({ success: true, message: 'Game started!' });
 
         // Side effects (broadcasts) outside the transaction.
@@ -450,7 +450,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           });
         }
       } catch (error) {
-        logger.error('Start game failed', { 
+        logger.error('Start game failed', {
           error,
           stack: error instanceof Error ? error.stack : undefined,
           message: error instanceof Error ? error.message : String(error),
@@ -559,6 +559,54 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           }
         }
 
+        // Game-over detection: if processAction ran closeGameInTx, the
+        // game's status flipped to 'completed'. Compose final standings
+        // from MoneyEvent (game_cashout) rows so the Game Over screen
+        // shows correct winners/amounts, not the stale mid-hand snapshot
+        // captured by the frontend's broadcastGameState loop.
+        //
+        // Bug fixed 2026-05-13: Game Over previously displayed the last
+        // in-progress chipStack snapshot, which on all-in fast-forward
+        // could show a bot with ~5 chips as "winner" even though the
+        // hero (Shaun) actually won the whole pot (logs: hand 9 had
+        // mid-hand snapshot Shaun=0/Bot=5.1 captured between two all-ins).
+        let finalStandingsPayload: any = null;
+        try {
+          const postGame = await prisma.game.findUnique({
+            where: { id },
+            select: { status: true },
+          });
+          if (postGame?.status === 'completed') {
+            const cashouts = await prisma.moneyEvent.findMany({
+              where: { gameId: id, eventType: { in: ['game_cashout', 'game_cancel_refund'] } },
+              orderBy: { serverTime: 'asc' },
+            });
+            const userIds = Array.from(new Set(cashouts.map(c => c.userId)));
+            const users = await prisma.user.findMany({
+              where: { id: { in: userIds } },
+              select: { id: true, username: true },
+            });
+            const nameByUser = new Map(users.map(u => [u.id, u.username]));
+            // Sum refunds per user (defensive: one row per user expected,
+            // but be tolerant of edge cases like split-pot remainders).
+            const totalByUser = new Map<string, bigint>();
+            for (const c of cashouts) {
+              totalByUser.set(c.userId, (totalByUser.get(c.userId) ?? 0n) + BigInt(c.amount));
+            }
+            const standings = Array.from(totalByUser.entries()).map(([userId, amount]) => ({
+              userId,
+              username: nameByUser.get(userId) ?? userId.slice(-6),
+              chipStack: amount.toString(),
+            }));
+            standings.sort((a, b) => Number(BigInt(b.chipStack) - BigInt(a.chipStack)));
+            finalStandingsPayload = { gameId: id, standings };
+          }
+        } catch (err) {
+          logger.warn('Failed to compose final standings (non-fatal)', {
+            gameId: id, error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
         // Emit specific events
         if (result.showdownResults) {
           // Hand completed via showdown - emit results
@@ -567,7 +615,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             ...result.showdownResults,
           });
 
-          // After showdown — 5 second countdown before next hand
+          // After showdown - 5 second countdown before next hand
           logger.info('Starting 5s countdown before next hand', { gameId: id });
           emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 5 });
           setTimeout(async () => {
@@ -605,7 +653,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             userId: request.user!.id,
           });
 
-          // Start next hand after fold — short delay
+          // Start next hand after fold - short delay
           emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 3 });
           setTimeout(async () => {
             try {
@@ -626,7 +674,15 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             }
           }, 3000); // 3 seconds after fold
         } else {
-          // Normal action — game:action already emitted above
+          // Normal action - game:action already emitted above
+        }
+
+        // If the game has just completed, emit a final-standings event so
+        // the frontend Game Over screen can show authoritative winner +
+        // chip totals (not the stale mid-hand snapshot it captures from
+        // in_progress state broadcasts).
+        if (finalStandingsPayload) {
+          emitGameEvent(id, 'game:completed', finalStandingsPayload);
         }
 
         logger.info('Player action processed', {
@@ -654,13 +710,13 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         }
 
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-        
+
         // Log to DB for persistent debugging
         try {
           const { logError } = await import('../../services/appLogger');
           await logError('action', `Action ${action} failed`, error, { userId: request.user!.id, gameId: id });
         } catch (_) {}
-        
+
         return reply.code(500).send({
           error: 'Internal server error',
           message: errorMsg,

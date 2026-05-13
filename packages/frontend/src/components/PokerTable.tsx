@@ -289,25 +289,40 @@ export function PokerTable({
     showdown: 'Showdown', completed: 'Complete', waiting: 'Waiting',
   };
 
-  // Aspect ratio of the table felt area. Tuned so the bottom seat's
-  // avatar + name plate + YOUR hole cards have enough vertical room
-  // before the action bar (Shaun 2026-05-13: cards were being covered
-  // by the buttons). The seat-layout math (utils/seatLayout.ts) now uses
-  // a flatter oval (ay~22) so the bottom seat anchor sits at y≈70% of
-  // wrapper height, leaving ~30% (≈ plate + large hero hole cards) below.
+  // Aspect ratio of the table felt area (the OVAL itself). Seats are
+  // positioned in percentage coordinates of this oval container, so the
+  // bottom seat anchor lands on the felt rail (~85% of felt height).
+  //
+  // Below the oval we add `bottomGutter` of extra vertical space so the
+  // local player's name plate + YOUR (large) hole cards extend off the
+  // felt rail into the gutter without colliding with the action bar.
+  // Both numbers are tuned so the avatar sits AT THE RAIL, not in the
+  // felt centre (Shaun screenshot 2026-05-13 13:00 — avatar was on top
+  // of the community cards when the clamp was 70%).
   const tableAspect = vp.isMobile
-    ? '70%'
+    ? '55%'
     : vp.isTablet
-      ? '55%'
-      : '48%';
+      ? '46%'
+      : '40%';
+  // Extra px below the felt for the hero plate + cards stack.
+  const bottomGutter = vp.isMobilePortrait ? 130 : vp.isMobile ? 130 : vp.isTablet ? 150 : 170;
 
   return (
     <div
-      className="relative w-full mx-auto"
+      className="relative w-full mx-auto flex flex-col items-center"
+      style={{
+        maxWidth: vp.isDesktop ? '960px' : '100%',
+      }}
+    >
+    {/* Felt oval container — seats are positioned in % of this box. */}
+    <div
+      className="relative w-full"
       style={{
         paddingBottom: tableAspect,
-        maxWidth: vp.isDesktop ? '960px' : '100%',
         minHeight: '260px',
+        // Reserve vertical room below the felt for the local player's
+        // name plate + hero hole cards which extend off the bottom rail.
+        marginBottom: `${bottomGutter}px`,
       }}
     >
 
@@ -533,17 +548,21 @@ export function PokerTable({
         );
       })}
 
+      </div>{/* close felt-container */}
+
       {/* ── Action Buttons ──
-          Desktop/tablet: positioned beneath the table felt, centred.
+          Desktop/tablet: positioned in the gutter beneath the table felt.
           Mobile: position:fixed at the bottom of the viewport so they
           are always reachable regardless of where the user has scrolled.
           All buttons sized for 44px+ touch targets on mobile. */}
       {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && (
         <div
           className={vp.isMobile
-            ? 'fixed bottom-0 inset-x-0 z-20 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2'
-            : 'absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-full pt-10 z-20'}
-          style={vp.isMobile ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' } : {}}
+            ? 'fixed bottom-0 inset-x-0 z-20 px-2 pt-2'
+            : 'z-20'}
+          style={vp.isMobile
+            ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }
+            : {}}
         >
           <div
             className={`${vp.isMobile ? 'flex gap-1.5 rounded-2xl p-2' : 'flex gap-2 rounded-2xl p-3'} border border-white/10 shadow-2xl justify-center`}
