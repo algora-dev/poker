@@ -289,23 +289,14 @@ export function PokerTable({
     showdown: 'Showdown', completed: 'Complete', waiting: 'Waiting',
   };
 
-  // Aspect ratio of the table felt area (the OVAL itself). Seats are
-  // positioned in percentage coordinates of this oval container, so the
-  // bottom seat anchor lands on the felt rail (~85% of felt height).
-  //
-  // Below the oval we add `bottomGutter` of extra vertical space so the
-  // local player's name plate + YOUR (large) hole cards extend off the
-  // felt rail into the gutter without colliding with the action bar.
-  // Both numbers are tuned so the avatar sits AT THE RAIL, not in the
-  // felt centre (Shaun screenshot 2026-05-13 13:00 — avatar was on top
-  // of the community cards when the clamp was 70%).
+  // Aspect ratio of the table wrapper. With horizontal-row layouts for
+  // top and bottom seats (cards extend HORIZONTALLY, not into the felt),
+  // we can use a reasonable oval ratio again without needing a gutter.
   const tableAspect = vp.isMobile
-    ? '55%'
+    ? '60%'
     : vp.isTablet
-      ? '46%'
-      : '40%';
-  // Extra px below the felt for the hero plate + cards stack.
-  const bottomGutter = vp.isMobilePortrait ? 130 : vp.isMobile ? 130 : vp.isTablet ? 150 : 170;
+      ? '50%'
+      : '44%';
 
   return (
     <div
@@ -314,15 +305,11 @@ export function PokerTable({
         maxWidth: vp.isDesktop ? '960px' : '100%',
       }}
     >
-    {/* Felt oval container — seats are positioned in % of this box. */}
     <div
       className="relative w-full"
       style={{
         paddingBottom: tableAspect,
-        minHeight: '260px',
-        // Reserve vertical room below the felt for the local player's
-        // name plate + hero hole cards which extend off the bottom rail.
-        marginBottom: `${bottomGutter}px`,
+        minHeight: '300px',
       }}
     >
 
@@ -403,7 +390,15 @@ export function PokerTable({
         </div>
       </div>
 
-      {/* ── Player seats ── */}
+      {/* ── Player seats ──
+          Per-seat layout mode based on seat anchor Y:
+            top    (y < 30%)  → horizontal [cards][meta]   (cards stick UP onto the felt rail; meta on the right)
+            bottom (y > 70%)  → horizontal [meta][cards]   (cards stick DOWN off the rail; meta on the left)
+            side             → vertical (current behaviour) avatar over plate over cards
+          This stops the bottom seat's cards from being obscured (the
+          vertical stack pushed them below the action bar) and stops the
+          top seat's cards from hanging into the central pot/board area.
+          Shaun playtest 2026-05-13 14:00. */}
       {seatLayout.map((pos) => {
         const player = seatToPlayer.get(pos.seatIndex);
         if (!player) return null;
@@ -417,131 +412,168 @@ export function PokerTable({
         const initial = player.username.charAt(0).toUpperCase();
         const avatarSrc = getAvatarSrc(player.avatarId);
 
+        // Derive layout mode from the anchor Y. The seat-layout math
+        // (utils/seatLayout.ts) emits y in CSS percent of the felt
+        // container, so we just parse it.
+        const yNum = parseFloat(pos.top);
+        const layoutMode: 'top' | 'bottom' | 'side' =
+          yNum < 30 ? 'top' : yNum > 70 ? 'bottom' : 'side';
+
+        // Avatar + position badge — used by all three modes.
+        const AvatarBlock = (
+          <div className="relative flex-shrink-0">
+            {player.seatIndex === dealerSeatIndex && !isEliminated && (
+              <div className={`absolute -top-1 -right-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-black z-10`} style={{background:'#ffffff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>D</div>
+            )}
+            {player.seatIndex === sbSeatIndex && player.seatIndex !== dealerSeatIndex && !isEliminated && (
+              <div className={`absolute -top-1 -left-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-white z-10`} style={{background:'#12ceec', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>SB</div>
+            )}
+            {player.seatIndex === bbSeatIndex && !isEliminated && (
+              <div className={`absolute -top-1 -left-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-white z-10`} style={{background:'#9c51ff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>BB</div>
+            )}
+            <div className={`
+              ${sizing.avatar} rounded-full flex items-center justify-center ${sizing.avatarText} font-bold shadow-lg overflow-hidden
+              ${isActive ? 'ring-[3px] ring-yellow-400 shadow-yellow-400/50' :
+                isMe ? 'ring-2 ring-green-400' :
+                isAllIn ? 'ring-2 ring-purple-500' :
+                'ring-1 ring-gray-600'}
+              ${!avatarSrc ? (
+                isEliminated ? 'bg-gray-800 text-gray-600' :
+                isFolded ? 'bg-gray-700 text-gray-500' :
+                isMe ? 'bg-green-800 text-green-200' :
+                'bg-gray-700 text-white'
+              ) : ''}
+            `}>
+              {avatarSrc ? (
+                <img src={avatarSrc} alt={player.username} className="w-full h-full object-cover" />
+              ) : (
+                initial
+              )}
+            </div>
+          </div>
+        );
+
+        const NamePlate = (
+          <div className={`
+            rounded-lg px-2 py-1 text-center ${sizing.plateMinW}
+            ${isActive ? 'bg-yellow-900/80 border border-yellow-500/50' :
+              isMe ? 'bg-green-900/80 border border-green-600/40' :
+              'bg-gray-900/80 border border-gray-700/40'}
+          `}>
+            <div className={`${sizing.plateName} font-semibold truncate ${sizing.plateMaxW} ${
+              isActive ? 'text-yellow-200' :
+              isMe ? 'text-green-300' :
+              isFolded ? 'text-gray-500' :
+              'text-white'
+            }`}>
+              {player.username}{isMe ? ' (You)' : ''}
+            </div>
+            <div className={`${isMe ? `${sizing.plateChips} font-semibold` : sizing.plateStatus} ${isEliminated ? 'text-gray-600' : 'text-amber-400'}`}>
+              {formatChips(player.chipStack)}
+            </div>
+            {isFolded && <div className={`${sizing.plateStatus} text-red-400 font-bold`}>FOLDED</div>}
+            {isEliminated && <div className={`${sizing.plateStatus} text-gray-500 font-bold`}>ELIMINATED</div>}
+            {isAllIn && <div className={`${sizing.plateStatus} text-purple-400 font-bold animate-pulse`}>ALL IN</div>}
+          </div>
+        );
+
+        const HoleCards = (
+          <div className="flex gap-0.5 sm:gap-1">
+            {isMe ? (
+              player.holeCards.length > 0 ? (
+                player.holeCards.map((card: any, i: number) => (
+                  <CardFace key={i} card={card} sizeClass={sizing.cardLargeW} />
+                ))
+              ) : null
+            ) : (
+              !isEliminated && !isFolded && (
+                <>
+                  <CardBack sizeClass={sizing.cardSmallW} />
+                  <CardBack sizeClass={sizing.cardSmallW} />
+                </>
+              )
+            )}
+          </div>
+        );
+
+        const ActionBadge = (player.lastAction || (player.currentStageBet && parseInt(player.currentStageBet) > 0)) ? (
+          <div className="flex flex-col items-center">
+            {player.currentStageBet && parseInt(player.currentStageBet) > 0 && (
+              <div className="flex items-center gap-1.5">
+                <img src="/assets/musd-chip.png" alt="" className={sizing.chipGlyph} />
+                <span className={`${sizing.betText} font-semibold text-white leading-tight`}>{formatChips(player.currentStageBet)}</span>
+              </div>
+            )}
+            {player.lastAction && player.lastAction !== 'blind' && (
+              <span className={`${sizing.betText} font-bold uppercase mt-0.5 ${
+                player.lastAction === 'fold' ? 'text-red-400' :
+                player.lastAction === 'raise' ? 'text-yellow-400' :
+                player.lastAction === 'all-in' ? 'text-purple-400' :
+                player.lastAction === 'call' ? 'text-blue-300' :
+                player.lastAction === 'check' ? 'text-emerald-300' :
+                'text-gray-400'
+              }`}>
+                {player.lastAction === 'call' ? 'Call' :
+                 player.lastAction === 'raise' ? 'Raise' :
+                 player.lastAction === 'check' ? 'Check' :
+                 player.lastAction === 'all-in' ? 'All In' :
+                 player.lastAction === 'fold' ? 'Fold' : ''}
+              </span>
+            )}
+          </div>
+        ) : null;
+
+        // Anchor translation per layout-mode keeps the seat's centre-of-mass
+        // close to pos.{top,left} but biases the meta+cards group away from
+        // the felt centre (so cards never reach the pot).
+        const wrapperPosClass =
+          layoutMode === 'top'    ? 'absolute transform -translate-x-1/2 z-10' :
+          layoutMode === 'bottom' ? 'absolute transform -translate-x-1/2 -translate-y-full z-10' :
+                                    'absolute transform -translate-x-1/2 -translate-y-1/2 z-10';
+
+        const innerClass = layoutMode === 'side'
+          ? 'flex flex-col items-center transition-all duration-300'
+          : 'flex flex-row items-center gap-2 transition-all duration-300';
+
         return (
           <div
             key={player.userId}
-            className="absolute transform -translate-x-1/2 -translate-y-1/2 z-10"
+            className={wrapperPosClass}
             style={{ top: pos.top, left: pos.left }}
           >
             <div className={`
-              flex flex-col items-center transition-all duration-300
+              ${innerClass}
               ${isEliminated ? 'opacity-30' : ''}
               ${isFolded ? 'opacity-50' : ''}
-              ${isActive ? 'scale-110' : ''}
+              ${isActive ? 'scale-105' : ''}
             `}>
-              {/* Avatar + Position badge wrapper */}
-              <div className="relative">
-              {/* Position badge (D/SB/BB) */}
-              {player.seatIndex === dealerSeatIndex && !isEliminated && (
-                <div className={`absolute -top-1 -right-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-black z-10`} style={{background:'#ffffff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>D</div>
+              {layoutMode === 'top' && (
+                <>
+                  {HoleCards}
+                  <div className="flex flex-col items-center gap-1">
+                    {AvatarBlock}
+                    {NamePlate}
+                    {ActionBadge}
+                  </div>
+                </>
               )}
-              {player.seatIndex === sbSeatIndex && player.seatIndex !== dealerSeatIndex && !isEliminated && (
-                <div className={`absolute -top-1 -left-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-white z-10`} style={{background:'#12ceec', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>SB</div>
+              {layoutMode === 'bottom' && (
+                <>
+                  <div className="flex flex-col items-center gap-1">
+                    {AvatarBlock}
+                    {NamePlate}
+                    {ActionBadge}
+                  </div>
+                  {HoleCards}
+                </>
               )}
-              {player.seatIndex === bbSeatIndex && !isEliminated && (
-                <div className={`absolute -top-1 -left-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-white z-10`} style={{background:'#9c51ff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>BB</div>
-              )}
-
-              {/* Avatar circle */}
-              <div className={`
-                ${sizing.avatar} rounded-full flex items-center justify-center ${sizing.avatarText} font-bold shadow-lg overflow-hidden
-                
-                ${isActive ? 'ring-[3px] ring-yellow-400 shadow-yellow-400/50' :
-                  isMe ? 'ring-2 ring-green-400' :
-                  isAllIn ? 'ring-2 ring-purple-500' :
-                  'ring-1 ring-gray-600'}
-                ${!avatarSrc ? (
-                  isEliminated ? 'bg-gray-800 text-gray-600' :
-                  isFolded ? 'bg-gray-700 text-gray-500' :
-                  isMe ? 'bg-green-800 text-green-200' :
-                  'bg-gray-700 text-white'
-                ) : ''}
-              `}>
-                {avatarSrc ? (
-                  <img src={avatarSrc} alt={player.username} className="w-full h-full object-cover" />
-                ) : (
-                  initial
-                )}
-              </div>
-              </div>{/* close relative wrapper */}
-
-              {/* Name + chips plate */}
-              <div className={`
-                mt-1.5 rounded-lg px-2 py-1 text-center ${sizing.plateMinW}
-                ${isActive ? 'bg-yellow-900/80 border border-yellow-500/50' :
-                  isMe ? 'bg-green-900/80 border border-green-600/40' :
-                  'bg-gray-900/80 border border-gray-700/40'}
-              `}>
-                <div className={`${sizing.plateName} font-semibold truncate ${sizing.plateMaxW} ${
-                  isActive ? 'text-yellow-200' :
-                  isMe ? 'text-green-300' :
-                  isFolded ? 'text-gray-500' :
-                  'text-white'
-                }`}>
-                  {player.username}{isMe ? ' (You)' : ''}
-                </div>
-                {/* Balance in gold, slightly larger for own seat. */}
-                <div className={`${isMe ? `${sizing.plateChips} font-semibold` : sizing.plateStatus} ${isEliminated ? 'text-gray-600' : 'text-amber-400'}`}>
-                  {formatChips(player.chipStack)}
-                </div>
-
-                {/* Status badges */}
-                {isFolded && <div className={`${sizing.plateStatus} text-red-400 font-bold`}>FOLDED</div>}
-                {isEliminated && <div className={`${sizing.plateStatus} text-gray-500 font-bold`}>ELIMINATED</div>}
-                {isAllIn && <div className={`${sizing.plateStatus} text-purple-400 font-bold animate-pulse`}>ALL IN</div>}
-
-
-              </div>
-
-              {/* Cards. YOUR hole cards larger for readability.
-                  Opponent backs stay small. Sizing comes from `sizing.*`
-                  CSS classes so it auto-scales per viewport. */}
-              <div className="flex gap-0.5 sm:gap-1 mt-1">
-                {isMe ? (
-                  player.holeCards.length > 0 ? (
-                    player.holeCards.map((card: any, i: number) => (
-                      <CardFace key={i} card={card} sizeClass={sizing.cardLargeW} />
-                    ))
-                  ) : null
-                ) : (
-                  !isEliminated && !isFolded && (
-                    <>
-                      <CardBack sizeClass={sizing.cardSmallW} />
-                      <CardBack sizeClass={sizing.cardSmallW} />
-                    </>
-                  )
-                )}
-              </div>
-
-              {/* Last action + bet indicator.
-                  Playtest 2026-05-11 v3: text upsized again ~50%.
-                  Chip glyph height matched to the bet number height.
-                  Action label is now base size for easy reading. */}
-              {(player.lastAction || (player.currentStageBet && parseInt(player.currentStageBet) > 0)) && (
-                <div className="flex flex-col items-center mt-1">
-                  {player.currentStageBet && parseInt(player.currentStageBet) > 0 && (
-                    <div className="flex items-center gap-1.5">
-                      <img src="/assets/musd-chip.png" alt="" className={sizing.chipGlyph} />
-                      <span className={`${sizing.betText} font-semibold text-white leading-tight`}>{formatChips(player.currentStageBet)}</span>
-                    </div>
-                  )}
-                  {player.lastAction && player.lastAction !== 'blind' && (
-                    <span className={`${sizing.betText} font-bold uppercase mt-0.5 ${
-                      player.lastAction === 'fold' ? 'text-red-400' :
-                      player.lastAction === 'raise' ? 'text-yellow-400' :
-                      player.lastAction === 'all-in' ? 'text-purple-400' :
-                      player.lastAction === 'call' ? 'text-blue-300' :
-                      player.lastAction === 'check' ? 'text-emerald-300' :
-                      'text-gray-400'
-                    }`}>
-                      {player.lastAction === 'call' ? 'Call' :
-                       player.lastAction === 'raise' ? 'Raise' :
-                       player.lastAction === 'check' ? 'Check' :
-                       player.lastAction === 'all-in' ? 'All In' :
-                       player.lastAction === 'fold' ? 'Fold' : ''}
-                    </span>
-                  )}
-                </div>
+              {layoutMode === 'side' && (
+                <>
+                  {AvatarBlock}
+                  <div className="mt-1.5">{NamePlate}</div>
+                  <div className="mt-1">{HoleCards}</div>
+                  {ActionBadge && <div className="mt-1">{ActionBadge}</div>}
+                </>
               )}
             </div>
           </div>

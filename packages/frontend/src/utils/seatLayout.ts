@@ -120,18 +120,16 @@ export function computeSeatPositions(
     // children with -translate-x/y-50% don't hang off the edge.
     //
     // Clamp history:
-    //   92 (original) - bottom seat too close to wrapper edge, cards
-    //                    spilled over the action bar
-    //   70 (try 1)    - kept cards clear of buttons, BUT moved the
-    //                    bottom-seat avatar inward, where it overlapped
-    //                    the community cards at the felt centre
-    //                    (Shaun screenshot 2026-05-13 13:00)
-    //   85 (current)  - seat avatar stays at the felt's bottom rail.
-    //                    Cards extending below into the gap-zone is
-    //                    handled by the wrapper's paddingBottom + the
-    //                    action bar's translate-y-full + pt-10.
+    //   92 -> 70 -> 85 -> 90 (current 2026-05-13 14:00):
+    //   Top seats use translate-x-1/2 (anchor = TOP of seat row → cards
+    //   render ABOVE pos.top, on the felt rail above the avatar).
+    //   Bottom seats use -translate-x/y-full (anchor = BOTTOM of seat row
+    //   → cards render below pos.top, just above the action bar).
+    //   Side seats use -translate-x/y-50% (anchor = CENTRE).
+    //   With this scheme the clamp can sit closer to the wrapper edges
+    //   without overlap, so we restore ~10-90 range.
     x = Math.max(6, Math.min(94, x));
-    y = Math.max(6, Math.min(85, y));
+    y = Math.max(10, Math.min(90, y));
 
     out.push({
       seatIndex: rotated[i],
@@ -158,35 +156,26 @@ export function computeSeatPositionsForViewport(
   breakpoint: 'mobile-portrait' | 'mobile-landscape' | 'tablet' | 'desktop'
 ): SeatPos[] {
   switch (breakpoint) {
-    // ax/ay tuned so:
-    //  - bottom seat's avatar + plate + hero hole cards fit between the
-    //    seat anchor and the action bar (lower clamp at 70% in
-    //    computeSeatPositions takes care of any seat that lands lower)
-    //  - TOP seats sit well clear of the central pot pill so opponent
-    //    bets dropped between seat and pot don't overlap the pot text
-    //    (Shaun 2026-05-13: BB 0.20 chip overlapped pot 0.50 display)
-    // Top-seat y is symmetric to bottom around the centre: y = 50 - ay,
-    // so a smaller ay drives top seats DOWNWARD (closer to pot). We keep
-    // ay large enough to push top seats up to ~20-25% of wrapper height,
-    // and rely on the lower clamp to keep the bottom seat from spilling.
+    // ax/ay tuned for the horizontal-row layout (PokerTable renders top
+    // and bottom seats as horizontal [cards][meta] / [meta][cards] rows,
+    // so they don't grow vertically into the pot/board area). We can
+    // therefore use a normal oval (ay≈38) again.
     case 'mobile-portrait':
-      // Not used (PokerTableMobile renders a stacked layout). Provided
-      // as a fallback so the oval still renders if forced on portrait.
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 38, ay: 30, bottomBias: 0.0,
+        ax: 38, ay: 36, bottomBias: 0.0,
       });
     case 'mobile-landscape':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 42, ay: 28, bottomBias: 0.0,
+        ax: 42, ay: 34, bottomBias: 0.0,
       });
     case 'tablet':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 44, ay: 30, bottomBias: 0.0,
+        ax: 44, ay: 36, bottomBias: 0.0,
       });
     case 'desktop':
     default:
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 46, ay: 32, bottomBias: 0.0,
+        ax: 46, ay: 38, bottomBias: 0.0,
       });
   }
 }
