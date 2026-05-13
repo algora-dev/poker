@@ -448,8 +448,18 @@ export async function joinGame(userId: string, gameId: string, buyInAmount?: big
     });
 
     // DON'T auto-start - keep in "waiting" status
-    // Game will start when creator clicks "Start Game" button
-    const updatedGame = game;
+    // Game will start when creator clicks "Start Game" button.
+    //
+    // Re-fetch the game with its NEW player list (the in-scope `game`
+    // variable was loaded before the GamePlayer row above was created,
+    // so its `players` array would be stale and the caller's
+    // broadcastGameState call would miss the just-joined player).
+    // Reported by Shaun playtest 2026-05-13 — creator could not see
+    // joiners until manual refresh.
+    const updatedGame = await tx.game.findUnique({
+      where: { id: gameId },
+      include: { players: true },
+    }) ?? game;
 
     // Create chip audit log
     await tx.chipAudit.create({
