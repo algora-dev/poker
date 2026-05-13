@@ -153,27 +153,35 @@ export function computeSeatPositionsForViewport(
   breakpoint: 'mobile-portrait' | 'mobile-landscape' | 'tablet' | 'desktop'
 ): SeatPos[] {
   switch (breakpoint) {
-    // ax/ay tuned to keep the oval narrow vertically (so the bottom
-    // seat's avatar + plate + hero hole cards fit between the seat
-    // anchor and the action bar). Tested 2-8 handed across breakpoints.
+    // ax/ay tuned so:
+    //  - bottom seat's avatar + plate + hero hole cards fit between the
+    //    seat anchor and the action bar (lower clamp at 70% in
+    //    computeSeatPositions takes care of any seat that lands lower)
+    //  - TOP seats sit well clear of the central pot pill so opponent
+    //    bets dropped between seat and pot don't overlap the pot text
+    //    (Shaun 2026-05-13: BB 0.20 chip overlapped pot 0.50 display)
+    // Top-seat y is symmetric to bottom around the centre: y = 50 - ay,
+    // so a smaller ay drives top seats DOWNWARD (closer to pot). We keep
+    // ay large enough to push top seats up to ~20-25% of wrapper height,
+    // and rely on the lower clamp to keep the bottom seat from spilling.
     case 'mobile-portrait':
       // Not used (PokerTableMobile renders a stacked layout). Provided
       // as a fallback so the oval still renders if forced on portrait.
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 38, ay: 22, bottomBias: 0.0,
+        ax: 38, ay: 30, bottomBias: 0.0,
       });
     case 'mobile-landscape':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 42, ay: 20, bottomBias: 0.0,
+        ax: 42, ay: 28, bottomBias: 0.0,
       });
     case 'tablet':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 44, ay: 21, bottomBias: 0.0,
+        ax: 44, ay: 30, bottomBias: 0.0,
       });
     case 'desktop':
     default:
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 46, ay: 22, bottomBias: 0.0,
+        ax: 46, ay: 32, bottomBias: 0.0,
       });
   }
 }
