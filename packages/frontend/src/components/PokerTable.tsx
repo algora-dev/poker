@@ -151,13 +151,25 @@ function CardBack({ small, large, sizeClass }: { small?: boolean; large?: boolea
         ? 'w-9 h-[52px]'
         : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
   return (
-    <div className={`relative rounded-md shadow-md overflow-hidden border border-blue-800 ${w}`}>
-      <div className="absolute inset-0 bg-gradient-to-br from-blue-800 to-blue-950" />
-      <div className="absolute inset-0.5 rounded border border-blue-600/30 flex items-center justify-center p-1">
+    // Card back styling unified with DealAnimation's in-flight cards so
+    // the deal animation and the seated cards look identical (Shaun
+    // playtest 2026-05-13: "make the cards on the table same purple
+    // sheen style as the cards when they're being dealt").
+    // Gradient: deep blue → purple → deep blue diagonal, with the T3
+    // logo centred on top.
+    <div
+      className={`relative rounded-md shadow-md overflow-hidden ${w}`}
+      style={{
+        background: 'linear-gradient(135deg, #1e3a8a 0%, #7c3aed 50%, #1e3a8a 100%)',
+        border: '1.5px solid rgba(255,255,255,0.25)',
+        boxShadow: '0 4px 14px rgba(0,0,0,0.55)',
+      }}
+    >
+      <div className="absolute inset-0.5 rounded border border-white/15 flex items-center justify-center p-1">
         <img
           src="/assets/t3-logo-white.png"
           alt=""
-          className="w-3/5 h-3/5 object-contain opacity-80"
+          className="w-3/5 h-3/5 object-contain opacity-90"
           draggable={false}
         />
       </div>

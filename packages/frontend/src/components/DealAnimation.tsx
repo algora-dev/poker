@@ -158,11 +158,26 @@ export function DealAnimation({
               opacity: 0,
               transform: 'scale(0.7) rotate(-8deg)',
               animation: `dealCardFly ${FLIGHT_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1) ${f.delayMs}ms forwards`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               // Custom property carries destination into the keyframe.
               ['--dest-left' as any]: dest.left,
               ['--dest-top' as any]: dest.top,
             }}
-          />
+          >
+            <img
+              src="/assets/t3-logo-white.png"
+              alt=""
+              draggable={false}
+              style={{
+                width: '60%',
+                height: '60%',
+                objectFit: 'contain',
+                opacity: 0.9,
+              }}
+            />
+          </div>
         );
       })}
       <style>{`
