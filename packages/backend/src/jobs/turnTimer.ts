@@ -1,4 +1,4 @@
-// Turn timer: auto-acts when a player's turn expires (check if free, else fold).
+﻿// Turn timer: auto-acts when a player's turn expires (check if free, else fold).
 // Re-enabled now that betting completion, all-in handling, and min-raise are stable.
 //
 // Tunables (env): TURN_TIMEOUT_MS, TURN_WARNING_MS, TURN_TICK_MS
@@ -35,7 +35,7 @@ const warnedTurns = new Map<string, number>(); // value = timestamp warned
  * The lock is keyed by `${handId}:${activePlayerIndex}` so it auto-releases when
  * the turn advances (different idx) or the hand changes (different id).
  *
- * Process-local only — there is one backend instance per Railway deploy. If/when
+ * Process-local only ÔÇö there is one backend instance per Railway deploy. If/when
  * we horizontally scale, this needs to move to a DB advisory lock.
  */
 const inflightAutoActions = new Set<string>();
@@ -47,7 +47,7 @@ function turnKey(handId: string, idx: number) {
 /**
  * Safety net: any in-progress hand whose activePlayerIndex points at a
  * dead seat (folded / eliminated / all_in) is stalled. The 30s timeout
- * is the WRONG response here — the seat will never act. Advance the
+ * is the WRONG response here ÔÇö the seat will never act. Advance the
  * turn immediately and broadcast.
  *
  * This catches:
@@ -71,7 +71,7 @@ async function advanceDeadActiveSeats(nowMs: number) {
     const seat = game.players[hand.activePlayerIndex];
     if (!seat) continue;
     if (seat.position === 'active' || seat.position === 'all_in') continue;
-    // 'folded' or 'eliminated' — advance the turn immediately.
+    // 'folded' or 'eliminated' ÔÇö advance the turn immediately.
     try {
       const result = await prisma.$transaction(async (tx) => {
         return advanceActivePlayerInTx(tx, game.id, hand.id);
@@ -129,8 +129,8 @@ async function checkExpiredTurns() {
 
       // De-stampede: if a prior tick's auto-action for this exact turn is
       // still in flight, skip. The previous tick's processAction will either
-      // succeed (advancing activePlayerIndex — next tick keys differently) or
-      // throw (still expired — next tick retries cleanly).
+      // succeed (advancing activePlayerIndex ÔÇö next tick keys differently) or
+      // throw (still expired ÔÇö next tick retries cleanly).
       const lockKey = turnKey(hand.id, hand.activePlayerIndex);
       if (inflightAutoActions.has(lockKey)) continue;
       inflightAutoActions.add(lockKey);
@@ -148,7 +148,7 @@ async function checkExpiredTurns() {
       const owes = hand.currentBet - alreadyIn;
       const autoAction: 'fold' | 'check' = owes > BigInt(0) ? 'fold' : 'check';
 
-      logger.info('Turn timer expired — auto-acting', {
+      logger.info('Turn timer expired ÔÇö auto-acting', {
         gameId: game.id,
         handId: hand.id,
         userId: activePlayer.userId.slice(-6),
@@ -181,7 +181,7 @@ async function checkExpiredTurns() {
       } catch (err) {
         // processAction can throw if the hand state changed mid-tick; safe to retry next tick.
         // Stale-action / no-active-hand are EXPECTED when the turn advanced
-        // between the SELECT and the processAction call — log as info, not error.
+        // between the SELECT and the processAction call ÔÇö log as info, not error.
         const msg = (err as Error).message ?? '';
         const lc = msg.toLowerCase();
         const expected = lc.includes('stale action') || lc.includes('no active hand')
@@ -199,7 +199,7 @@ async function checkExpiredTurns() {
     // GC stale inflight locks every minute as a safety net (shouldn't be
     // needed because finally{} releases them, but defends against an
     // unhandled throw above the try{}).
-    // (No timestamp on the set entries — if we ever see growth, switch to Map.)
+    // (No timestamp on the set entries ÔÇö if we ever see growth, switch to Map.)
 
     // 2) Warning: turn is in the warning window but not yet expired.
     //    Fire once per turn (deduped by warnedTurns map).
@@ -253,96 +253,4 @@ logger.info('Turn timer enabled', {
   timeoutMs: TURN_TIMEOUT_MS,
   warningMs: TURN_WARNING_MS,
   tickMs: TURN_TICK_MS,
-});
-
-/**
- * Between-hands watchdog.
- *
- * The action endpoint schedules `setTimeout(initializeHand, 3-5s)` after
- * a hand completes (fold-win or showdown). That setTimeout is in-process
- * and can be LOST when:
- *   - Railway recycles the dyno
- *   - initializeHand throws (we log the error but do not retry)
- *   - The HTTP request was cancelled mid-flight
- *
- * When that happens the game wedges: no active hand, no new hand starts,
- * everyone stares at a "WAITING" pot until the 120s stale-cleanup nukes
- * the table (Shaun playtest 2026-05-13 16:00).
- *
- * This watchdog runs every 5s, finds in_progress games whose latest
- * hand is COMPLETED and whose completion was >10s ago, and kicks off
- * the next hand. 10s is enough to clear the normal 3-5s between-hand
- * countdown plus a safety margin so we don't race the happy path.
- */
-const HAND_WATCHDOG_GRACE_MS = 10_000;
-const HAND_WATCHDOG_TICK_MS = 5_000;
-
-async function watchdogResumeBetweenHands() {
-  try {
-    const games = await prisma.game.findMany({
-      where: { status: 'in_progress' },
-      include: {
-        hands: {
-          orderBy: { handNumber: 'desc' as const },
-          take: 1,
-          select: { id: true, stage: true, completedAt: true, createdAt: true },
-        },
-        players: { select: { id: true, position: true, chipStack: true } },
-      },
-    });
-
-    const nowMs = Date.now();
-    for (const game of games) {
-      const latest = game.hands[0];
-      if (!latest) continue; // hand 0 path handled by initial start flow
-      if (latest.stage !== 'completed') continue; // hand still in flight
-      const completedAt = latest.completedAt ?? latest.createdAt;
-      if (!completedAt) continue;
-      const idleMs = nowMs - new Date(completedAt).getTime();
-      if (idleMs < HAND_WATCHDOG_GRACE_MS) continue;
-
-      // Need at least 2 players with chips to deal the next hand.
-      const playable = game.players.filter(
-        p => p.position !== 'eliminated' && BigInt(p.chipStack) > 0n
-      );
-      if (playable.length < 2) continue; // stale-cleanup will handle
-
-      // No active hand AND we are past the grace window. The happy-path
-      // setTimeout in /:id/action either fired and failed, or never fired.
-      // Either way, take over.
-      try {
-        const { initializeHand } = await import('../services/holdemGame');
-        await initializeHand(game.id);
-        // Re-fetch player ids for the personalised state broadcast.
-        const gp = await prisma.game.findUnique({
-          where: { id: game.id },
-          select: { players: { select: { userId: true } } },
-        });
-        emitGameEvent(game.id, 'game:new-hand', { gameId: game.id });
-        broadcastGameState(game.id, gp?.players.map(p => p.userId) ?? [])
-          .catch(() => { /* non-fatal */ });
-        logger.warn('Between-hands watchdog started next hand (happy-path setTimeout missed)', {
-          gameId: game.id,
-          lastHandId: latest.id,
-          idleSeconds: Math.round(idleMs / 1000),
-        });
-      } catch (err) {
-        logger.error('Between-hands watchdog failed to start next hand', {
-          gameId: game.id,
-          lastHandId: latest.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  } catch (err) {
-    logger.error('Between-hands watchdog tick failed', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-setInterval(watchdogResumeBetweenHands, HAND_WATCHDOG_TICK_MS);
-logger.info('Between-hands watchdog enabled', {
-  tickMs: HAND_WATCHDOG_TICK_MS,
-  graceMs: HAND_WATCHDOG_GRACE_MS,
 });
