@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import { api } from '../services/api';
@@ -52,7 +52,7 @@ export default function GameRoom() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const { socket, isConnected, joinGame: joinGameRoom, leaveGame: leaveGameRoom, setJoinAckHandler } = useSocket();
+  const { socket, isConnected, joinGame: joinGameRoom, leaveGame: leaveGameRoom } = useSocket();
   const viewport = useViewport();
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -99,7 +99,7 @@ export default function GameRoom() {
   }, [audioPrefs.popups]);
   // Final standings snapshot captured BEFORE closeGame zeroes every chipStack.
   // closeGame refunds in-table chipStack back to off-table ChipBalance and
-  // writes 0 to every GamePlayer.chipStack — so the post-close gameState
+  // writes 0 to every GamePlayer.chipStack ÔÇö so the post-close gameState
   // legitimately shows everyone at 0. We keep the last in-progress stacks
   // here so the Game Over modal can show meaningful final standings.
   const finalStandingsRef = useRef<Array<{ userId: string; username: string; chipStack: string }> | null>(null);
@@ -161,7 +161,7 @@ export default function GameRoom() {
       // Server says we're not in this game (404, or explicit 'You are not
       // in this game'). This used to fall through silently, leaving the
       // UI rendering stale gameState.myPlayer at the bottom of the table
-      // forever (the 'phantom seat' bug Shaun hit 2026-05-11 — he saw
+      // forever (the 'phantom seat' bug Shaun hit 2026-05-11 ÔÇö he saw
       // himself + no bots even though server-side only the bots were
       // seated). Bounce to lobby instead.
       const notInGame =
@@ -193,20 +193,6 @@ export default function GameRoom() {
     return () => clearInterval(interval);
   }, [gameId, gameState?.status]);
 
-  // WAITING-ROOM POLL: during the lobby/waiting phase, players join in
-  // bursts (especially bot-fill). If a player:joined event misses (socket
-  // race, replication lag), the creator's table looks empty until a
-  // manual refresh. Poll every 2s while status === 'waiting' to catch
-  // anyone we missed via real-time events. Stops as soon as the game
-  // starts so we're back to push-driven updates.
-  useEffect(() => {
-    if (!gameId || !gameState || gameState.status !== 'waiting') return;
-    const interval = setInterval(() => {
-      loadGameState();
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [gameId, gameState?.status]);
-
   useEffect(() => {
     loadGameState(true); // Show loader on initial load only
     
@@ -220,14 +206,6 @@ export default function GameRoom() {
 
     // Join game room. Use the hook helper (not raw emit) so the room
     // is tracked in activeGameRooms and auto-rejoined on reconnect.
-    // The helper does an ack-confirmed join with retries; we hook into
-    // its outcome to force a state refresh once the socket has been
-    // confirmed in the room (catches pushes missed during the race).
-    setJoinAckHandler((joinedGameId, ok) => {
-      if (joinedGameId === gameId && ok) {
-        loadGameState();
-      }
-    });
     joinGameRoom(gameId);
 
     // On reconnect, rejoin room and reload state. The hook already
@@ -239,7 +217,7 @@ export default function GameRoom() {
     };
     socket.on('connect', onReconnect);
 
-    // Instant action event — update everything from socket data directly.
+    // Instant action event ÔÇö update everything from socket data directly.
     //
     // Playtest 2026-05-11 surfaced two UX bugs in this merge path:
     //   (a) "Your turn" alert fired up to 5s late because it was only
@@ -252,11 +230,11 @@ export default function GameRoom() {
     //       compute the new my-state in one place and use it for both.
     socket.on('game:action', (data: any) => {
       // Per-action sound for all players in the room.
-      // - check     → knock-knock
-      // - fold      → soft thud + paper slide
-      // - bet/raise → chip cascade
-      // - call      → two chip clicks
-      // - all-in    → bigger chip cascade (re-use bet sound)
+      // - check     ÔåÆ knock-knock
+      // - fold      ÔåÆ soft thud + paper slide
+      // - bet/raise ÔåÆ chip cascade
+      // - call      ÔåÆ two chip clicks
+      // - all-in    ÔåÆ bigger chip cascade (re-use bet sound)
       switch (data?.action) {
         case 'check': playCheckSound(); break;
         case 'fold':  playFoldSound();  break;
@@ -341,7 +319,7 @@ export default function GameRoom() {
       // Full state refresh handled by game:state broadcast from server
     });
 
-    // Full game state from server. Fire the turn alert here too —
+    // Full game state from server. Fire the turn alert here too ÔÇö
     // game:state pushes can arrive before/instead of game:action when the
     // server broadcasts a fresh personalized state, so without this the
     // alert can still feel laggy. previousTurn.current acts as a 1-trip
@@ -363,7 +341,7 @@ export default function GameRoom() {
     });
 
     socket.on('game:started', () => {
-      loadGameState(); // Initial hand setup — need full load
+      loadGameState(); // Initial hand setup ÔÇö need full load
     });
 
     socket.on('player:joined', () => {
@@ -409,7 +387,7 @@ export default function GameRoom() {
     socket.on('game:fold-win', (data: any) => {
       setFoldWinData(data);
       // Only the winner hears the win chime on fold-win. Folders are
-      // not considered "losers" — they chose to fold.
+      // not considered "losers" ÔÇö they chose to fold.
       try {
         if (data?.winnerId && user?.id && data.winnerId === user.id) {
           playWinSound();
@@ -438,7 +416,7 @@ export default function GameRoom() {
     });
 
     socket.on('game:turn-warning', () => {
-      // Timer warning — no reload needed, frontend timer handles display
+      // Timer warning ÔÇö no reload needed, frontend timer handles display
     });
 
     return () => {
@@ -454,7 +432,6 @@ export default function GameRoom() {
       socket.off('game:new-hand');
       socket.off('game:next-hand-countdown');
       socket.off('game:turn-warning');
-      setJoinAckHandler(null);
       leaveGameRoom(gameId);
     };
   }, [socket, gameId]);
@@ -559,7 +536,7 @@ export default function GameRoom() {
       // game' guard will surface the truth.
       const msg = err.response?.data?.message || 'Failed to leave table';
       setError(msg);
-      // Still navigate — better UX than trapping the user.
+      // Still navigate ÔÇö better UX than trapping the user.
       navigate('/lobby');
     }
   };
@@ -568,10 +545,10 @@ export default function GameRoom() {
     if (!card || !card.rank || !card.suit) return '??';
     
     const suitSymbols: Record<string, string> = {
-      hearts: '♥',
-      diamonds: '♦',
-      clubs: '♣',
-      spades: '♠',
+      hearts: 'ÔÖÑ',
+      diamonds: 'ÔÖª',
+      clubs: 'ÔÖú',
+      spades: 'ÔÖá',
     };
     
     const suitColors: Record<string, string> = {
@@ -703,10 +680,9 @@ export default function GameRoom() {
 
   return (
     <div className="min-h-screen" style={{background:'#262626'}}>
-      {/* Top padding bumped 2026-05-13 15:00 — top-centre seats anchored
-          at felt rail y=8% render their meta column ABOVE that line, and
-          at 8-handed the top row was getting cut off by the page header.
-          Shaun: "the entire table needs to move south". */}
+      {/* Top padding 2026-05-13: top-centre seats anchored at felt rail
+          y=8% render their meta column ABOVE that line; at 8-handed the
+          top row was getting cut off by the page header. */}
       <div className="max-w-6xl mx-auto px-2 sm:px-4 pt-24 sm:pt-28 pb-2 sm:pb-4">
         {/* Header */}
         <div className="flex justify-between items-center mb-3 sm:mb-4">
@@ -739,7 +715,7 @@ export default function GameRoom() {
         {gameState.status === 'waiting' && (
           <div className="mb-6 rounded-xl p-6 border" style={{background:'rgba(18,206,236,0.06)', borderColor:'rgba(18,206,236,0.2)'}}>
             <h2 className="text-2xl font-bold text-white text-center mb-4">
-              ⏳ Waiting for Players... ({gameState.playerCount || 1}/9)
+              ÔÅ│ Waiting for Players... ({gameState.playerCount || 1}/9)
             </h2>
             
             {/* Show different UI for creator vs other players */}
@@ -780,7 +756,7 @@ export default function GameRoom() {
               // Other players view
               <>
                 <p className="text-gray-300 text-center mb-4 text-lg">
-                  🕐 Waiting for host to start the game...
+                  ­ƒòÉ Waiting for host to start the game...
                 </p>
                 <p className="text-yellow-400 text-center text-sm">
                   Game will auto-start in 2 minutes
@@ -802,7 +778,7 @@ export default function GameRoom() {
           />
         )}
 
-        {/* Poker Table — mobile portrait gets a custom stacked layout
+        {/* Poker Table ÔÇö mobile portrait gets a custom stacked layout
             (PokerTableMobile); everything else gets the oval (PokerTable).
             DealAnimation overlay only mounts for the oval since the mobile
             stacked layout has its own dealing presentation. */}
@@ -949,7 +925,7 @@ export default function GameRoom() {
                 {/* Header */}
                 <div className="flex justify-between items-center mb-5">
                   <h2 className="text-lg font-bold text-white">{verb}</h2>
-                  <button onClick={() => setShowRaiseModal(false)} className="text-gray-500 hover:text-white transition text-xl">×</button>
+                  <button onClick={() => setShowRaiseModal(false)} className="text-gray-500 hover:text-white transition text-xl">├ù</button>
                 </div>
 
                 {/* Amount display */}
@@ -978,12 +954,12 @@ export default function GameRoom() {
                   </div>
                 </div>
 
-                {/* Quick buttons — sized off the POT, not the stack.
+                {/* Quick buttons ÔÇö sized off the POT, not the stack.
                     'All In' is the exception and snaps to remaining stack. */}
                 <div className="grid grid-cols-4 gap-2 mb-2">
                   {[
-                    { label: '½ pot', pct: 0.5 },
-                    { label: '¾ pot', pct: 0.75 },
+                    { label: '┬¢ pot', pct: 0.5 },
+                    { label: '┬¥ pot', pct: 0.75 },
                     { label: 'Pot',  pct: 1.0 },
                   ].map(({ label, pct }) => (
                     <button
@@ -1003,7 +979,7 @@ export default function GameRoom() {
                     All In
                   </button>
                 </div>
-                <p className="text-[10px] text-gray-600 mb-5 text-center">Pot: {pot.toFixed(2)} · Stack: {stack.toFixed(2)}</p>
+                <p className="text-[10px] text-gray-600 mb-5 text-center">Pot: {pot.toFixed(2)} ┬À Stack: {stack.toFixed(2)}</p>
 
                 {/* Manual input */}
                 <div className="mb-5">
@@ -1042,11 +1018,11 @@ export default function GameRoom() {
           );
         })()}
 
-      {/* Fold Win Display — same style as showdown modal */}
+      {/* Fold Win Display ÔÇö same style as showdown modal */}
       {foldWinData && !showdownData && audioPrefs.popups && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-white/10" style={{background:'#262626'}}>
-            {/* Header — matches showdown modal */}
+            {/* Header ÔÇö matches showdown modal */}
             <div className="p-5" style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}>
               <h2 className="text-2xl font-bold text-center text-white">HAND COMPLETE</h2>
             </div>
