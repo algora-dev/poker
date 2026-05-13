@@ -12,7 +12,7 @@ import { computeSeatPositionsForViewport } from '../utils/seatLayout';
 import { PokerTableMobile } from '../components/PokerTableMobile';
 import { TurnTimer } from '../components/TurnTimer';
 import { AudioToggle } from '../components/AudioToggle';
-import { playCheckSound } from '../utils/gameAudio';
+import { playCheckSound, playFoldSound, playBetSound, playCallSound, playWinSound, playLoseSound } from '../utils/gameAudio';
 import { getAudioPrefs, subscribeAudioPrefs } from '../utils/audioPreferences';
 
 interface PlayerInfo {
@@ -65,6 +65,10 @@ export default function GameRoom() {
   const [foldWinData, setFoldWinData] = useState<any>(null);
   const [nextHandCountdown, setNextHandCountdown] = useState<number | null>(null);
   const previousTurn = useRef<boolean>(false);
+  // Track previous "eliminated" state for the local user so we play the
+  // lose chime exactly once when they bust. Initialised null so the
+  // initial state-load isn't treated as a transition.
+  const wasEliminatedRef = useRef<boolean | null>(null);
   // Counter incremented on every game:new-hand. DealAnimation watches this
   // to (re)trigger the card-flick animation + per-card sound.
   const [dealTrigger, setDealTrigger] = useState<number>(0);
@@ -73,6 +77,18 @@ export default function GameRoom() {
   // future hands until re-enabled).
   const [audioPrefs, setAudioPrefs] = useState(() => getAudioPrefs());
   useEffect(() => subscribeAudioPrefs(setAudioPrefs), []);
+
+  // Play the lose chime when the local user becomes eliminated
+  // (chip stack hits 0, can no longer play). Fires once per elimination.
+  useEffect(() => {
+    const isEliminated = gameState?.myPlayer?.position === 'eliminated';
+    if (wasEliminatedRef.current === false && isEliminated) {
+      try { playLoseSound(); } catch { /* ignore */ }
+    }
+    if (isEliminated !== undefined) {
+      wasEliminatedRef.current = isEliminated;
+    }
+  }, [gameState?.myPlayer?.position]);
   // When the user disables popups mid-hand, clear any currently-open
   // hand-result modals so the table is immediately usable.
   useEffect(() => {
@@ -213,7 +229,20 @@ export default function GameRoom() {
     //       didn't apply atomically with the alert-firing block; we now
     //       compute the new my-state in one place and use it for both.
     socket.on('game:action', (data: any) => {
-      if (data?.action === 'check') playCheckSound();
+      // Per-action sound for all players in the room.
+      // - check     → knock-knock
+      // - fold      → soft thud + paper slide
+      // - bet/raise → chip cascade
+      // - call      → two chip clicks
+      // - all-in    → bigger chip cascade (re-use bet sound)
+      switch (data?.action) {
+        case 'check': playCheckSound(); break;
+        case 'fold':  playFoldSound();  break;
+        case 'bet':
+        case 'raise':
+        case 'all-in': playBetSound(); break;
+        case 'call':  playCallSound();  break;
+      }
 
       let firedTurnAlert = false;
       setGameState(prev => {
@@ -328,10 +357,30 @@ export default function GameRoom() {
 
     socket.on('game:showdown', (data: any) => {
       setShowdownData(data);
+      // Win sound for the winner(s); lose sound for any non-winner who
+      // reached showdown (so the rest of the table who already folded
+      // earlier in the hand don't get a lose chime).
+      try {
+        const winnerIds: string[] = Array.isArray(data?.winnerIds) ? data.winnerIds : [];
+        const myId = user?.id;
+        if (myId && winnerIds.includes(myId)) {
+          playWinSound();
+        } else if (myId && Array.isArray(data?.players)) {
+          const meAtShowdown = data.players.some((p: any) => p.userId === myId);
+          if (meAtShowdown) playLoseSound();
+        }
+      } catch { /* ignore */ }
     });
 
     socket.on('game:fold-win', (data: any) => {
       setFoldWinData(data);
+      // Only the winner hears the win chime on fold-win. Folders are
+      // not considered "losers" — they chose to fold.
+      try {
+        if (data?.winnerId && user?.id && data.winnerId === user.id) {
+          playWinSound();
+        }
+      } catch { /* ignore */ }
     });
 
     socket.on('game:next-hand-countdown', (data: any) => {

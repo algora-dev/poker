@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { playDealSound } from '../utils/sounds';
+import { playDealSlideSound } from '../utils/gameAudio';
 
 interface DealPlayer {
   seatIndex: number;
@@ -39,9 +39,15 @@ interface Props {
 }
 
 const PASSES = 2;
-const PER_CARD_MS = 90;          // gap between successive card emits
-const FLIGHT_MS = 280;           // animated travel time
-const CLEAR_AFTER_MS = (n: number) => PASSES * n * PER_CARD_MS + FLIGHT_MS + 200;
+// Pre-roll: brief pause AFTER `game:new-hand` fires before the first
+// card flies. Without this the animation often started before the new
+// game-state had arrived, so cards appeared to fly to the previous
+// hand's seat layout. 600ms is comfortable poker pacing.
+const PRE_ROLL_MS = 600;
+const PER_CARD_MS = 110;         // gap between successive card emits (slowed slightly)
+const FLIGHT_MS = 320;           // animated travel time
+const CLEAR_AFTER_MS = (n: number) =>
+  PRE_ROLL_MS + PASSES * n * PER_CARD_MS + FLIGHT_MS + 200;
 
 interface Flight {
   id: number;
@@ -89,7 +95,7 @@ export function DealAnimation({
         flightsArr.push({
           id: id++,
           seatIndex: rotated[i],
-          delayMs: (pass * rotated.length + i) * PER_CARD_MS,
+          delayMs: PRE_ROLL_MS + (pass * rotated.length + i) * PER_CARD_MS,
           variant: id,
         });
       }
@@ -97,12 +103,12 @@ export function DealAnimation({
 
     setFlights(flightsArr);
 
-    // Fire deal sounds on each card's delay.
+    // Fire deal-slide sounds on each card's delay.
     const soundTimers: ReturnType<typeof setTimeout>[] = [];
     for (const f of flightsArr) {
       soundTimers.push(
         setTimeout(() => {
-          try { playDealSound(f.variant); } catch { /* audio not ready */ }
+          try { playDealSlideSound(f.variant); } catch { /* audio not ready */ }
         }, f.delayMs)
       );
     }

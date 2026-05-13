@@ -289,14 +289,17 @@ export function PokerTable({
     showdown: 'Showdown', completed: 'Complete', waiting: 'Waiting',
   };
 
-  // Aspect ratio of the table felt area. On wider viewports a 2:1
-  // (wide oval) reads as a real poker table. On narrow viewports a
-  // taller ratio (1.2:1) gives the player rail room to breathe.
+  // Aspect ratio of the table felt area. Tuned so the bottom seat's
+  // avatar + name plate + YOUR hole cards have enough vertical room
+  // before the action bar (Shaun 2026-05-13: cards were being covered
+  // by the buttons). The seat-layout math (utils/seatLayout.ts) now uses
+  // a flatter oval (ay~22) so the bottom seat anchor sits at y≈70% of
+  // wrapper height, leaving ~30% (≈ plate + large hero hole cards) below.
   const tableAspect = vp.isMobile
-    ? '60%'     // 1 : 1.67 (taller felt, helps narrow widths)
+    ? '70%'
     : vp.isTablet
-      ? '50%'   // 2 : 1
-      : '42%';  // 2.4 : 1 (wide felt on desktop)
+      ? '55%'
+      : '48%';
 
   return (
     <div
@@ -539,7 +542,7 @@ export function PokerTable({
         <div
           className={vp.isMobile
             ? 'fixed bottom-0 inset-x-0 z-20 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2'
-            : 'absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-full pt-6 z-20'}
+            : 'absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-full pt-10 z-20'}
           style={vp.isMobile ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' } : {}}
         >
           <div

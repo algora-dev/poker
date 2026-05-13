@@ -82,16 +82,23 @@ export function computeSeatPositions(
 
   // Parametric oval, parameterized by t in [0..1).
   //   i=0       → t=0       → bottom-centre (local player)
-  //   i=n/4    → t=0.25    → right (in CSS coords)
+  //   i=n/4    → t=0.25    → LEFT (in CSS coords)
   //   i=n/2    → t=0.5     → top-centre (player opposite)
-  //   i=3n/4   → t=0.75    → left
+  //   i=3n/4   → t=0.75    → RIGHT
   //
-  // This direction (clockwise around the screen) matches real poker
-  // flow: after the dealer button, action goes clockwise so the next
-  // seat in `seats` (after rotating so you're first) sits to your right.
+  // Direction = CLOCKWISE on screen, matching real poker action flow:
+  // backend turn order increments seatIndex (after rotating you to first,
+  // the next seat sits to your LEFT). Watching from above:
+  //   bottom → left → top → right → back to bottom
+  // is the same direction a wall clock's hands sweep when read normally,
+  // so the table appears clockwise from the viewer's perspective.
+  //
+  // (Earlier version 2026-05-13 wrote x = cx + ax*sin(...), which placed
+  // seat 1 on the RIGHT — reversed for the viewer and showed action as
+  // anti-clockwise. Reported by Shaun in playtest-3 screenshot.)
   //
   // Formulas:
-  //   x = cx + ax*sin(2*PI*t)          (x grows rightward as t grows)
+  //   x = cx - ax*sin(2*PI*t)          (x grows LEFTward as t grows)
   //   y = cy + ay*cos(2*PI*t)          (y grows downward in CSS;
   //                                    cos(0)=1 → bottom; cos(PI)=-1 → top)
 
@@ -99,7 +106,7 @@ export function computeSeatPositions(
     const t = i / n;
     const sx = Math.sin(2 * Math.PI * t);
     const cy_ = Math.cos(2 * Math.PI * t);
-    let x = cx + ax * sx;
+    let x = cx - ax * sx;
     let y = cy + ay * cy_;
 
     // Bottom-bias: when this seat is near the bottom (cy_ > 0), nudge
@@ -111,8 +118,15 @@ export function computeSeatPositions(
 
     // Clamp inside the visible container so absolutely-positioned
     // children with -translate-x/y-50% don't hang off the edge.
+    //
+    // Lower clamp 92 -> 70 (2026-05-13 follow-up): the bottom seat
+    // renders avatar + name plate + YOUR (large) hole cards downward
+    // from the seat anchor. The whole stack is ~30% of typical wrapper
+    // height, so anchoring at 70 leaves the cards visible above the
+    // action bar without spilling out. Top clamp loosened to 6 to keep
+    // the top seat from feeling cramped under the page header.
     x = Math.max(6, Math.min(94, x));
-    y = Math.max(8, Math.min(92, y));
+    y = Math.max(6, Math.min(70, y));
 
     out.push({
       seatIndex: rotated[i],
@@ -139,24 +153,27 @@ export function computeSeatPositionsForViewport(
   breakpoint: 'mobile-portrait' | 'mobile-landscape' | 'tablet' | 'desktop'
 ): SeatPos[] {
   switch (breakpoint) {
+    // ax/ay tuned to keep the oval narrow vertically (so the bottom
+    // seat's avatar + plate + hero hole cards fit between the seat
+    // anchor and the action bar). Tested 2-8 handed across breakpoints.
     case 'mobile-portrait':
       // Not used (PokerTableMobile renders a stacked layout). Provided
       // as a fallback so the oval still renders if forced on portrait.
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 38, ay: 36, bottomBias: 0.12,
+        ax: 38, ay: 22, bottomBias: 0.0,
       });
     case 'mobile-landscape':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 42, ay: 36, bottomBias: 0.10,
+        ax: 42, ay: 20, bottomBias: 0.0,
       });
     case 'tablet':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 44, ay: 37, bottomBias: 0.09,
+        ax: 44, ay: 21, bottomBias: 0.0,
       });
     case 'desktop':
     default:
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 46, ay: 39, bottomBias: 0.08,
+        ax: 46, ay: 22, bottomBias: 0.0,
       });
   }
 }
