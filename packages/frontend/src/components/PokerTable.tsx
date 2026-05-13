@@ -556,12 +556,24 @@ export function PokerTable({
           layoutMode === 'bottom' ? 'absolute transform -translate-x-1/2 z-10' :
                                     'absolute transform -translate-x-1/2 -translate-y-1/2 z-10';
 
-        // Override top/bottom CENTRE seat Y so the row sits AT the felt
-        // rail. Side seats (corners, true left/right) keep their
-        // math-derived Y.
+        // Override Y position to anchor seats AT the felt rails.
+        //   top centre   → row's BOTTOM at y=8%   (cards + meta float
+        //                                            ABOVE the felt edge)
+        //   bottom centre→ row's TOP at y=92%      (meta + cards float
+        //                                            BELOW the felt edge)
+        //   south corner → avatar TOP at felt rail (~85%): pos.top=88%
+        //   north corner → avatar BOTTOM at felt rail (~15%): pos.top=15%
+        //   true sides   → keep math-derived Y
+        //
+        // Shaun playtest 2026-05-13 16:00: "SE/SW players' PFP should
+        // barely be on the table, like my player."
+        const isCornerSouth = layoutMode === 'side' && yNum > 60 && !isCentreColumn;
+        const isCornerNorth = layoutMode === 'side' && yNum < 40 && !isCentreColumn;
         const finalTop =
           layoutMode === 'top'    ? '8%' :
           layoutMode === 'bottom' ? '92%' :
+          isCornerSouth           ? '88%' :
+          isCornerNorth           ? '15%' :
                                     pos.top;
 
         const innerClass = layoutMode === 'side'

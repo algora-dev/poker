@@ -254,3 +254,95 @@ logger.info('Turn timer enabled', {
   warningMs: TURN_WARNING_MS,
   tickMs: TURN_TICK_MS,
 });
+
+/**
+ * Between-hands watchdog.
+ *
+ * The action endpoint schedules `setTimeout(initializeHand, 3-5s)` after
+ * a hand completes (fold-win or showdown). That setTimeout is in-process
+ * and can be LOST when:
+ *   - Railway recycles the dyno
+ *   - initializeHand throws (we log the error but do not retry)
+ *   - The HTTP request was cancelled mid-flight
+ *
+ * When that happens the game wedges: no active hand, no new hand starts,
+ * everyone stares at a "WAITING" pot until the 120s stale-cleanup nukes
+ * the table (Shaun playtest 2026-05-13 16:00).
+ *
+ * This watchdog runs every 5s, finds in_progress games whose latest
+ * hand is COMPLETED and whose completion was >10s ago, and kicks off
+ * the next hand. 10s is enough to clear the normal 3-5s between-hand
+ * countdown plus a safety margin so we don't race the happy path.
+ */
+const HAND_WATCHDOG_GRACE_MS = 10_000;
+const HAND_WATCHDOG_TICK_MS = 5_000;
+
+async function watchdogResumeBetweenHands() {
+  try {
+    const games = await prisma.game.findMany({
+      where: { status: 'in_progress' },
+      include: {
+        hands: {
+          orderBy: { handNumber: 'desc' as const },
+          take: 1,
+          select: { id: true, stage: true, completedAt: true, createdAt: true },
+        },
+        players: { select: { id: true, position: true, chipStack: true } },
+      },
+    });
+
+    const nowMs = Date.now();
+    for (const game of games) {
+      const latest = game.hands[0];
+      if (!latest) continue; // hand 0 path handled by initial start flow
+      if (latest.stage !== 'completed') continue; // hand still in flight
+      const completedAt = latest.completedAt ?? latest.createdAt;
+      if (!completedAt) continue;
+      const idleMs = nowMs - new Date(completedAt).getTime();
+      if (idleMs < HAND_WATCHDOG_GRACE_MS) continue;
+
+      // Need at least 2 players with chips to deal the next hand.
+      const playable = game.players.filter(
+        p => p.position !== 'eliminated' && BigInt(p.chipStack) > 0n
+      );
+      if (playable.length < 2) continue; // stale-cleanup will handle
+
+      // No active hand AND we are past the grace window. The happy-path
+      // setTimeout in /:id/action either fired and failed, or never fired.
+      // Either way, take over.
+      try {
+        const { initializeHand } = await import('../services/holdemGame');
+        await initializeHand(game.id);
+        // Re-fetch player ids for the personalised state broadcast.
+        const gp = await prisma.game.findUnique({
+          where: { id: game.id },
+          select: { players: { select: { userId: true } } },
+        });
+        emitGameEvent(game.id, 'game:new-hand', { gameId: game.id });
+        broadcastGameState(game.id, gp?.players.map(p => p.userId) ?? [])
+          .catch(() => { /* non-fatal */ });
+        logger.warn('Between-hands watchdog started next hand (happy-path setTimeout missed)', {
+          gameId: game.id,
+          lastHandId: latest.id,
+          idleSeconds: Math.round(idleMs / 1000),
+        });
+      } catch (err) {
+        logger.error('Between-hands watchdog failed to start next hand', {
+          gameId: game.id,
+          lastHandId: latest.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  } catch (err) {
+    logger.error('Between-hands watchdog tick failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+setInterval(watchdogResumeBetweenHands, HAND_WATCHDOG_TICK_MS);
+logger.info('Between-hands watchdog enabled', {
+  tickMs: HAND_WATCHDOG_TICK_MS,
+  graceMs: HAND_WATCHDOG_GRACE_MS,
+});
