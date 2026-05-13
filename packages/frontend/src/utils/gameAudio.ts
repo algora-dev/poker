@@ -55,8 +55,17 @@ export function playDealSlideSound(variant = 0) {
 }
 
 /**
- * Soft thud + paper sliding: fold sound. Heard by everyone at the table
- * when any player folds.
+ * Fold sound — "bump buuuuum" comedic two-beat trumpet-sad-trombone.
+ * Heard by everyone at the table when any player folds.
+ *
+ * Shaun playtest 2026-05-13 14:35: previous "thud + paper slide" was too
+ * serious; folds should feel like the sad-trombone meme.
+ *
+ * Composition:
+ *   - Beat 1 "bump"   : short G3 sawtooth blip, ~120ms
+ *   - Beat 2 "buuuum" : sustained descending E3 → B2 sawtooth slide, ~600ms,
+ *                       through a low-pass filter for the muffled brass
+ *                       feel of a real wah-wah trombone
  */
 export function playFoldSound() {
   try {
@@ -64,38 +73,65 @@ export function playFoldSound() {
     const ctx = getCtx();
     const now = ctx.currentTime;
 
-    // Low thud (cards hitting felt)
-    const osc = ctx.createOscillator();
-    const oGain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(180, now);
-    osc.frequency.exponentialRampToValueAtTime(90, now + 0.10);
-    oGain.gain.setValueAtTime(0.25, now);
-    oGain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
-    osc.connect(oGain);
-    oGain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.15);
+    // — Beat 1 "bump" — short low blip
+    {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 1200;
+      filter.Q.value = 0.6;
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(196, now);          // G3
+      osc.frequency.exponentialRampToValueAtTime(165, now + 0.13); // → E3
+      gain.gain.setValueAtTime(0.0, now);
+      gain.gain.linearRampToValueAtTime(0.18, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.15);
+    }
 
-    // Brief noise tail (paper slide)
-    const bSize = Math.floor(ctx.sampleRate * 0.08);
-    const b = ctx.createBuffer(1, bSize, ctx.sampleRate);
-    const d = b.getChannelData(0);
-    for (let i = 0; i < bSize; i++) d[i] = (Math.random() * 2 - 1) * 0.4;
-    const n = ctx.createBufferSource();
-    n.buffer = b;
-    const nf = ctx.createBiquadFilter();
-    nf.type = 'lowpass';
-    nf.frequency.value = 1500;
-    const nGain = ctx.createGain();
-    nGain.gain.setValueAtTime(0.0, now + 0.04);
-    nGain.gain.linearRampToValueAtTime(0.10, now + 0.05);
-    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-    n.connect(nf);
-    nf.connect(nGain);
-    nGain.connect(ctx.destination);
-    n.start(now + 0.04);
-    n.stop(now + 0.13);
+    // — Beat 2 "buuuuum" — sustained descending wah
+    {
+      const t0 = now + 0.18;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(1400, t0);
+      // Sweep the filter down to give the "wah" mute-trombone closing.
+      filter.frequency.exponentialRampToValueAtTime(450, t0 + 0.55);
+      filter.Q.value = 4.0;
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(165, t0);            // E3
+      // Slow droop down to B2 over 0.55s, then a final sad dip to A2.
+      osc.frequency.linearRampToValueAtTime(123, t0 + 0.45);  // B2
+      osc.frequency.linearRampToValueAtTime(110, t0 + 0.60);  // A2
+      gain.gain.setValueAtTime(0.0, t0);
+      gain.gain.linearRampToValueAtTime(0.22, t0 + 0.04);
+      // Hold then release.
+      gain.gain.setValueAtTime(0.22, t0 + 0.40);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.65);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.66);
+
+      // Soft vibrato LFO on the gain for that "wah-wah" warble.
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      lfo.type = 'sine';
+      lfo.frequency.value = 5.5;
+      lfoGain.gain.value = 0.04;
+      lfo.connect(lfoGain);
+      lfoGain.connect(gain.gain);
+      lfo.start(t0);
+      lfo.stop(t0 + 0.66);
+    }
   } catch (_) {}
 }
 

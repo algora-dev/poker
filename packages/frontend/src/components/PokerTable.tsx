@@ -153,8 +153,13 @@ function CardBack({ small, large, sizeClass }: { small?: boolean; large?: boolea
   return (
     <div className={`relative rounded-md shadow-md overflow-hidden border border-blue-800 ${w}`}>
       <div className="absolute inset-0 bg-gradient-to-br from-blue-800 to-blue-950" />
-      <div className="absolute inset-0.5 rounded border border-blue-600/30 flex items-center justify-center">
-        <div className="text-blue-400/50 text-sm">✦</div>
+      <div className="absolute inset-0.5 rounded border border-blue-600/30 flex items-center justify-center p-1">
+        <img
+          src="/assets/t3-logo-white.png"
+          alt=""
+          className="w-3/5 h-3/5 object-contain opacity-80"
+          draggable={false}
+        />
       </div>
     </div>
   );
@@ -225,8 +230,8 @@ export function PokerTable({
         cardLargeW: 'w-9 h-[54px]',
         cardBoardW: 'w-7 h-[42px]',
         positionBadge: 'w-4 h-4 text-[8px]',
-        chipGlyph: 'w-3 h-3',
-        betText: 'text-[10px]',
+        chipGlyph: 'w-5 h-5',
+        betText: 'text-[11px]',
       };
     }
     if (vp.isMobileLandscape) {
@@ -242,8 +247,8 @@ export function PokerTable({
         cardLargeW: 'w-10 h-[60px]',
         cardBoardW: 'w-8 h-[48px]',
         positionBadge: 'w-5 h-5 text-[9px]',
-        chipGlyph: 'w-3.5 h-3.5',
-        betText: 'text-[11px]',
+        chipGlyph: 'w-6 h-6',
+        betText: 'text-xs',
       };
     }
     if (vp.isTablet) {
@@ -259,7 +264,7 @@ export function PokerTable({
         cardLargeW: 'w-12 h-[72px]',
         cardBoardW: 'w-10 h-[60px]',
         positionBadge: 'w-6 h-6 text-[10px]',
-        chipGlyph: 'w-4 h-4',
+        chipGlyph: 'w-7 h-7',
         betText: 'text-sm',
       };
     }
@@ -276,7 +281,7 @@ export function PokerTable({
       cardLargeW: 'w-[72px] h-[102px]',
       cardBoardW: 'w-12 h-[68px]',
       positionBadge: 'w-7 h-7 text-[10px]',
-      chipGlyph: 'w-5 h-5',
+      chipGlyph: 'w-8 h-8',
       betText: 'text-base',
     };
   })();
@@ -352,7 +357,7 @@ export function PokerTable({
           <div className="mb-2 flex flex-col items-center gap-1">
             {/* Main pot */}
             <div className={`bg-black/50 backdrop-blur-sm rounded-full ${vp.isMobile ? 'px-3 py-1' : 'px-5 py-1.5'} inline-flex items-center gap-2`}>
-              <img src="/assets/musd-chip.png" alt="" className={vp.isMobile ? 'w-4 h-4' : 'w-6 h-6'} />
+              <img src="/assets/musd-chip.png" alt="" className={vp.isMobile ? 'w-7 h-7' : 'w-10 h-10'} />
               <span className={`text-white font-bold ${vp.isMobile ? 'text-sm' : 'text-xl'}`}>{formatChips(pot)}</span>
               <span className="text-gray-400 text-[10px] uppercase tracking-wider ml-1">{stageLabel[stage] || stage}</span>
             </div>
@@ -360,7 +365,7 @@ export function PokerTable({
             {/* Side pot indicator — shows when any player is all-in */}
             {allPlayers.some(p => p.position === 'all_in') && parseInt(pot) > 0 && (
               <div className="flex items-center gap-1.5 bg-black/40 rounded-full px-3 py-1">
-                <img src="/assets/musd-chip.png" alt="" className="w-3 h-3 opacity-70" />
+                <img src="/assets/musd-chip.png" alt="" className="w-5 h-5 opacity-70" />
                 <span className="text-[10px] font-medium" style={{color:'#9c51ff'}}>Side pot active</span>
               </div>
             )}

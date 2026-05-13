@@ -96,8 +96,13 @@ function MiniCardBack() {
   return (
     <div className="relative rounded-md shadow-md overflow-hidden border border-blue-800 w-6 h-[36px]">
       <div className="absolute inset-0 bg-gradient-to-br from-blue-800 to-blue-950" />
-      <div className="absolute inset-0.5 rounded border border-blue-600/30 flex items-center justify-center">
-        <div className="text-blue-400/50 text-[10px]">✦</div>
+      <div className="absolute inset-0.5 rounded border border-blue-600/30 flex items-center justify-center p-0.5">
+        <img
+          src="/assets/t3-logo-white.png"
+          alt=""
+          className="w-3/5 h-3/5 object-contain opacity-80"
+          draggable={false}
+        />
       </div>
     </div>
   );

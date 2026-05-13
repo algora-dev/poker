@@ -156,26 +156,29 @@ export function computeSeatPositionsForViewport(
   breakpoint: 'mobile-portrait' | 'mobile-landscape' | 'tablet' | 'desktop'
 ): SeatPos[] {
   switch (breakpoint) {
-    // ax/ay tuned for the horizontal-row layout (PokerTable renders top
-    // and bottom seats as horizontal [cards][meta] / [meta][cards] rows,
-    // so they don't grow vertically into the pot/board area). We can
-    // therefore use a normal oval (ay≈38) again.
+    // ax/ay tuned for the horizontal-row layout (top/bottom rows extend
+    // sideways, side seats stack vertically). At 6+ handed the corner
+    // seats (t ≈ 0.125, 0.375, 0.625, 0.875) sit at ~45° around the oval
+    // — with the wrapper much wider than tall (wide oval), these end up
+    // visually OUTSIDE the felt rail. Shaun playtest 2026-05-13 14:35:
+    // "NE/SE/SW/NW players need to be pushed closer to the table".
+    // Tighter ax (smaller horizontal radius) pulls corners inward.
     case 'mobile-portrait':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 38, ay: 36, bottomBias: 0.0,
+        ax: 30, ay: 36, bottomBias: 0.0,
       });
     case 'mobile-landscape':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 42, ay: 34, bottomBias: 0.0,
+        ax: 34, ay: 34, bottomBias: 0.0,
       });
     case 'tablet':
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 44, ay: 36, bottomBias: 0.0,
+        ax: 36, ay: 36, bottomBias: 0.0,
       });
     case 'desktop':
     default:
       return computeSeatPositions(seats, mySeatIndex, {
-        ax: 46, ay: 38, bottomBias: 0.0,
+        ax: 38, ay: 38, bottomBias: 0.0,
       });
   }
 }
