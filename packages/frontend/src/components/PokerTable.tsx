@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getAvatarSrc } from '../utils/avatars';
+import { useViewport } from '../hooks/useViewport';
+import { computeSeatPositionsForViewport, type SeatPos } from '../utils/seatLayout';
 
 interface Player {
   userId: string;
@@ -104,22 +106,28 @@ const SUIT_COLORS: Record<string, string> = {
   clubs: 'text-gray-900', spades: 'text-gray-900',
 };
 
-function CardFace({ card, small, large }: { card: any; small?: boolean; large?: boolean }) {
+function CardFace({ card, small, large, sizeClass }: { card: any; small?: boolean; large?: boolean; sizeClass?: string }) {
   const suit = card.suit as string;
   const rank = card.rank as string;
   const symbol = SUIT_SYMBOLS[suit] || '?';
   const color = SUIT_COLORS[suit] || 'text-gray-900';
-  // Playtest 2026-05-11: enlarge YOUR hole cards ~50% so they're easy to
-  // read at a glance. Opponent backs stay `small`. Default keeps the
-  // previous size for board cards.
-  const w = large
-    ? 'w-14 sm:w-[72px] h-[84px] sm:h-[102px]'
-    : small
-      ? 'w-9 h-[52px]'
-      : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
-  const rankSize = large ? 'text-base sm:text-lg font-bold' : 'text-[10px] sm:text-[11px] font-bold';
-  const suitSmallSize = large ? 'text-base sm:text-lg' : 'text-[11px] sm:text-xs';
-  const suitBigSize = large ? 'text-3xl sm:text-4xl' : 'text-lg sm:text-2xl';
+  // sizeClass overrides any small/large hint (used by PokerTable's
+  // viewport-aware sizing). small/large kept for back-compat callers
+  // (ShowdownModal etc.).
+  const w = sizeClass
+    ? sizeClass
+    : large
+      ? 'w-14 sm:w-[72px] h-[84px] sm:h-[102px]'
+      : small
+        ? 'w-9 h-[52px]'
+        : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
+  // Heuristic: derive label sizes from width hint. Very narrow cards
+  // (mobile) get tiny labels; wide cards (desktop large) get bigger.
+  const isNarrow = /w-(6|7|8|9)\s|w-6$|w-7$|w-8$|w-9$/.test(w);
+  const isWide = /w-\[72px\]|w-14|w-12 /.test(w);
+  const rankSize = isWide ? 'text-base font-bold' : isNarrow ? 'text-[8px] font-bold' : 'text-[10px] font-bold';
+  const suitSmallSize = isWide ? 'text-base' : isNarrow ? 'text-[9px]' : 'text-xs';
+  const suitBigSize = isWide ? 'text-3xl' : isNarrow ? 'text-base' : 'text-xl';
 
   return (
     <div className={`relative bg-white rounded-md shadow-md select-none border border-gray-200 overflow-hidden ${w}`}>
@@ -134,12 +142,14 @@ function CardFace({ card, small, large }: { card: any; small?: boolean; large?: 
   );
 }
 
-function CardBack({ small, large }: { small?: boolean; large?: boolean }) {
-  const w = large
-    ? 'w-14 sm:w-[72px] h-[84px] sm:h-[102px]'
-    : small
-      ? 'w-9 h-[52px]'
-      : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
+function CardBack({ small, large, sizeClass }: { small?: boolean; large?: boolean; sizeClass?: string }) {
+  const w = sizeClass
+    ? sizeClass
+    : large
+      ? 'w-14 sm:w-[72px] h-[84px] sm:h-[102px]'
+      : small
+        ? 'w-9 h-[52px]'
+        : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
   return (
     <div className={`relative rounded-md shadow-md overflow-hidden border border-blue-800 ${w}`}>
       <div className="absolute inset-0 bg-gradient-to-br from-blue-800 to-blue-950" />
@@ -177,6 +187,7 @@ export function PokerTable({
   actionLoading,
 }: PokerTableProps) {
   const allPlayers = [myPlayer, ...opponents];
+  const vp = useViewport();
 
   // Build the seat lookup BEFORE computing layout so the layout uses the
   // actual occupied seat indices (not a 0..N-1 dense assumption).
@@ -185,7 +196,90 @@ export function PokerTable({
     seatToPlayer.set(p.seatIndex, p);
   }
   const occupiedSeats = Array.from(seatToPlayer.keys());
-  const seatLayout = getRelativeSeatPositions(myPlayer.seatIndex, occupiedSeats);
+
+  // Dynamic seat positions: evenly distributed around an oval whose
+  // radii adapt to the viewport breakpoint. Replaces the old static
+  // 9-slot SEAT_POSITIONS array which left big visual gaps at 2-4
+  // handed and broke at narrow viewports.
+  const seatLayout: SeatPos[] = computeSeatPositionsForViewport(
+    occupiedSeats,
+    myPlayer.seatIndex,
+    vp.breakpoint
+  );
+
+  // Card + chip-badge sizing scales with viewport. Single source of
+  // truth so the whole table stays visually proportional. (Tailwind
+  // sm: classes are insufficient because the table is bounded by its
+  // own max-w container, not the viewport directly.)
+  const sizing = (() => {
+    if (vp.isMobilePortrait) {
+      return {
+        avatar: 'w-10 h-10',
+        avatarText: 'text-xs',
+        plateMinW: 'min-w-[80px]',
+        plateMaxW: 'max-w-[90px]',
+        plateName: 'text-[10px]',
+        plateChips: 'text-[10px]',
+        plateStatus: 'text-[8px]',
+        cardSmallW: 'w-6 h-[36px]',
+        cardLargeW: 'w-9 h-[54px]',
+        cardBoardW: 'w-7 h-[42px]',
+        positionBadge: 'w-4 h-4 text-[8px]',
+        chipGlyph: 'w-3 h-3',
+        betText: 'text-[10px]',
+      };
+    }
+    if (vp.isMobileLandscape) {
+      return {
+        avatar: 'w-10 h-10',
+        avatarText: 'text-xs',
+        plateMinW: 'min-w-[90px]',
+        plateMaxW: 'max-w-[100px]',
+        plateName: 'text-[11px]',
+        plateChips: 'text-[11px]',
+        plateStatus: 'text-[9px]',
+        cardSmallW: 'w-7 h-[42px]',
+        cardLargeW: 'w-10 h-[60px]',
+        cardBoardW: 'w-8 h-[48px]',
+        positionBadge: 'w-5 h-5 text-[9px]',
+        chipGlyph: 'w-3.5 h-3.5',
+        betText: 'text-[11px]',
+      };
+    }
+    if (vp.isTablet) {
+      return {
+        avatar: 'w-12 h-12',
+        avatarText: 'text-sm',
+        plateMinW: 'min-w-[120px]',
+        plateMaxW: 'max-w-[140px]',
+        plateName: 'text-xs',
+        plateChips: 'text-[11px]',
+        plateStatus: 'text-[9px]',
+        cardSmallW: 'w-8 h-[48px]',
+        cardLargeW: 'w-12 h-[72px]',
+        cardBoardW: 'w-10 h-[60px]',
+        positionBadge: 'w-6 h-6 text-[10px]',
+        chipGlyph: 'w-4 h-4',
+        betText: 'text-sm',
+      };
+    }
+    // desktop
+    return {
+      avatar: 'w-16 h-16',
+      avatarText: 'text-lg',
+      plateMinW: 'min-w-[160px]',
+      plateMaxW: 'max-w-[180px]',
+      plateName: 'text-sm',
+      plateChips: 'text-base',
+      plateStatus: 'text-[10px]',
+      cardSmallW: 'w-9 h-[52px]',
+      cardLargeW: 'w-[72px] h-[102px]',
+      cardBoardW: 'w-12 h-[68px]',
+      positionBadge: 'w-7 h-7 text-[10px]',
+      chipGlyph: 'w-5 h-5',
+      betText: 'text-base',
+    };
+  })();
 
 
 
@@ -195,8 +289,24 @@ export function PokerTable({
     showdown: 'Showdown', completed: 'Complete', waiting: 'Waiting',
   };
 
+  // Aspect ratio of the table felt area. On wider viewports a 2:1
+  // (wide oval) reads as a real poker table. On narrow viewports a
+  // taller ratio (1.2:1) gives the player rail room to breathe.
+  const tableAspect = vp.isMobile
+    ? '60%'     // 1 : 1.67 (taller felt, helps narrow widths)
+    : vp.isTablet
+      ? '50%'   // 2 : 1
+      : '42%';  // 2.4 : 1 (wide felt on desktop)
+
   return (
-    <div className="relative w-full mx-auto" style={{ paddingBottom: 'clamp(50%, 40vw, 45%)', maxWidth: '960px', minHeight: '300px' }}>
+    <div
+      className="relative w-full mx-auto"
+      style={{
+        paddingBottom: tableAspect,
+        maxWidth: vp.isDesktop ? '960px' : '100%',
+        minHeight: '260px',
+      }}
+    >
 
       {/* ── Table felt ── */}
       <div className="absolute inset-[5%] rounded-[50%] overflow-hidden"
@@ -218,22 +328,27 @@ export function PokerTable({
              style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'4\' height=\'4\' viewBox=\'0 0 4 4\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M1 3h1v1H1V3zm2-2h1v1H3V1z\' fill=\'%23000000\' fill-opacity=\'0.3\'/%3E%3C/svg%3E")' }}
         />
 
-        {/* T3 logos at ends of table */}
-        <div className="absolute top-1/2 left-[12%] -translate-y-1/2 select-none">
-          <img src="/assets/t3-logo-white.png" alt="T3" className="w-16 h-16 opacity-[0.12]" />
-        </div>
-        <div className="absolute top-1/2 right-[12%] -translate-y-1/2 select-none">
-          <img src="/assets/t3-logo-white.png" alt="T3" className="w-16 h-16 opacity-[0.12]" />
-        </div>
+        {/* T3 logos at ends of table — hidden on small viewports to free
+            up centre space for the pot + board cards. */}
+        {!vp.isMobile && (
+          <>
+            <div className="absolute top-1/2 left-[12%] -translate-y-1/2 select-none">
+              <img src="/assets/t3-logo-white.png" alt="T3" className="w-16 h-16 opacity-[0.12]" />
+            </div>
+            <div className="absolute top-1/2 right-[12%] -translate-y-1/2 select-none">
+              <img src="/assets/t3-logo-white.png" alt="T3" className="w-16 h-16 opacity-[0.12]" />
+            </div>
+          </>
+        )}
 
         {/* ── Center: Pot + Community Cards ── */}
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center">
           {/* Pot display */}
-          <div className="mb-3 flex flex-col items-center gap-1">
+          <div className="mb-2 flex flex-col items-center gap-1">
             {/* Main pot */}
-            <div className="bg-black/50 backdrop-blur-sm rounded-full px-4 sm:px-5 py-1.5 inline-flex items-center gap-2">
-              <img src="/assets/musd-chip.png" alt="" className="w-5 h-5 sm:w-6 sm:h-6" />
-              <span className="text-white text-lg sm:text-xl font-bold">{formatChips(pot)}</span>
+            <div className={`bg-black/50 backdrop-blur-sm rounded-full ${vp.isMobile ? 'px-3 py-1' : 'px-5 py-1.5'} inline-flex items-center gap-2`}>
+              <img src="/assets/musd-chip.png" alt="" className={vp.isMobile ? 'w-4 h-4' : 'w-6 h-6'} />
+              <span className={`text-white font-bold ${vp.isMobile ? 'text-sm' : 'text-xl'}`}>{formatChips(pot)}</span>
               <span className="text-gray-400 text-[10px] uppercase tracking-wider ml-1">{stageLabel[stage] || stage}</span>
             </div>
 
@@ -247,22 +362,22 @@ export function PokerTable({
           </div>
 
           {/* Community Cards */}
-          <div className="flex gap-1 sm:gap-2 justify-center">
+          <div className={`flex ${vp.isMobile ? 'gap-1' : 'gap-2'} justify-center`}>
             {board.length === 0 ? (
               status === 'in_progress' ? (
-                <div className="flex gap-1 sm:gap-2">
+                <div className={`flex ${vp.isMobile ? 'gap-1' : 'gap-2'}`}>
                   {[0,1,2,3,4].map(i => (
-                    <div key={i} className="w-10 sm:w-12 h-[56px] sm:h-[68px] rounded-md border border-green-600/30 bg-green-900/30" />
+                    <div key={i} className={`${sizing.cardBoardW} rounded-md border border-green-600/30 bg-green-900/30`} />
                   ))}
                 </div>
               ) : null
             ) : (
               <>
                 {board.map((card: any, i: number) => (
-                  <CardFace key={i} card={card} />
+                  <CardFace key={i} card={card} sizeClass={sizing.cardBoardW} />
                 ))}
                 {Array.from({ length: 5 - board.length }).map((_, i) => (
-                  <div key={`empty-${i}`} className="w-10 sm:w-12 h-[56px] sm:h-[68px] rounded-md border border-green-600/20 bg-green-900/20" />
+                  <div key={`empty-${i}`} className={`${sizing.cardBoardW} rounded-md border border-green-600/20 bg-green-900/20`} />
                 ))}
               </>
             )}
@@ -271,8 +386,8 @@ export function PokerTable({
       </div>
 
       {/* ── Player seats ── */}
-      {seatLayout.map(({ seatIndex, positionIndex }) => {
-        const player = seatToPlayer.get(seatIndex);
+      {seatLayout.map((pos) => {
+        const player = seatToPlayer.get(pos.seatIndex);
         if (!player) return null;
 
         const isMe = player.userId === myPlayer.userId;
@@ -280,7 +395,6 @@ export function PokerTable({
         const isFolded = player.position === 'folded';
         const isEliminated = player.position === 'eliminated';
         const isAllIn = player.position === 'all_in';
-        const pos = SEAT_POSITIONS[positionIndex];
 
         const initial = player.username.charAt(0).toUpperCase();
         const avatarSrc = getAvatarSrc(player.avatarId);
@@ -301,18 +415,18 @@ export function PokerTable({
               <div className="relative">
               {/* Position badge (D/SB/BB) */}
               {player.seatIndex === dealerSeatIndex && !isEliminated && (
-                <div className="absolute -top-1 -right-1 w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-black z-10" style={{background:'#ffffff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>D</div>
+                <div className={`absolute -top-1 -right-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-black z-10`} style={{background:'#ffffff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>D</div>
               )}
               {player.seatIndex === sbSeatIndex && player.seatIndex !== dealerSeatIndex && !isEliminated && (
-                <div className="absolute -top-1 -left-1 w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white z-10" style={{background:'#12ceec', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>SB</div>
+                <div className={`absolute -top-1 -left-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-white z-10`} style={{background:'#12ceec', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>SB</div>
               )}
               {player.seatIndex === bbSeatIndex && !isEliminated && (
-                <div className="absolute -top-1 -left-1 w-6 h-6 sm:w-7 sm:h-7 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white z-10" style={{background:'#9c51ff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>BB</div>
+                <div className={`absolute -top-1 -left-1 ${sizing.positionBadge} rounded-full flex items-center justify-center font-bold text-white z-10`} style={{background:'#9c51ff', boxShadow:'0 1px 4px rgba(0,0,0,0.4)'}}>BB</div>
               )}
 
               {/* Avatar circle */}
               <div className={`
-                w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center text-sm sm:text-lg font-bold shadow-lg overflow-hidden
+                ${sizing.avatar} rounded-full flex items-center justify-center ${sizing.avatarText} font-bold shadow-lg overflow-hidden
                 
                 ${isActive ? 'ring-[3px] ring-yellow-400 shadow-yellow-400/50' :
                   isMe ? 'ring-2 ring-green-400' :
@@ -335,12 +449,12 @@ export function PokerTable({
 
               {/* Name + chips plate */}
               <div className={`
-                mt-1.5 rounded-lg px-3 sm:px-4 py-1.5 text-center min-w-[120px] sm:min-w-[160px]
+                mt-1.5 rounded-lg px-2 py-1 text-center ${sizing.plateMinW}
                 ${isActive ? 'bg-yellow-900/80 border border-yellow-500/50' :
                   isMe ? 'bg-green-900/80 border border-green-600/40' :
                   'bg-gray-900/80 border border-gray-700/40'}
               `}>
-                <div className={`${isMe ? 'text-sm sm:text-base' : 'text-xs sm:text-sm'} font-semibold truncate max-w-[110px] sm:max-w-[160px] ${
+                <div className={`${sizing.plateName} font-semibold truncate ${sizing.plateMaxW} ${
                   isActive ? 'text-yellow-200' :
                   isMe ? 'text-green-300' :
                   isFolded ? 'text-gray-500' :
@@ -348,33 +462,34 @@ export function PokerTable({
                 }`}>
                   {player.username}{isMe ? ' (You)' : ''}
                 </div>
-                {/* Balance in gold, ~50% larger for own seat per playtest feedback. */}
-                <div className={`${isMe ? 'text-sm sm:text-base font-semibold' : 'text-[11px] sm:text-xs'} ${isEliminated ? 'text-gray-600' : 'text-amber-400'}`}>
+                {/* Balance in gold, slightly larger for own seat. */}
+                <div className={`${isMe ? `${sizing.plateChips} font-semibold` : sizing.plateStatus} ${isEliminated ? 'text-gray-600' : 'text-amber-400'}`}>
                   {formatChips(player.chipStack)}
                 </div>
 
                 {/* Status badges */}
-                {isFolded && <div className="text-[9px] text-red-400 font-bold">FOLDED</div>}
-                {isEliminated && <div className="text-[9px] text-gray-500 font-bold">ELIMINATED</div>}
-                {isAllIn && <div className="text-[9px] text-purple-400 font-bold animate-pulse">ALL IN</div>}
+                {isFolded && <div className={`${sizing.plateStatus} text-red-400 font-bold`}>FOLDED</div>}
+                {isEliminated && <div className={`${sizing.plateStatus} text-gray-500 font-bold`}>ELIMINATED</div>}
+                {isAllIn && <div className={`${sizing.plateStatus} text-purple-400 font-bold animate-pulse`}>ALL IN</div>}
 
 
               </div>
 
-              {/* Cards. YOUR hole cards ~50% larger (large prop) for
-                  readability. Opponent backs stay `small`. */}
+              {/* Cards. YOUR hole cards larger for readability.
+                  Opponent backs stay small. Sizing comes from `sizing.*`
+                  CSS classes so it auto-scales per viewport. */}
               <div className="flex gap-0.5 sm:gap-1 mt-1">
                 {isMe ? (
                   player.holeCards.length > 0 ? (
                     player.holeCards.map((card: any, i: number) => (
-                      <CardFace key={i} card={card} large />
+                      <CardFace key={i} card={card} sizeClass={sizing.cardLargeW} />
                     ))
                   ) : null
                 ) : (
                   !isEliminated && !isFolded && (
                     <>
-                      <CardBack small />
-                      <CardBack small />
+                      <CardBack sizeClass={sizing.cardSmallW} />
+                      <CardBack sizeClass={sizing.cardSmallW} />
                     </>
                   )
                 )}
@@ -388,12 +503,12 @@ export function PokerTable({
                 <div className="flex flex-col items-center mt-1">
                   {player.currentStageBet && parseInt(player.currentStageBet) > 0 && (
                     <div className="flex items-center gap-1.5">
-                      <img src="/assets/musd-chip.png" alt="" className="w-5 h-5" />
-                      <span className="text-base font-semibold text-white leading-5">{formatChips(player.currentStageBet)}</span>
+                      <img src="/assets/musd-chip.png" alt="" className={sizing.chipGlyph} />
+                      <span className={`${sizing.betText} font-semibold text-white leading-tight`}>{formatChips(player.currentStageBet)}</span>
                     </div>
                   )}
                   {player.lastAction && player.lastAction !== 'blind' && (
-                    <span className={`text-base font-bold uppercase mt-0.5 ${
+                    <span className={`${sizing.betText} font-bold uppercase mt-0.5 ${
                       player.lastAction === 'fold' ? 'text-red-400' :
                       player.lastAction === 'raise' ? 'text-yellow-400' :
                       player.lastAction === 'all-in' ? 'text-purple-400' :
@@ -415,14 +530,26 @@ export function PokerTable({
         );
       })}
 
-      {/* ── Action Buttons ── */}
+      {/* ── Action Buttons ──
+          Desktop/tablet: positioned beneath the table felt, centred.
+          Mobile: position:fixed at the bottom of the viewport so they
+          are always reachable regardless of where the user has scrolled.
+          All buttons sized for 44px+ touch targets on mobile. */}
       {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && (
-        <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-full pt-4 sm:pt-6 z-20 w-full px-2 sm:w-auto sm:px-0">
-          <div className="flex gap-1.5 sm:gap-2 rounded-2xl p-2 sm:p-3 border border-white/5 shadow-2xl justify-center" style={{background:'rgba(38,38,38,0.95)', backdropFilter:'blur(8px)'}}>
+        <div
+          className={vp.isMobile
+            ? 'fixed bottom-0 inset-x-0 z-20 px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2'
+            : 'absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-full pt-6 z-20'}
+          style={vp.isMobile ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' } : {}}
+        >
+          <div
+            className={`${vp.isMobile ? 'flex gap-1.5 rounded-2xl p-2' : 'flex gap-2 rounded-2xl p-3'} border border-white/10 shadow-2xl justify-center`}
+            style={{background:'rgba(38,38,38,0.95)', backdropFilter:'blur(8px)'}}
+          >
             <button
               onClick={onFold}
               disabled={actionLoading}
-              className="px-3 sm:px-5 py-2 sm:py-2.5 bg-red-600 text-white rounded-xl hover:bg-red-700 transition font-semibold disabled:opacity-50 text-sm flex items-center gap-1.5 shadow-lg"
+              className={`${vp.isMobile ? 'flex-1 px-2 py-3 min-h-[44px]' : 'px-5 py-2.5'} bg-red-600 text-white rounded-xl hover:bg-red-700 transition font-semibold disabled:opacity-50 text-sm flex items-center justify-center gap-1.5 shadow-lg`}
             >
               <span>✕</span> Fold
             </button>
@@ -430,7 +557,7 @@ export function PokerTable({
               <button
                 onClick={onCheck}
                 disabled={actionLoading}
-                className="px-3 sm:px-5 py-2 sm:py-2.5 bg-yellow-600 text-white rounded-xl hover:bg-yellow-700 transition font-semibold disabled:opacity-50 text-sm flex items-center gap-1.5 shadow-lg"
+                className={`${vp.isMobile ? 'flex-1 px-2 py-3 min-h-[44px]' : 'px-5 py-2.5'} bg-yellow-600 text-white rounded-xl hover:bg-yellow-700 transition font-semibold disabled:opacity-50 text-sm flex items-center justify-center gap-1.5 shadow-lg`}
               >
                 <span>✓</span> Check
               </button>
@@ -438,7 +565,7 @@ export function PokerTable({
               <button
                 onClick={onCall}
                 disabled={actionLoading}
-                className="px-3 sm:px-5 py-2 sm:py-2.5 bg-green-600 text-white rounded-xl hover:bg-green-700 transition font-semibold disabled:opacity-50 text-sm flex items-center gap-1.5 shadow-lg"
+                className={`${vp.isMobile ? 'flex-1 px-2 py-3 min-h-[44px]' : 'px-5 py-2.5'} bg-green-600 text-white rounded-xl hover:bg-green-700 transition font-semibold disabled:opacity-50 text-sm flex items-center justify-center gap-1.5 shadow-lg`}
               >
                 <span>📞</span> Call {formatChips(amountToCall)}
               </button>
@@ -451,14 +578,14 @@ export function PokerTable({
             <button
               onClick={onRaise}
               disabled={actionLoading}
-              className="px-3 sm:px-5 py-2 sm:py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-semibold disabled:opacity-50 text-sm flex items-center gap-1.5 shadow-lg"
+              className={`${vp.isMobile ? 'flex-1 px-2 py-3 min-h-[44px]' : 'px-5 py-2.5'} bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition font-semibold disabled:opacity-50 text-sm flex items-center justify-center gap-1.5 shadow-lg`}
             >
               <span>⬆</span> {(stage !== 'preflop' && parseInt(currentBet || '0') === 0) ? 'Bet' : 'Raise'}
             </button>
             <button
               onClick={onAllIn}
               disabled={actionLoading}
-              className="px-3 sm:px-5 py-2 sm:py-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition font-semibold disabled:opacity-50 text-sm flex items-center gap-1.5 shadow-lg"
+              className={`${vp.isMobile ? 'flex-1 px-2 py-3 min-h-[44px]' : 'px-5 py-2.5'} bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition font-semibold disabled:opacity-50 text-sm flex items-center justify-center gap-1.5 shadow-lg`}
             >
               <span>💎</span> All In
             </button>

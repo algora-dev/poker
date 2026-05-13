@@ -5,8 +5,11 @@ import { api } from '../services/api';
 import { useSocket } from '../hooks/useSocket';
 import { playTurnNotification, showTurnNotification, requestNotificationPermission, initAudioContext } from '../utils/sounds';
 import { ShowdownModal } from '../components/ShowdownModal';
-import { PokerTable, SEAT_POSITIONS, getRelativeSeatPositions } from '../components/PokerTable';
+import { PokerTable } from '../components/PokerTable';
 import { DealAnimation } from '../components/DealAnimation';
+import { useViewport } from '../hooks/useViewport';
+import { computeSeatPositionsForViewport } from '../utils/seatLayout';
+import { PokerTableMobile } from '../components/PokerTableMobile';
 import { TurnTimer } from '../components/TurnTimer';
 import { AudioToggle } from '../components/AudioToggle';
 import { playCheckSound } from '../utils/gameAudio';
@@ -50,6 +53,7 @@ export default function GameRoom() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
   const { socket, isConnected, joinGame: joinGameRoom, leaveGame: leaveGameRoom } = useSocket();
+  const viewport = useViewport();
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -614,7 +618,7 @@ export default function GameRoom() {
 
   return (
     <div className="min-h-screen" style={{background:'#262626'}}>
-      <div className="max-w-6xl mx-auto px-4 py-4">
+      <div className="max-w-6xl mx-auto px-2 sm:px-4 py-2 sm:py-4">
         {/* Header */}
         <div className="flex justify-between items-center mb-3 sm:mb-4">
           <div>
@@ -709,20 +713,58 @@ export default function GameRoom() {
           />
         )}
 
-        {/* Poker Table — wrapped in a relative container so the
-            DealAnimation overlay can absolute-position its card flights
-            against the same coordinate space as the seats. */}
+        {/* Poker Table — mobile portrait gets a custom stacked layout
+            (PokerTableMobile); everything else gets the oval (PokerTable).
+            DealAnimation overlay only mounts for the oval since the mobile
+            stacked layout has its own dealing presentation. */}
+        {viewport.isMobilePortrait ? (
+          <PokerTableMobile
+            myPlayer={gameState.myPlayer}
+            opponents={gameState.opponents || (gameState.opponent ? [gameState.opponent] : [])}
+            board={gameState.board}
+            pot={gameState.pot}
+            currentBet={gameState.currentBet}
+            stage={gameState.stage}
+            isMyTurn={gameState.isMyTurn}
+            activePlayerUserId={gameState.activePlayerUserId || null}
+            turnStartedAt={gameState.turnStartedAt || null}
+            dealerSeatIndex={gameState.dealerSeatIndex}
+            sbSeatIndex={gameState.sbSeatIndex}
+            bbSeatIndex={gameState.bbSeatIndex}
+            status={gameState.status}
+            amountToCall={gameState.amountToCall || '0'}
+            formatChips={formatChips}
+            onFold={handleFold}
+            onCheck={handleCheck}
+            onCall={handleCall}
+            onRaise={handleRaiseClick}
+            onAllIn={async () => {
+              try {
+                setActionLoading(true);
+                await api.post(`/api/games/${gameId}/action`, { action: 'all-in' });
+                await loadGameState();
+              } catch (err: any) {
+                setError(err.response?.data?.message || 'Action failed');
+              } finally {
+                setActionLoading(false);
+              }
+            }}
+            actionLoading={actionLoading}
+          />
+        ) : (
         <div className="relative">
-        {/* DealAnimation: card-flick animation + sound on each new hand.
-            Uses the SAME SEAT_POSITIONS and getRelativeSeatPositions logic
-            as PokerTable so cards land where the seats actually render. */}
+        {/* DealAnimation: card-flick animation + sound on each new hand. */}
         {(() => {
           const allPlayers = [gameState.myPlayer, ...(gameState.opponents || [])].filter(Boolean);
           const occupiedSeats = allPlayers.map((p: any) => p.seatIndex);
-          const layout = getRelativeSeatPositions(gameState.myPlayer.seatIndex, occupiedSeats);
+          const layout = computeSeatPositionsForViewport(
+            occupiedSeats,
+            gameState.myPlayer.seatIndex,
+            viewport.breakpoint,
+          );
           const seatPositionByIndex: Record<number, { top: string; left: string }> = {};
-          for (const { seatIndex, positionIndex } of layout) {
-            seatPositionByIndex[seatIndex] = SEAT_POSITIONS[positionIndex];
+          for (const sp of layout) {
+            seatPositionByIndex[sp.seatIndex] = { top: sp.top, left: sp.left };
           }
           return (
             <DealAnimation
@@ -772,6 +814,7 @@ export default function GameRoom() {
           actionLoading={actionLoading}
         />
         </div>
+        )}
 
         {/* Error Display */}
         {error && (
