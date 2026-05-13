@@ -417,12 +417,20 @@ export function PokerTable({
         const initial = player.username.charAt(0).toUpperCase();
         const avatarSrc = getAvatarSrc(player.avatarId);
 
-        // Derive layout mode from the anchor Y. The seat-layout math
-        // (utils/seatLayout.ts) emits y in CSS percent of the felt
-        // container, so we just parse it.
+        // Derive layout mode from the anchor X and Y.
+        // Only the top-CENTRE and bottom-CENTRE seats use horizontal
+        // layout (cards on one side, meta on the other). True corner
+        // seats (NW, NE, SW, SE) fall back to vertical 'side' layout
+        // even though their Y is small/large, otherwise they pile up
+        // along the top/bottom rails and get cut off by the page header
+        // / action bar (Shaun screenshot 2026-05-13 14:51).
         const yNum = parseFloat(pos.top);
+        const xNum = parseFloat(pos.left);
+        const isCentreColumn = Math.abs(xNum - 50) < 20; // ±20% of x-axis
         const layoutMode: 'top' | 'bottom' | 'side' =
-          yNum < 30 ? 'top' : yNum > 70 ? 'bottom' : 'side';
+          (yNum < 30 && isCentreColumn) ? 'top'
+          : (yNum > 70 && isCentreColumn) ? 'bottom'
+          : 'side';
 
         // Avatar + position badge — used by all three modes.
         const AvatarBlock = (
@@ -548,11 +556,12 @@ export function PokerTable({
           layoutMode === 'bottom' ? 'absolute transform -translate-x-1/2 z-10' :
                                     'absolute transform -translate-x-1/2 -translate-y-1/2 z-10';
 
-        // Override top/bottom seat Y to the felt rail. Keep x from the
-        // math (so heads-up / 4-handed top-seat still centres correctly).
+        // Override top/bottom CENTRE seat Y so the row sits AT the felt
+        // rail. Side seats (corners, true left/right) keep their
+        // math-derived Y.
         const finalTop =
-          layoutMode === 'top'    ? '6%' :
-          layoutMode === 'bottom' ? '94%' :
+          layoutMode === 'top'    ? '8%' :
+          layoutMode === 'bottom' ? '92%' :
                                     pos.top;
 
         const innerClass = layoutMode === 'side'

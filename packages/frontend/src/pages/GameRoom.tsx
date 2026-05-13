@@ -52,7 +52,7 @@ export default function GameRoom() {
   const { gameId } = useParams<{ gameId: string }>();
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  const { socket, isConnected, joinGame: joinGameRoom, leaveGame: leaveGameRoom } = useSocket();
+  const { socket, isConnected, joinGame: joinGameRoom, leaveGame: leaveGameRoom, setJoinAckHandler } = useSocket();
   const viewport = useViewport();
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -193,6 +193,20 @@ export default function GameRoom() {
     return () => clearInterval(interval);
   }, [gameId, gameState?.status]);
 
+  // WAITING-ROOM POLL: during the lobby/waiting phase, players join in
+  // bursts (especially bot-fill). If a player:joined event misses (socket
+  // race, replication lag), the creator's table looks empty until a
+  // manual refresh. Poll every 2s while status === 'waiting' to catch
+  // anyone we missed via real-time events. Stops as soon as the game
+  // starts so we're back to push-driven updates.
+  useEffect(() => {
+    if (!gameId || !gameState || gameState.status !== 'waiting') return;
+    const interval = setInterval(() => {
+      loadGameState();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [gameId, gameState?.status]);
+
   useEffect(() => {
     loadGameState(true); // Show loader on initial load only
     
@@ -206,6 +220,14 @@ export default function GameRoom() {
 
     // Join game room. Use the hook helper (not raw emit) so the room
     // is tracked in activeGameRooms and auto-rejoined on reconnect.
+    // The helper does an ack-confirmed join with retries; we hook into
+    // its outcome to force a state refresh once the socket has been
+    // confirmed in the room (catches pushes missed during the race).
+    setJoinAckHandler((joinedGameId, ok) => {
+      if (joinedGameId === gameId && ok) {
+        loadGameState();
+      }
+    });
     joinGameRoom(gameId);
 
     // On reconnect, rejoin room and reload state. The hook already
@@ -432,6 +454,7 @@ export default function GameRoom() {
       socket.off('game:new-hand');
       socket.off('game:next-hand-countdown');
       socket.off('game:turn-warning');
+      setJoinAckHandler(null);
       leaveGameRoom(gameId);
     };
   }, [socket, gameId]);
@@ -680,7 +703,11 @@ export default function GameRoom() {
 
   return (
     <div className="min-h-screen" style={{background:'#262626'}}>
-      <div className="max-w-6xl mx-auto px-2 sm:px-4 py-2 sm:py-4">
+      {/* Top padding bumped 2026-05-13 15:00 — top-centre seats anchored
+          at felt rail y=8% render their meta column ABOVE that line, and
+          at 8-handed the top row was getting cut off by the page header.
+          Shaun: "the entire table needs to move south". */}
+      <div className="max-w-6xl mx-auto px-2 sm:px-4 pt-24 sm:pt-28 pb-2 sm:pb-4">
         {/* Header */}
         <div className="flex justify-between items-center mb-3 sm:mb-4">
           <div>
