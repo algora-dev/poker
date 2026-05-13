@@ -126,6 +126,16 @@ export function initializeSocketServer(server: any) {
       if (verdict.ok === true) {
         socket.join(`game:${gameId}`);
         logger.info('Player joined game room', { gameId, socketId: socket.id, userId });
+        // DIAGNOSTIC (2026-05-13): persist join outcomes so we can confirm,
+        // after the fact, which sockets actually subscribed to a given game
+        // room. Bug being chased: UI desync where clients seem to miss
+        // game:action pushes for stretches at a time.
+        try {
+          const { appLog } = await import('../services/appLogger');
+          await appLog('info', 'system', 'socket:join_ok', {
+            socketId: socket.id, userId: userId.slice(-6),
+          }, { userId, gameId });
+        } catch { /* non-fatal */ }
         return respond(true);
       } else {
         logger.warn('join:game rejected', {
@@ -134,6 +144,12 @@ export function initializeSocketServer(server: any) {
           userId,
           code: verdict.code,
         });
+        try {
+          const { appLog } = await import('../services/appLogger');
+          await appLog('warn', 'system', 'socket:join_rejected', {
+            socketId: socket.id, userId: userId.slice(-6), code: verdict.code,
+          }, { userId, gameId });
+        } catch { /* non-fatal */ }
         return respond(false, verdict.code, verdict.message);
       }
     });
@@ -143,10 +159,24 @@ export function initializeSocketServer(server: any) {
       if (typeof gameId !== 'string' || !gameId) return;
       socket.leave(`game:${gameId}`);
       logger.info('Player left game room', { gameId, socketId: socket.id, userId });
+      try {
+        import('../services/appLogger').then(({ appLog }) =>
+          appLog('info', 'system', 'socket:leave', {
+            socketId: socket.id, userId: userId.slice(-6),
+          }, { userId, gameId })
+        ).catch(() => { /* non-fatal */ });
+      } catch { /* non-fatal */ }
     });
 
     socket.on('disconnect', () => {
       logger.info('Client disconnected', { socketId: socket.id, userId });
+      try {
+        import('../services/appLogger').then(({ appLog }) =>
+          appLog('info', 'system', 'socket:disconnect', {
+            socketId: socket.id, userId: userId.slice(-6),
+          }, { userId })
+        ).catch(() => { /* non-fatal */ });
+      } catch { /* non-fatal */ }
     });
   });
 
@@ -226,6 +256,23 @@ export function emitGameEvent(gameId: string, event: string, data: any) {
   if (event === 'game:action') {
     logger.info(`SOCKET: ${event} to game:${gameId} (${roomSize} clients in room) next=${data?.nextPlayer?.slice(-6) || 'none'}`);
   }
+
+  // DIAGNOSTIC (2026-05-13): persist room-emit telemetry to AppLog so we
+  // can confirm post-hoc whether clients were in the room when high-value
+  // events fired. Bug being chased: UI desync where turn indicator gets
+  // stuck on the wrong player. If roomSize regularly drops below the seated
+  // count, the issue is socket subscription, not client rendering.
+  // Only log the high-signal events to keep log volume sane.
+  if (event === 'game:action' || event === 'game:new-hand' || event === 'game:showdown' || event === 'game:fold-win' || event === 'game:completed' || event === 'game:started') {
+    import('../services/appLogger').then(({ appLog }) =>
+      appLog('info', 'system', `socket:emit:${event}`, {
+        roomSize,
+        nextPlayer: typeof data?.nextPlayer === 'string' ? data.nextPlayer.slice(-6) : null,
+        userId: typeof data?.userId === 'string' ? data.userId.slice(-6) : null,
+        action: data?.action ?? null,
+      }, { gameId })
+    ).catch(() => { /* non-fatal */ });
+  }
 }
 
 /**
@@ -263,11 +310,25 @@ export async function broadcastGameState(gameId: string, playerUserIds: string[]
     );
 
     // Emit all at once (no awaits between emits)
+    // DIAGNOSTIC (2026-05-13): also log whether each user-room had a
+    // subscriber when we emitted. user-rooms are auto-joined on socket
+    // auth; if 'subscribed=false' for a seated player, their socket
+    // dropped or never reconnected (= the desync we're chasing).
+    const userSubCounts: Record<string, number> = {};
     for (const result of states) {
       if (result.status === 'fulfilled') {
+        const room = io!.sockets.adapter.rooms.get(`user:${result.value.userId}`);
+        userSubCounts[result.value.userId.slice(-6)] = room ? room.size : 0;
         io!.to(`user:${result.value.userId}`).emit('game:state', result.value.state);
       }
     }
+    try {
+      const { appLog } = await import('../services/appLogger');
+      await appLog('info', 'system', 'socket:broadcastGameState', {
+        targets: playerUserIds.length,
+        subscribers: userSubCounts,
+      }, { gameId });
+    } catch { /* non-fatal */ }
   } catch (err) {
     logger.error('Failed to broadcast game state', { gameId, error: err });
   }

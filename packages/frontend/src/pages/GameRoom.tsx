@@ -407,8 +407,12 @@ export default function GameRoom() {
     });
 
     socket.on('game:new-hand', () => {
-      setShowdownData(null);
-      setFoldWinData(null);
+      // 2026-05-13 (Shaun): showdown / fold-win modals must NOT auto-close
+      // when the next hand starts — players need time to read the winning
+      // hand. Only the modal's own "Play Next Hand" / "Leave" buttons,
+      // and the audioPrefs.popups toggle, may close it. The new-hand event
+      // just resets the countdown/completed flags and triggers the deal
+      // animation; the modal stays visible until the user dismisses it.
       setGameCompleted(false);
       setNextHandCountdown(null);
       setDealTrigger(t => t + 1); // trigger deal animation
