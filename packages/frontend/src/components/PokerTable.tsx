@@ -523,13 +523,32 @@ export function PokerTable({
           </div>
         ) : null;
 
-        // Anchor translation per layout-mode keeps the seat's centre-of-mass
-        // close to pos.{top,left} but biases the meta+cards group away from
-        // the felt centre (so cards never reach the pot).
+        // Anchor translation per layout-mode.
+        //   top:    anchor BOTTOM of the row at the FELT TOP EDGE so the
+        //           name plate + action label sit ABOVE the felt (Shaun:
+        //           "top player action decision is on the table; move it
+        //           higher").
+        //   bottom: anchor TOP of the row at the FELT BOTTOM EDGE so the
+        //           avatar's top is right at the rail (Shaun: "lower the
+        //           bottom player; PFP top must not go far onto the
+        //           table"). Cards extend below the felt edge toward the
+        //           action bar (which has matching marginTop).
+        //   side:   anchor centre at pos.top (unchanged).
+        //
+        // For top/bottom we OVERRIDE the math-derived pos.top with a
+        // value pinned to the felt edge. The felt is `inset-[5%]` of the
+        // wrapper, so felt-top is at wrapper-y≈5%, felt-bottom at ≈95%.
         const wrapperPosClass =
-          layoutMode === 'top'    ? 'absolute transform -translate-x-1/2 z-10' :
-          layoutMode === 'bottom' ? 'absolute transform -translate-x-1/2 -translate-y-full z-10' :
+          layoutMode === 'top'    ? 'absolute transform -translate-x-1/2 -translate-y-full z-10' :
+          layoutMode === 'bottom' ? 'absolute transform -translate-x-1/2 z-10' :
                                     'absolute transform -translate-x-1/2 -translate-y-1/2 z-10';
+
+        // Override top/bottom seat Y to the felt rail. Keep x from the
+        // math (so heads-up / 4-handed top-seat still centres correctly).
+        const finalTop =
+          layoutMode === 'top'    ? '6%' :
+          layoutMode === 'bottom' ? '94%' :
+                                    pos.top;
 
         const innerClass = layoutMode === 'side'
           ? 'flex flex-col items-center transition-all duration-300'
@@ -539,7 +558,7 @@ export function PokerTable({
           <div
             key={player.userId}
             className={wrapperPosClass}
-            style={{ top: pos.top, left: pos.left }}
+            style={{ top: finalTop, left: pos.left }}
           >
             <div className={`
               ${innerClass}
@@ -591,10 +610,16 @@ export function PokerTable({
         <div
           className={vp.isMobile
             ? 'fixed bottom-0 inset-x-0 z-20 px-2 pt-2'
-            : 'z-20'}
+            : 'z-20 mt-3'}
           style={vp.isMobile
             ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }
-            : {}}
+            : {
+                // Push the action bar down enough that the hero row
+                // (which absolute-positions OUT of the felt-container,
+                // extending below it by ~ avatar+plate height) doesn't
+                // overlap. Tuned per viewport.
+                marginTop: vp.isTablet ? '90px' : '110px',
+              }}
         >
           <div
             className={`${vp.isMobile ? 'flex gap-1.5 rounded-2xl p-2' : 'flex gap-2 rounded-2xl p-3'} border border-white/10 shadow-2xl justify-center`}
