@@ -28,6 +28,7 @@
  */
 
 import { getAvatarSrc } from '../utils/avatars';
+import { PlayingCard, CardBack } from './PlayingCard';
 
 interface Player {
   userId: string;
@@ -65,56 +66,10 @@ interface Props {
   actionLoading: boolean;
 }
 
-const SUIT_SYMBOLS: Record<string, string> = {
-  hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠',
-};
-const SUIT_COLORS: Record<string, string> = {
-  hearts: 'text-red-500', diamonds: 'text-red-500',
-  clubs: 'text-gray-900', spades: 'text-gray-900',
-};
-
-function MiniCardFace({ card, large }: { card: any; large?: boolean }) {
-  const suit = card.suit as string;
-  const rank = card.rank as string;
-  const symbol = SUIT_SYMBOLS[suit] || '?';
-  const color = SUIT_COLORS[suit] || 'text-gray-900';
-  const w = large ? 'w-12 h-[72px]' : 'w-8 h-[48px]';
-  return (
-    <div className={`relative bg-white rounded-md shadow-md select-none border border-gray-200 overflow-hidden ${w}`}>
-      <div className={`absolute top-0.5 left-0.5 leading-tight ${color}`}>
-        <div className={large ? 'text-sm font-bold' : 'text-[9px] font-bold'}>{rank}</div>
-        <div className={large ? 'text-sm' : 'text-[10px]'}>{symbol}</div>
-      </div>
-      <div className={`absolute inset-0 flex items-center justify-center ${large ? 'text-2xl' : 'text-base'} ${color}`}>
-        {symbol}
-      </div>
-    </div>
-  );
-}
-
-function MiniCardBack() {
-  // Matches the purple-sheen styling of PokerTable.CardBack and the
-  // in-flight DealAnimation cards so all three render identically.
-  return (
-    <div
-      className="relative rounded-md shadow-md overflow-hidden w-6 h-[36px]"
-      style={{
-        background: 'linear-gradient(135deg, #1e3a8a 0%, #7c3aed 50%, #1e3a8a 100%)',
-        border: '1.5px solid rgba(255,255,255,0.25)',
-        boxShadow: '0 4px 14px rgba(0,0,0,0.55)',
-      }}
-    >
-      <div className="absolute inset-0.5 rounded border border-white/15 flex items-center justify-center p-0.5">
-        <img
-          src="/assets/t3-logo-white.png"
-          alt=""
-          className="w-3/5 h-3/5 object-contain opacity-90"
-          draggable={false}
-        />
-      </div>
-    </div>
-  );
-}
+// Card rendering uses the single source-of-truth <PlayingCard/> /
+// <CardBack/> components imported at the top of this file. Mobile
+// face-down opponent slots use size 'xs', felt-board cards use 'sm',
+// hero hole cards use 'md'. Don't reintroduce a Mini* fork here.
 
 function PositionBadge({ kind }: { kind: 'D' | 'SB' | 'BB' }) {
   const style =
@@ -216,8 +171,8 @@ export function PokerTableMobile({
                     <span className="text-[9px] text-purple-400 font-bold animate-pulse">ALL IN</span>
                   ) : (
                     <>
-                      <MiniCardBack />
-                      <MiniCardBack />
+                      <CardBack size="xs" />
+                      <CardBack size="xs" />
                     </>
                   )}
                 </div>
@@ -275,17 +230,17 @@ export function PokerTableMobile({
             status === 'in_progress' ? (
               <div className="flex gap-1">
                 {[0,1,2,3,4].map(i => (
-                  <div key={i} className="w-8 h-[48px] rounded-md border border-green-600/30 bg-green-900/30" />
+                  <div key={i} className="w-[32px] h-[46px] rounded-md border border-green-600/30 bg-green-900/30" />
                 ))}
               </div>
             ) : null
           ) : (
             <>
               {board.map((card: any, i: number) => (
-                <MiniCardFace key={i} card={card} />
+                <PlayingCard key={i} card={card} size="sm" />
               ))}
               {Array.from({ length: 5 - board.length }).map((_, i) => (
-                <div key={`empty-${i}`} className="w-8 h-[48px] rounded-md border border-green-600/20 bg-green-900/20" />
+                <div key={`empty-${i}`} className="w-[32px] h-[46px] rounded-md border border-green-600/20 bg-green-900/20" />
               ))}
             </>
           )}
@@ -328,7 +283,7 @@ export function PokerTableMobile({
           {/* Hole cards on the right of your seat row */}
           <div className="flex gap-1">
             {myPlayer.holeCards.length > 0
-              ? myPlayer.holeCards.map((c: any, i: number) => <MiniCardFace key={i} card={c} large />)
+              ? myPlayer.holeCards.map((c: any, i: number) => <PlayingCard key={i} card={c} size="md" />)
               : null}
           </div>
         </div>

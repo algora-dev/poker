@@ -546,34 +546,14 @@ export default function GameRoom() {
       // game' guard will surface the truth.
       const msg = err.response?.data?.message || 'Failed to leave table';
       setError(msg);
-      // Still navigate ÔÇö better UX than trapping the user.
+      // Still navigate — better UX than trapping the user.
       navigate('/lobby');
     }
   };
 
-  const formatCard = (card: any) => {
-    if (!card || !card.rank || !card.suit) return '??';
-    
-    const suitSymbols: Record<string, string> = {
-      hearts: 'ÔÖÑ',
-      diamonds: 'ÔÖª',
-      clubs: 'ÔÖú',
-      spades: 'ÔÖá',
-    };
-    
-    const suitColors: Record<string, string> = {
-      hearts: 'text-red-500',
-      diamonds: 'text-red-500',
-      clubs: 'text-gray-900',
-      spades: 'text-gray-900',
-    };
-    
-    return (
-      <span className={suitColors[card.suit]}>
-        {card.rank}{suitSymbols[card.suit]}
-      </span>
-    );
-  };
+  // formatCard helper removed 2026-05-14: was unused and contained
+  // mojibaked suit symbols. All card rendering goes through
+  // <PlayingCard/> now (see components/PlayingCard.tsx).
 
   if (!user) {
     navigate('/login');
@@ -865,7 +845,6 @@ export default function GameRoom() {
           status={gameState.status}
           amountToCall={gameState.amountToCall || '0'}
           formatChips={formatChips}
-          formatCard={formatCard}
           onFold={handleFold}
           onCheck={handleCheck}
           onCall={handleCall}
@@ -925,7 +904,7 @@ export default function GameRoom() {
                 {/* Header */}
                 <div className="flex justify-between items-center mb-5">
                   <h2 className="text-lg font-bold text-white">{verb}</h2>
-                  <button onClick={() => setShowRaiseModal(false)} className="text-gray-500 hover:text-white transition text-xl">├ù</button>
+                  <button onClick={() => setShowRaiseModal(false)} className="text-gray-500 hover:text-white transition text-xl">×</button>
                 </div>
 
                 {/* Amount display */}
@@ -958,8 +937,8 @@ export default function GameRoom() {
                     'All In' is the exception and snaps to remaining stack. */}
                 <div className="grid grid-cols-4 gap-2 mb-2">
                   {[
-                    { label: '┬¢ pot', pct: 0.5 },
-                    { label: '┬¥ pot', pct: 0.75 },
+                    { label: '½ pot', pct: 0.5 },
+                    { label: '¾ pot', pct: 0.75 },
                     { label: 'Pot',  pct: 1.0 },
                   ].map(({ label, pct }) => (
                     <button
@@ -979,7 +958,7 @@ export default function GameRoom() {
                     All In
                   </button>
                 </div>
-                <p className="text-[10px] text-gray-600 mb-5 text-center">Pot: {pot.toFixed(2)} ┬À Stack: {stack.toFixed(2)}</p>
+                <p className="text-[10px] text-gray-600 mb-5 text-center">Pot: {pot.toFixed(2)} · Stack: {stack.toFixed(2)}</p>
 
                 {/* Manual input */}
                 <div className="mb-5">

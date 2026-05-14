@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { PlayingCard } from './PlayingCard';
 
 interface Card {
   rank: string;
@@ -33,17 +34,11 @@ interface ShowdownModalProps {
   onClose: () => void;
 }
 
-const SUIT_SYM: Record<string, string> = { hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠' };
-const SUIT_CLR: Record<string, string> = { hearts: 'text-red-500', diamonds: 'text-red-500', clubs: 'text-gray-900', spades: 'text-gray-900' };
-
+// Card rendering uses the single source-of-truth <PlayingCard/>.
+// Showdown modal uses size 'sm' (mini cards) with the `highlight`
+// prop to gold-ring the 5 best cards used in the winning hand.
 function MiniCard({ card, highlight }: { card: Card; highlight?: boolean }) {
-  const color = SUIT_CLR[card.suit] || 'text-gray-900';
-  return (
-    <div className={`bg-white rounded w-8 h-11 flex flex-col items-center justify-center text-xs font-bold shadow ${highlight ? 'ring-2 ring-yellow-400' : ''}`}>
-      <span className={color}>{card.rank}</span>
-      <span className={`${color} text-[10px] -mt-0.5`}>{SUIT_SYM[card.suit]}</span>
-    </div>
-  );
+  return <PlayingCard card={card} size="sm" highlight={highlight} />;
 }
 
 export function ShowdownModal({

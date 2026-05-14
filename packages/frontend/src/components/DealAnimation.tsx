@@ -17,6 +17,7 @@
 
 import { useEffect, useState } from 'react';
 import { playDealSlideSound } from '../utils/gameAudio';
+import { getCardPixelSize } from './PlayingCard';
 
 interface DealPlayer {
   seatIndex: number;
@@ -134,6 +135,12 @@ export function DealAnimation({
   const originLeft = dealerPos?.left ?? '50%';
   const originTop = dealerPos?.top ?? '50%';
 
+  // Use the same pixel dimensions the landed face-down card will have.
+  // 'xs' matches the default cardBackSize on mobile portrait, sm/md on
+  // larger viewports. Picking 'xs' keeps the in-flight cards tidy on
+  // mobile and only marginally smaller than the landed back on desktop.
+  const cardPx = getCardPixelSize('xs');
+
   return (
     <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
       {flights.map(f => {
@@ -146,10 +153,12 @@ export function DealAnimation({
               position: 'absolute',
               left: originLeft,
               top: originTop,
-              width: '36px',
-              height: '52px',
-              marginLeft: '-18px',
-              marginTop: '-26px',
+              // Match the size of an `xs` PlayingCard back so the
+              // in-flight card and the landed card are pixel-identical.
+              width: `${cardPx.w}px`,
+              height: `${cardPx.h}px`,
+              marginLeft: `-${cardPx.w / 2}px`,
+              marginTop: `-${cardPx.h / 2}px`,
               borderRadius: '6px',
               background:
                 'linear-gradient(135deg, #1e3a8a 0%, #7c3aed 50%, #1e3a8a 100%)',
@@ -171,8 +180,10 @@ export function DealAnimation({
               alt=""
               draggable={false}
               style={{
-                width: '60%',
-                height: '60%',
+                // T3 logo at 90% of inner area (bumped 50% from prior
+                // 60% per Shaun playtest 2026-05-14). Matches CardBack.
+                width: '90%',
+                height: '90%',
                 objectFit: 'contain',
                 opacity: 0.9,
               }}

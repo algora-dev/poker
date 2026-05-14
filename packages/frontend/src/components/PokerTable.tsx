@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { getAvatarSrc } from '../utils/avatars';
 import { useViewport } from '../hooks/useViewport';
 import { computeSeatPositionsForViewport, type SeatPos } from '../utils/seatLayout';
+import { PlayingCard, CardBack, type CardSize } from './PlayingCard';
 
 interface Player {
   userId: string;
@@ -31,7 +32,8 @@ interface PokerTableProps {
   status: string;
   amountToCall: string;
   formatChips: (chips: string) => string;
-  formatCard: (card: any) => string;
+  /** @deprecated unused since card rendering moved to <PlayingCard/>. Kept on the props interface for callers; safe to drop. */
+  formatCard?: (card: any) => string;
   onFold: () => void;
   onCheck: () => void;
   onCall: () => void;
@@ -96,86 +98,10 @@ export function getRelativeSeatPositions(
   }));
 }
 
-// ── Card rendering with colored suits ──
-
-const SUIT_SYMBOLS: Record<string, string> = {
-  hearts: '♥', diamonds: '♦', clubs: '♣', spades: '♠',
-};
-const SUIT_COLORS: Record<string, string> = {
-  hearts: 'text-red-500', diamonds: 'text-red-500',
-  clubs: 'text-gray-900', spades: 'text-gray-900',
-};
-
-function CardFace({ card, small, large, sizeClass }: { card: any; small?: boolean; large?: boolean; sizeClass?: string }) {
-  const suit = card.suit as string;
-  const rank = card.rank as string;
-  const symbol = SUIT_SYMBOLS[suit] || '?';
-  const color = SUIT_COLORS[suit] || 'text-gray-900';
-  // sizeClass overrides any small/large hint (used by PokerTable's
-  // viewport-aware sizing). small/large kept for back-compat callers
-  // (ShowdownModal etc.).
-  const w = sizeClass
-    ? sizeClass
-    : large
-      ? 'w-14 sm:w-[72px] h-[84px] sm:h-[102px]'
-      : small
-        ? 'w-9 h-[52px]'
-        : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
-  // Heuristic: derive label sizes from width hint. Very narrow cards
-  // (mobile) get tiny labels; wide cards (desktop large) get bigger.
-  const isNarrow = /w-(6|7|8|9)\s|w-6$|w-7$|w-8$|w-9$/.test(w);
-  const isWide = /w-\[72px\]|w-14|w-12 /.test(w);
-  const rankSize = isWide ? 'text-base font-bold' : isNarrow ? 'text-[8px] font-bold' : 'text-[10px] font-bold';
-  const suitSmallSize = isWide ? 'text-base' : isNarrow ? 'text-[9px]' : 'text-xs';
-  const suitBigSize = isWide ? 'text-3xl' : isNarrow ? 'text-base' : 'text-xl';
-
-  return (
-    <div className={`relative bg-white rounded-md shadow-md select-none border border-gray-200 overflow-hidden ${w}`}>
-      <div className={`absolute top-0.5 left-0.5 leading-tight ${color}`}>
-        <div className={rankSize}>{rank}</div>
-        <div className={`${suitSmallSize} -mt-0.5`}>{symbol}</div>
-      </div>
-      <div className={`absolute inset-0 flex items-center justify-center ${suitBigSize} ${color}`}>
-        {symbol}
-      </div>
-    </div>
-  );
-}
-
-function CardBack({ small, large, sizeClass }: { small?: boolean; large?: boolean; sizeClass?: string }) {
-  const w = sizeClass
-    ? sizeClass
-    : large
-      ? 'w-14 sm:w-[72px] h-[84px] sm:h-[102px]'
-      : small
-        ? 'w-9 h-[52px]'
-        : 'w-10 sm:w-12 h-[56px] sm:h-[68px]';
-  return (
-    // Card back styling unified with DealAnimation's in-flight cards so
-    // the deal animation and the seated cards look identical (Shaun
-    // playtest 2026-05-13: "make the cards on the table same purple
-    // sheen style as the cards when they're being dealt").
-    // Gradient: deep blue → purple → deep blue diagonal, with the T3
-    // logo centred on top.
-    <div
-      className={`relative rounded-md shadow-md overflow-hidden ${w}`}
-      style={{
-        background: 'linear-gradient(135deg, #1e3a8a 0%, #7c3aed 50%, #1e3a8a 100%)',
-        border: '1.5px solid rgba(255,255,255,0.25)',
-        boxShadow: '0 4px 14px rgba(0,0,0,0.55)',
-      }}
-    >
-      <div className="absolute inset-0.5 rounded border border-white/15 flex items-center justify-center p-1">
-        <img
-          src="/assets/t3-logo-white.png"
-          alt=""
-          className="w-3/5 h-3/5 object-contain opacity-90"
-          draggable={false}
-        />
-      </div>
-    </div>
-  );
-}
+// ── Card rendering ──
+// PlayingCard + CardBack imported from ./PlayingCard. ONE component,
+// ONE design, used in every card-rendering site across the game.
+// Don't re-implement card visuals here; extend PlayingCard.tsx instead.
 
 // ── Main component ──
 
@@ -225,76 +151,62 @@ export function PokerTable({
   );
 
   // Card + chip-badge sizing scales with viewport. Single source of
-  // truth so the whole table stays visually proportional. (Tailwind
-  // sm: classes are insufficient because the table is bounded by its
-  // own max-w container, not the viewport directly.)
-  const sizing = (() => {
+  // truth so the whole table stays visually proportional. Card sizes
+  // map to the four explicit variants in <PlayingCard/> (xs/sm/md/lg);
+  // there is no per-viewport per-slot custom width any more.
+  type Sizing = {
+    avatar: string; avatarText: string;
+    plateMinW: string; plateMaxW: string;
+    plateName: string; plateChips: string; plateStatus: string;
+    /** Size for face-down opponent cards (the most numerous on the table) */
+    cardBackSize: CardSize;
+    /** Size for the 5 community cards on the felt */
+    cardBoardSize: CardSize;
+    /** Size for the hero's own face-up hole cards */
+    cardHeroSize: CardSize;
+    /** Tailwind width class used for board placeholder slots (must match cardBoardSize pixel width) */
+    cardBoardPlaceholderW: string;
+    positionBadge: string; chipGlyph: string; betText: string;
+  };
+  const sizing: Sizing = (() => {
     if (vp.isMobilePortrait) {
       return {
-        avatar: 'w-10 h-10',
-        avatarText: 'text-xs',
-        plateMinW: 'min-w-[80px]',
-        plateMaxW: 'max-w-[90px]',
-        plateName: 'text-[10px]',
-        plateChips: 'text-[10px]',
-        plateStatus: 'text-[8px]',
-        cardSmallW: 'w-6 h-[36px]',
-        cardLargeW: 'w-9 h-[54px]',
-        cardBoardW: 'w-7 h-[42px]',
-        positionBadge: 'w-4 h-4 text-[8px]',
-        chipGlyph: 'w-5 h-5',
-        betText: 'text-[11px]',
+        avatar: 'w-10 h-10', avatarText: 'text-xs',
+        plateMinW: 'min-w-[80px]', plateMaxW: 'max-w-[90px]',
+        plateName: 'text-[10px]', plateChips: 'text-[10px]', plateStatus: 'text-[8px]',
+        cardBackSize: 'xs', cardBoardSize: 'xs', cardHeroSize: 'sm',
+        cardBoardPlaceholderW: 'w-[28px] h-[40px]',
+        positionBadge: 'w-4 h-4 text-[8px]', chipGlyph: 'w-5 h-5', betText: 'text-[11px]',
       };
     }
     if (vp.isMobileLandscape) {
       return {
-        avatar: 'w-10 h-10',
-        avatarText: 'text-xs',
-        plateMinW: 'min-w-[90px]',
-        plateMaxW: 'max-w-[100px]',
-        plateName: 'text-[11px]',
-        plateChips: 'text-[11px]',
-        plateStatus: 'text-[9px]',
-        cardSmallW: 'w-7 h-[42px]',
-        cardLargeW: 'w-10 h-[60px]',
-        cardBoardW: 'w-8 h-[48px]',
-        positionBadge: 'w-5 h-5 text-[9px]',
-        chipGlyph: 'w-6 h-6',
-        betText: 'text-xs',
+        avatar: 'w-10 h-10', avatarText: 'text-xs',
+        plateMinW: 'min-w-[90px]', plateMaxW: 'max-w-[100px]',
+        plateName: 'text-[11px]', plateChips: 'text-[11px]', plateStatus: 'text-[9px]',
+        cardBackSize: 'xs', cardBoardSize: 'sm', cardHeroSize: 'sm',
+        cardBoardPlaceholderW: 'w-[32px] h-[46px]',
+        positionBadge: 'w-5 h-5 text-[9px]', chipGlyph: 'w-6 h-6', betText: 'text-xs',
       };
     }
     if (vp.isTablet) {
       return {
-        avatar: 'w-12 h-12',
-        avatarText: 'text-sm',
-        plateMinW: 'min-w-[120px]',
-        plateMaxW: 'max-w-[140px]',
-        plateName: 'text-xs',
-        plateChips: 'text-[11px]',
-        plateStatus: 'text-[9px]',
-        cardSmallW: 'w-8 h-[48px]',
-        cardLargeW: 'w-12 h-[72px]',
-        cardBoardW: 'w-10 h-[60px]',
-        positionBadge: 'w-6 h-6 text-[10px]',
-        chipGlyph: 'w-7 h-7',
-        betText: 'text-sm',
+        avatar: 'w-12 h-12', avatarText: 'text-sm',
+        plateMinW: 'min-w-[120px]', plateMaxW: 'max-w-[140px]',
+        plateName: 'text-xs', plateChips: 'text-[11px]', plateStatus: 'text-[9px]',
+        cardBackSize: 'sm', cardBoardSize: 'sm', cardHeroSize: 'md',
+        cardBoardPlaceholderW: 'w-[32px] h-[46px]',
+        positionBadge: 'w-6 h-6 text-[10px]', chipGlyph: 'w-7 h-7', betText: 'text-sm',
       };
     }
     // desktop
     return {
-      avatar: 'w-16 h-16',
-      avatarText: 'text-lg',
-      plateMinW: 'min-w-[160px]',
-      plateMaxW: 'max-w-[180px]',
-      plateName: 'text-sm',
-      plateChips: 'text-base',
-      plateStatus: 'text-[10px]',
-      cardSmallW: 'w-9 h-[52px]',
-      cardLargeW: 'w-[72px] h-[102px]',
-      cardBoardW: 'w-12 h-[68px]',
-      positionBadge: 'w-7 h-7 text-[10px]',
-      chipGlyph: 'w-8 h-8',
-      betText: 'text-base',
+      avatar: 'w-16 h-16', avatarText: 'text-lg',
+      plateMinW: 'min-w-[160px]', plateMaxW: 'max-w-[180px]',
+      plateName: 'text-sm', plateChips: 'text-base', plateStatus: 'text-[10px]',
+      cardBackSize: 'sm', cardBoardSize: 'md', cardHeroSize: 'lg',
+      cardBoardPlaceholderW: 'w-[48px] h-[68px]',
+      positionBadge: 'w-7 h-7 text-[10px]', chipGlyph: 'w-8 h-8', betText: 'text-base',
     };
   })();
 
@@ -389,17 +301,17 @@ export function PokerTable({
               status === 'in_progress' ? (
                 <div className={`flex ${vp.isMobile ? 'gap-1' : 'gap-2'}`}>
                   {[0,1,2,3,4].map(i => (
-                    <div key={i} className={`${sizing.cardBoardW} rounded-md border border-green-600/30 bg-green-900/30`} />
+                    <div key={i} className={`${sizing.cardBoardPlaceholderW} rounded-md border border-green-600/30 bg-green-900/30`} />
                   ))}
                 </div>
               ) : null
             ) : (
               <>
                 {board.map((card: any, i: number) => (
-                  <CardFace key={i} card={card} sizeClass={sizing.cardBoardW} />
+                  <PlayingCard key={i} card={card} size={sizing.cardBoardSize} />
                 ))}
                 {Array.from({ length: 5 - board.length }).map((_, i) => (
-                  <div key={`empty-${i}`} className={`${sizing.cardBoardW} rounded-md border border-green-600/20 bg-green-900/20`} />
+                  <div key={`empty-${i}`} className={`${sizing.cardBoardPlaceholderW} rounded-md border border-green-600/20 bg-green-900/20`} />
                 ))}
               </>
             )}
@@ -507,14 +419,14 @@ export function PokerTable({
             {isMe ? (
               player.holeCards.length > 0 ? (
                 player.holeCards.map((card: any, i: number) => (
-                  <CardFace key={i} card={card} sizeClass={sizing.cardLargeW} />
+                  <PlayingCard key={i} card={card} size={sizing.cardHeroSize} />
                 ))
               ) : null
             ) : (
               !isEliminated && !isFolded && (
                 <>
-                  <CardBack sizeClass={sizing.cardSmallW} />
-                  <CardBack sizeClass={sizing.cardSmallW} />
+                  <CardBack size={sizing.cardBackSize} />
+                  <CardBack size={sizing.cardBackSize} />
                 </>
               )
             )}
