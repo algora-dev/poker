@@ -752,6 +752,17 @@ export default function GameRoom() {
             <p className="text-gray-500 text-xs sm:text-sm">
               Blinds: {formatChips(gameState.smallBlind)} / {formatChips(gameState.bigBlind)}
             </p>
+            {/* Pre-action status (Shaun 2026-05-14): persistent text under
+                the blinds when the player has queued Check/Fold, so they
+                know what's about to happen and how to undo it. */}
+            {preAction === 'check_fold' && (
+              <p
+                className="text-xs sm:text-sm mt-1 max-w-xs sm:max-w-md"
+                style={{ color: '#facc15' }}
+              >
+                You've selected Check/Fold — click again to undo or choose another action before your turn.
+              </p>
+            )}
           </div>
           <div className="flex gap-2 items-center">
             <AudioToggle variant="compact" />

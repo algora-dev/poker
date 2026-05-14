@@ -581,6 +581,41 @@ export function PokerTable({
         );
       })}
 
+      {/* Pre-action zone: shown when it's NOT our turn but we're still
+          active in the hand. Anchored directly under the hero's hole
+          cards (Shaun playtest 2026-05-14): bottom-centre of the table
+          felt at top:100% / left:50%, so it sits just under the hero's
+          cards without covering any other player's info. The previous
+          fixed bottom-of-viewport position blocked the action areas of
+          seats sat to the left/right of the hero. */}
+      {!isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && !betweenHands && onTogglePreAction && (
+        <div
+          className="absolute z-20"
+          style={{
+            top: '100%',
+            left: '50%',
+            transform: 'translate(-50%, 4px)',
+          }}
+        >
+          <button
+            onClick={onTogglePreAction}
+            title={preAction === 'check_fold' ? 'Click again to choose another action' : 'Queue Check (if free) or Fold (if anyone raises) for your next turn'}
+            className={`px-5 py-2 rounded-xl transition font-semibold text-sm flex items-center justify-center gap-1.5 shadow-lg whitespace-nowrap ${
+              preAction === 'check_fold'
+                ? 'bg-yellow-500 text-black ring-2 ring-yellow-300'
+                : 'bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10'
+            }`}
+            style={{ backdropFilter: 'blur(8px)' }}
+          >
+            {preAction === 'check_fold' ? (
+              <><span>✓</span> FOLD?</>
+            ) : (
+              <>Check / Fold</>
+            )}
+          </button>
+        </div>
+      )}
+
       </div>{/* close felt-container */}
 
       {/* ── Action Buttons ──
@@ -588,41 +623,6 @@ export function PokerTable({
           Mobile: position:fixed at the bottom of the viewport so they
           are always reachable regardless of where the user has scrolled.
           All buttons sized for 44px+ touch targets on mobile. */}
-      {/* Pre-action zone: shown when it's NOT our turn but we're still
-          active in the hand. One toggle button ("Check / Fold" -> "FOLD?").
-          When turn arrives, GameRoom's effect auto-fires check or fold. */}
-      {!isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && !betweenHands && onTogglePreAction && (
-        <div
-          className={vp.isMobile
-            ? 'fixed bottom-0 inset-x-0 z-20 px-2 pt-2'
-            : 'z-20 mt-3 flex justify-center'}
-          style={vp.isMobile
-            ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }
-            : { marginTop: vp.isTablet ? '90px' : '110px' }}
-        >
-          <div
-            className={`${vp.isMobile ? 'flex gap-1.5 rounded-2xl p-2' : 'flex gap-2 rounded-2xl p-3'} border border-white/10 shadow-2xl justify-center`}
-            style={{ background: 'rgba(38,38,38,0.95)', backdropFilter: 'blur(8px)' }}
-          >
-            <button
-              onClick={onTogglePreAction}
-              className={`${vp.isMobile ? 'flex-1 px-3 py-3 min-h-[44px]' : 'px-6 py-2.5'} rounded-xl transition font-semibold text-sm flex items-center justify-center gap-1.5 shadow-lg ${
-                preAction === 'check_fold'
-                  ? 'bg-yellow-500 text-black ring-2 ring-yellow-300'
-                  : 'bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10'
-              }`}
-            >
-              {preAction === 'check_fold' ? (
-                <>
-                  <span>✓</span> FOLD?
-                </>
-              ) : (
-                <>Check / Fold</>
-              )}
-            </button>
-          </div>
-        </div>
-      )}
 
       {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && (
         <div
