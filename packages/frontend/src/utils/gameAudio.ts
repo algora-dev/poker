@@ -280,3 +280,55 @@ export function playCheckSound() {
     knock2.stop(now + 0.2);
   } catch (_) {}
 }
+
+/**
+ * Airport-style three-tone ascending chime. Played server-wide when
+ * the inter-hand countdown reaches zero, just before the deal animation
+ * for the next hand starts. Three soft bell tones (G5 -> C6 -> E6) with
+ * sine wave + slow attack/release for a friendly "now boarding" feel.
+ *
+ * Total duration: ~1.4s.
+ */
+export function playNextHandChime() {
+  try {
+    if (!getAudioPrefs().sound) return;
+    const ctx = getCtx();
+    const now = ctx.currentTime;
+    // G5 = 783.99, C6 = 1046.50, E6 = 1318.51 (ascending major third)
+    const tones = [
+      { freq: 783.99, start: 0.00 },
+      { freq: 1046.50, start: 0.30 },
+      { freq: 1318.51, start: 0.60 },
+    ];
+    for (const t of tones) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = t.freq;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      const start = now + t.start;
+      // Soft attack (15ms), sustain ~250ms, release ~250ms.
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.28, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.18, start + 0.25);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.50);
+      osc.start(start);
+      osc.stop(start + 0.52);
+    }
+    // Add a soft "shimmer" on top of the third tone (E6 + B6 fifth) for
+    // a more bell-like quality.
+    const shimmer = ctx.createOscillator();
+    const shimmerGain = ctx.createGain();
+    shimmer.type = 'sine';
+    shimmer.frequency.value = 1975.53; // B6
+    shimmer.connect(shimmerGain);
+    shimmerGain.connect(ctx.destination);
+    const shStart = now + 0.62;
+    shimmerGain.gain.setValueAtTime(0.0001, shStart);
+    shimmerGain.gain.exponentialRampToValueAtTime(0.10, shStart + 0.02);
+    shimmerGain.gain.exponentialRampToValueAtTime(0.0001, shStart + 0.55);
+    shimmer.start(shStart);
+    shimmer.stop(shStart + 0.6);
+  } catch (_) {}
+}

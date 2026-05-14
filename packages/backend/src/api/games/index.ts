@@ -615,12 +615,21 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             ...result.showdownResults,
           });
 
-          // After showdown - 5 second countdown before next hand
-          logger.info('Starting 5s countdown before next hand', { gameId: id });
-          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 5 });
+          // After showdown: 10-second countdown so players can read the
+          // result modal, then a 3-tone airport-style chime, then a 2s
+          // pause, then the new hand is dealt. Total: 12s from hand end
+          // to cards on the felt. (Shaun playtest 2026-05-14.)
+          logger.info('Starting 10s countdown before next hand', { gameId: id });
+          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 10 });
+          // Fire chime event when countdown reaches 0.
+          setTimeout(() => {
+            try {
+              emitGameEvent(id, 'game:next-hand-chime', { gameId: id });
+            } catch (e) { /* non-fatal */ }
+          }, 10_000);
           setTimeout(async () => {
             try {
-              logger.info('5s countdown finished, starting next hand', { gameId: id });
+              logger.info('12s countdown + chime + pause finished, starting next hand', { gameId: id });
               const game = await prisma.game.findUnique({ where: { id } });
               if (game && game.status === 'in_progress') {
                 await initializeHand(id);
@@ -637,7 +646,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
                 stack: err?.stack,
               });
             }
-          }, 5000); // 5 seconds for players to review results
+          }, 12_000); // 10s countdown + chime + 2s pause
         } else if (result.gameOver) {
           // Hand completed via fold
           if (result.foldWinResult) {
@@ -653,8 +662,17 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
             userId: request.user!.id,
           });
 
-          // Start next hand after fold - short delay
-          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 3 });
+          // Fold-win uses the same 10s countdown + chime + 2s pause flow
+          // as showdown for consistent inter-hand pacing. (Shaun playtest
+          // 2026-05-14.) Note: fold-wins close faster psychologically
+          // because there are no community-card reveals to read, but the
+          // pacing still gives the table a moment to breathe.
+          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 10 });
+          setTimeout(() => {
+            try {
+              emitGameEvent(id, 'game:next-hand-chime', { gameId: id });
+            } catch (e) { /* non-fatal */ }
+          }, 10_000);
           setTimeout(async () => {
             try {
               const game = await prisma.game.findUnique({ where: { id } });
@@ -672,7 +690,7 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
                 stack: (err as any)?.stack,
               });
             }
-          }, 3000); // 3 seconds after fold
+          }, 12_000); // 10s countdown + chime + 2s pause
         } else {
           // Normal action - game:action already emitted above
         }

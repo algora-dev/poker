@@ -12,7 +12,7 @@ import { computeSeatPositionsForViewport } from '../utils/seatLayout';
 import { PokerTableMobile } from '../components/PokerTableMobile';
 import { TurnTimer } from '../components/TurnTimer';
 import { AudioToggle } from '../components/AudioToggle';
-import { playCheckSound, playFoldSound, playBetSound, playCallSound, playWinSound, playLoseSound } from '../utils/gameAudio';
+import { playCheckSound, playFoldSound, playBetSound, playCallSound, playWinSound, playLoseSound, playNextHandChime } from '../utils/gameAudio';
 import { getAudioPrefs, subscribeAudioPrefs } from '../utils/audioPreferences';
 
 interface PlayerInfo {
@@ -396,14 +396,22 @@ export default function GameRoom() {
     });
 
     socket.on('game:next-hand-countdown', (data: any) => {
-      // Start countdown timer
-      let remaining = data.seconds || 20;
+      // Start countdown timer. Backend currently emits seconds=10
+      // (Shaun playtest 2026-05-14). The fallback default is kept high
+      // so a misconfigured event doesn't show a 0-second flash.
+      let remaining = data.seconds || 10;
       setNextHandCountdown(remaining);
       const interval = setInterval(() => {
         remaining--;
         setNextHandCountdown(remaining);
         if (remaining <= 0) clearInterval(interval);
       }, 1000);
+    });
+
+    socket.on('game:next-hand-chime', () => {
+      // Three-tone airport-style chime fired when the inter-hand
+      // countdown reaches zero. ~2s before the deal animation begins.
+      try { playNextHandChime(); } catch { /* audio not ready */ }
     });
 
     socket.on('game:new-hand', () => {
@@ -441,6 +449,7 @@ export default function GameRoom() {
       socket.off('game:completed');
       socket.off('game:new-hand');
       socket.off('game:next-hand-countdown');
+      socket.off('game:next-hand-chime');
       socket.off('game:turn-warning');
       leaveGameRoom(gameId);
     };
