@@ -15,7 +15,7 @@
  * Pure visual. Backend doesn't know or care this exists.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { playDealSlideSound } from '../utils/gameAudio';
 import { getCardPixelSize } from './PlayingCard';
 
@@ -71,13 +71,33 @@ export function DealAnimation({
 }: Props) {
   const [flights, setFlights] = useState<Flight[] | null>(null);
 
+  // GERALD AUDIT-26 [M-02]: stash all non-trigger props in refs so the
+  // deal-animation effect depends ONLY on triggerKey. Previously the
+  // effect included `players.length` and `sbSeatIndex` in its dep array,
+  // which meant ANY seat/dealer/SB change during a hand reset would
+  // re-run the effect and fire an uncommanded deal animation — then
+  // game:new-hand at t=12s fired the same animation a second time. That
+  // was Shaun's "double deal" symptom in CeceShaunV3.
+  const playersRef = useRef(players);
+  const seatPosRef = useRef(seatPositionByIndex);
+  const sbRef = useRef(sbSeatIndex);
+  const dealerRef = useRef(dealerSeatIndex);
+  const onCompleteRef = useRef(onComplete);
+  // Keep refs fresh on every render. This does NOT trigger the effect.
+  playersRef.current = players;
+  seatPosRef.current = seatPositionByIndex;
+  sbRef.current = sbSeatIndex;
+  dealerRef.current = dealerSeatIndex;
+  onCompleteRef.current = onComplete;
+
   useEffect(() => {
     if (triggerKey == null) return;
 
     // Build the deal order: clockwise from SB, skip folded/eliminated.
     // PokerTable's SEAT_POSITIONS index is the same ring order as
     // GamePlayer.seatIndex, so we walk seatIndex modulo total seats.
-    const eligible = players.filter(
+    // (Use refs so this effect only fires on triggerKey changes.)
+    const eligible = playersRef.current.filter(
       p => p.position !== 'folded' && p.position !== 'eliminated'
     );
     if (eligible.length === 0) {
@@ -88,7 +108,7 @@ export function DealAnimation({
     eligible.sort((a, b) => a.seatIndex - b.seatIndex);
     const seats = eligible.map(p => p.seatIndex);
     // Find SB (or first seat) as the start of clockwise rotation.
-    const startIdx = Math.max(0, seats.indexOf(sbSeatIndex));
+    const startIdx = Math.max(0, seats.indexOf(sbRef.current));
     const rotated: number[] = [];
     for (let i = 0; i < seats.length; i++) {
       rotated.push(seats[(startIdx + i) % seats.length]);
@@ -126,20 +146,26 @@ export function DealAnimation({
       // Fire onComplete on the same tick the overlay clears so the
       // static cards (PokerTable's <CardBack/> + hero <PlayingCard/>)
       // can fade in immediately, no visual gap.
-      try { onComplete?.(); } catch { /* ignore */ }
+      try { onCompleteRef.current?.(); } catch { /* ignore */ }
     }, totalMs);
 
     return () => {
       for (const t of soundTimers) clearTimeout(t);
       clearTimeout(clearTimer);
     };
-  }, [triggerKey, players.length, sbSeatIndex]);
+    // INTENTIONAL: triggerKey is the ONLY dep. Everything else is
+    // accessed via ref so seat-state changes during the hand-reset
+    // window can never spuriously re-fire the deal animation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerKey]);
 
   if (!flights || flights.length === 0) return null;
 
   // Origin: dealer button position if known, else table centre.
-  const dealerPos = dealerSeatIndex >= 0
-    ? seatPositionByIndex[dealerSeatIndex]
+  // Read via refs so render uses the freshest seat layout without
+  // re-triggering the animation effect.
+  const dealerPos = dealerRef.current >= 0
+    ? seatPosRef.current[dealerRef.current]
     : null;
   const originLeft = dealerPos?.left ?? '50%';
   const originTop = dealerPos?.top ?? '50%';
@@ -153,7 +179,7 @@ export function DealAnimation({
   return (
     <div className="absolute inset-0 pointer-events-none z-30 overflow-hidden">
       {flights.map(f => {
-        const dest = seatPositionByIndex[f.seatIndex];
+        const dest = seatPosRef.current[f.seatIndex];
         if (!dest) return null;
         return (
           <div

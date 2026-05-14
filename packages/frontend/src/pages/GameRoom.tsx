@@ -84,7 +84,12 @@ export default function GameRoom() {
   const wasEliminatedRef = useRef<boolean | null>(null);
   // Counter incremented on every game:new-hand. DealAnimation watches this
   // to (re)trigger the card-flick animation + per-card sound.
-  const [dealTrigger, setDealTrigger] = useState<number>(0);
+  // Deal-animation trigger key. NULL initial so the animation does NOT
+  // fire on mount/remount (Gerald audit-26 [M-02]). It fires only when
+  // we explicitly increment in response to game:started or game:new-hand.
+  // DealAnimation's effect guards `if (triggerKey == null) return` so
+  // null means "do nothing".
+  const [dealTrigger, setDealTrigger] = useState<number | null>(null);
   // Subscribe to audio/UI preferences so toggling "Hand-result popups"
   // off immediately hides the modals (also stops them appearing for
   // future hands until re-enabled).
@@ -396,7 +401,7 @@ export default function GameRoom() {
       // 2s after the chime, trigger the deal animation. The animation's
       // own onComplete will flip betweenHands false.
       setTimeout(() => {
-        setDealTrigger(t => t + 1);
+        setDealTrigger(t => (t ?? 0) + 1);
       }, 2000);
     });
 
@@ -485,7 +490,7 @@ export default function GameRoom() {
       // and the audioPrefs.popups toggle, may close it.
       setGameCompleted(false);
       setNextHandCountdown(null);
-      setDealTrigger(t => t + 1); // trigger deal animation
+      setDealTrigger(t => (t ?? 0) + 1); // trigger deal animation
       // State will come via game:state event from broadcastGameState
     });
 
