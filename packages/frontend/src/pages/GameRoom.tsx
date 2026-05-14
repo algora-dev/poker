@@ -90,6 +90,26 @@ export default function GameRoom() {
   // DealAnimation's effect guards `if (triggerKey == null) return` so
   // null means "do nothing".
   const [dealTrigger, setDealTrigger] = useState<number | null>(null);
+
+  // Table zoom (Shaun 2026-05-14). Five preset levels at
+  // 80 / 90 / 100 (default) / 110 / 120 percent. Persisted to
+  // localStorage so a player's preferred zoom survives reloads.
+  const ZOOM_LEVELS = [80, 90, 100, 110, 120] as const;
+  const [tableZoom, setTableZoom] = useState<number>(() => {
+    try {
+      const stored = parseInt(localStorage.getItem('t3-table-zoom') || '100', 10);
+      return ZOOM_LEVELS.includes(stored as any) ? stored : 100;
+    } catch {
+      return 100;
+    }
+  });
+  const adjustZoom = (delta: 1 | -1) => {
+    const idx = ZOOM_LEVELS.indexOf(tableZoom as any);
+    const nextIdx = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, idx + delta));
+    const next = ZOOM_LEVELS[nextIdx];
+    setTableZoom(next);
+    try { localStorage.setItem('t3-table-zoom', String(next)); } catch { /* ignore */ }
+  };
   // Subscribe to audio/UI preferences so toggling "Hand-result popups"
   // off immediately hides the modals (also stops them appearing for
   // future hands until re-enabled).
@@ -386,23 +406,17 @@ export default function GameRoom() {
     });
 
     socket.on('game:started', () => {
-      // First hand of a freshly-started match. Same UX as inter-hand
-      // pacing (Shaun 2026-05-14): chime, 2s pause, deal animation, then
-      // cards become visible. Keep the felt clean during the 2s pause
-      // by holding betweenHands true; we flip it false when the deal
-      // animation completes (onComplete fires from DealAnimation).
+      // First hand of a freshly-started match. Chime + deal animation
+      // fire AT THE SAME INSTANT (Shaun 2026-05-14 update: previous
+      // 2s gap felt too long). Cards stay hidden via betweenHands
+      // until the animation's onComplete flips it false.
       //
-      // IMPORTANT: flip betweenHands BEFORE the state load completes
-      // so there's no flash of cards-already-on-felt while the chime
-      // is playing.
+      // Flip betweenHands BEFORE the state load completes so there's
+      // no flash of cards-already-on-felt during the chime.
       setBetweenHands(true);
       loadGameState();
       try { playNextHandChime(); } catch { /* audio not ready */ }
-      // 2s after the chime, trigger the deal animation. The animation's
-      // own onComplete will flip betweenHands false.
-      setTimeout(() => {
-        setDealTrigger(t => (t ?? 0) + 1);
-      }, 2000);
+      setDealTrigger(t => (t ?? 0) + 1);
     });
 
     socket.on('player:joined', () => {
@@ -771,6 +785,28 @@ export default function GameRoom() {
           </div>
           <div className="flex gap-2 items-center">
             <AudioToggle variant="compact" />
+            {/* Table size +/- (Shaun 2026-05-14). Adjusts CSS transform
+                on the table wrapper. Persisted per-browser via
+                localStorage. 80 / 90 / 100 (default) / 110 / 120. */}
+            <div className="flex items-center gap-0.5 rounded-lg border border-white/10 px-1" style={{ background: 'rgba(255,255,255,0.03)' }}>
+              <button
+                onClick={() => adjustZoom(-1)}
+                disabled={tableZoom === ZOOM_LEVELS[0]}
+                title="Decrease table size to suit your screen"
+                className="text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition w-6 h-7 flex items-center justify-center text-base font-semibold leading-none"
+              >
+                {'\u2212' /* MINUS SIGN */}
+              </button>
+              <span className="text-[10px] text-gray-500 tabular-nums px-1 min-w-[2.25rem] text-center">{tableZoom}%</span>
+              <button
+                onClick={() => adjustZoom(1)}
+                disabled={tableZoom === ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
+                title="Increase table size to suit your screen"
+                className="text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition w-6 h-7 flex items-center justify-center text-base font-semibold leading-none"
+              >
+                +
+              </button>
+            </div>
             {gameState.status === 'waiting' && (gameState.playerCount || 1) <= 1 && (
               <button
                 onClick={handleCancelGame}
@@ -855,10 +891,24 @@ export default function GameRoom() {
           />
         )}
 
-        {/* Poker Table ÔÇö mobile portrait gets a custom stacked layout
+        {/* Poker Table — mobile portrait gets a custom stacked layout
             (PokerTableMobile); everything else gets the oval (PokerTable).
             DealAnimation overlay only mounts for the oval since the mobile
-            stacked layout has its own dealing presentation. */}
+            stacked layout has its own dealing presentation.
+
+            Wrapped in a transform: scale(tableZoom/100) container so the
+            user-adjustable zoom buttons in the header (80/90/100/110/120)
+            resize the entire table proportionally. Width is inverse-scaled
+            so the table fills the same horizontal space at every zoom
+            level. (Shaun 2026-05-14.) */}
+        <div
+          style={{
+            transform: `scale(${tableZoom / 100})`,
+            transformOrigin: 'top center',
+            width: `${(100 * 100) / tableZoom}%`,
+            margin: '0 auto',
+          }}
+        >
         {viewport.isMobilePortrait ? (
           <PokerTableMobile
             myPlayer={gameState.myPlayer}
@@ -953,6 +1003,7 @@ export default function GameRoom() {
         />
         </div>
         )}
+        </div>{/* close table-zoom transform wrapper */}
 
         {/* Error Display */}
         {error && (

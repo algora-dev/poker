@@ -465,6 +465,39 @@ export function PokerTable({
           </div>
         );
 
+        // Per-seat pre-action button. Only rendered for the hero (isMe),
+          // only when pre-action is showable (not their turn, still active
+          // in the hand, not between-hands). Sits directly below their
+          // hole cards so it never obscures other players' info
+          // (Gerald audit-26 [L-01], Shaun playtest 2026-05-14).
+          const PreActionButton = (
+          isMe
+          && !isMyTurn
+          && status === 'in_progress'
+          && !isFolded
+          && !isEliminated
+          && !isAllIn
+          && !betweenHands
+          && onTogglePreAction
+        ) ? (
+          <button
+            onClick={onTogglePreAction}
+            title={preAction === 'check_fold' ? 'Click again to choose another action' : 'Queue Check (if free) or Fold (if anyone raises) for your next turn'}
+            className={`px-4 py-1.5 rounded-lg transition font-semibold text-xs flex items-center justify-center gap-1 shadow-lg whitespace-nowrap ${
+              preAction === 'check_fold'
+                ? 'bg-yellow-500 text-black ring-2 ring-yellow-300'
+                : 'bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10'
+            }`}
+            style={{ backdropFilter: 'blur(8px)' }}
+          >
+            {preAction === 'check_fold' ? (
+              <><span>✓</span> FOLD?</>
+            ) : (
+              <>Check / Fold</>
+            )}
+          </button>
+        ) : null;
+
         const ActionBadge = (player.lastAction || (player.currentStageBet && parseInt(player.currentStageBet) > 0)) ? (
           <div className="flex flex-col items-center">
             {player.currentStageBet && parseInt(player.currentStageBet) > 0 && (
@@ -565,7 +598,12 @@ export function PokerTable({
                     {NamePlate}
                     {ActionBadge}
                   </div>
-                  {HoleCards}
+                  {/* Stack HoleCards + (hero-only) PreActionButton vertically
+                      so the button sits DIRECTLY UNDER the hero's cards. */}
+                  <div className="flex flex-col items-center gap-1">
+                    {HoleCards}
+                    {PreActionButton}
+                  </div>
                 </>
               )}
               {layoutMode === 'side' && (
@@ -573,6 +611,7 @@ export function PokerTable({
                   {AvatarBlock}
                   <div className="mt-1.5">{NamePlate}</div>
                   <div className="mt-1">{HoleCards}</div>
+                  {PreActionButton && <div className="mt-1">{PreActionButton}</div>}
                   {ActionBadge && <div className="mt-1">{ActionBadge}</div>}
                 </>
               )}
@@ -581,42 +620,11 @@ export function PokerTable({
         );
       })}
 
-      {/* Pre-action zone: shown when it's NOT our turn but we're still
-          active in the hand. Anchored directly under the hero's hole
-          cards (Shaun playtest 2026-05-14): bottom-centre of the table
-          felt at top:100% / left:50%, so it sits just under the hero's
-          cards without covering any other player's info. The previous
-          fixed bottom-of-viewport position blocked the action areas of
-          seats sat to the left/right of the hero. */}
-      {!isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && !betweenHands && onTogglePreAction && (
-        <div
-          className="absolute z-20"
-          style={{
-            top: '100%',
-            left: '50%',
-            transform: 'translate(-50%, 4px)',
-          }}
-        >
-          <button
-            onClick={onTogglePreAction}
-            title={preAction === 'check_fold' ? 'Click again to choose another action' : 'Queue Check (if free) or Fold (if anyone raises) for your next turn'}
-            className={`px-5 py-2 rounded-xl transition font-semibold text-sm flex items-center justify-center gap-1.5 shadow-lg whitespace-nowrap ${
-              preAction === 'check_fold'
-                ? 'bg-yellow-500 text-black ring-2 ring-yellow-300'
-                : 'bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10'
-            }`}
-            style={{ backdropFilter: 'blur(8px)' }}
-          >
-            {preAction === 'check_fold' ? (
-              <><span>✓</span> FOLD?</>
-            ) : (
-              <>Check / Fold</>
-            )}
-          </button>
-        </div>
-      )}
-
       </div>{/* close felt-container */}
+
+      {/* Pre-action button is rendered INSIDE the hero seat block above
+          (under their hole cards), not globally. See per-seat render
+          for layoutMode 'bottom' / 'side'. */}
 
       {/* ── Action Buttons ──
           Desktop/tablet: positioned in the gutter beneath the table felt.
