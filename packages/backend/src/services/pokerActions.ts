@@ -202,7 +202,10 @@ export async function processAction(
             board: JSON.stringify(board),
             pot: newPot,
           });
-          return { action: 'fold', gameOver: true, showdownResults };
+          // Tag for the frontend so it can animate the remaining street
+          // cards 1s apart before showing the showdown modal. (Issue B,
+          // Shaun 2026-05-14.)
+          return { action: 'fold', gameOver: true, showdownResults: { ...showdownResults, fastForwardFromStage: currentHand.stage } };
         }
 
         // BETTING-COMPLETION CHECK (Gerald audit-26, 2026-05-14, Issue C).
@@ -297,7 +300,8 @@ export async function processAction(
               board: JSON.stringify(board),
               pot: newPot,
             });
-            return { action: 'fold', gameOver: true, showdownResults };
+            // Tag for frontend animated street reveal. (Issue B.)
+            return { action: 'fold', gameOver: true, showdownResults: { ...showdownResults, fastForwardFromStage: currentHand.stage } };
           }
 
           await tx.hand.update({
@@ -574,7 +578,8 @@ export async function processAction(
         });
 
         const showdownResults = await handleShowdown(tx, game, { ...currentHand, board: JSON.stringify(board), pot: newPot });
-        return { action, gameOver: true, showdownResults };
+        // Tag for frontend animated street reveal. (Issue B, Shaun 2026-05-14.)
+        return { action, gameOver: true, showdownResults: { ...showdownResults, fastForwardFromStage: currentHand.stage } };
       }
       // Advance to next street or showdown
       const freshHand = await tx.hand.findUnique({ where: { id: currentHand.id } });
@@ -584,7 +589,9 @@ export async function processAction(
       const nextStage = getNextStage(freshHand.stage);
 
       if (nextStage === 'showdown') {
-        // Evaluate hands and determine winner
+        // Evaluate hands and determine winner. This is a NATURAL
+        // river→showdown completion (no fast-forward), so we don't tag
+        // fastForwardFromStage.
         const showdownResults = await handleShowdown(tx, game, currentHand);
         return { action, gameOver: true, showdownResults };
       } else {
@@ -669,7 +676,8 @@ export async function processAction(
             data: { board: JSON.stringify(board), deck: JSON.stringify(deck.slice(deckIdx)), pot: newPot, stage: 'river' },
           });
           const showdownResults = await handleShowdown(tx, game, { ...currentHand, board: JSON.stringify(board), pot: newPot });
-          return { action, gameOver: true, showdownResults };
+          // Tag for frontend animated street reveal. (Issue B.)
+          return { action, gameOver: true, showdownResults: { ...showdownResults, fastForwardFromStage: currentHand.stage } };
         }
         throw new Error('No active players found for next turn');
       }
@@ -1304,7 +1312,8 @@ async function settlePostAction(
       board: JSON.stringify(board),
       pot: newPot,
     });
-    return { action, gameOver: true, showdownResults };
+    // Tag for frontend animated street reveal. (Issue B, Shaun 2026-05-14.)
+    return { action, gameOver: true, showdownResults: { ...showdownResults, fastForwardFromStage: currentHand.stage } };
   }
 
   // Normal completion: advance to next street or run showdown if we just

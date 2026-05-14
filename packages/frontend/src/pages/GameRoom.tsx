@@ -91,6 +91,13 @@ export default function GameRoom() {
   // null means "do nothing".
   const [dealTrigger, setDealTrigger] = useState<number | null>(null);
 
+  // All-in fast-forward animated board reveal (Issue B, Shaun 2026-05-14).
+  // When the server returns a showdown with fastForwardFromStage set,
+  // we slice the final board down to the pre-fast-forward state and
+  // reveal each remaining community card 1 second apart before showing
+  // the showdown modal. Override stays null for natural showdowns.
+  const [revealBoardOverride, setRevealBoardOverride] = useState<Array<{ rank: string; suit: string }> | null>(null);
+
   // Table zoom (Shaun 2026-05-14). Five preset levels at
   // 80 / 90 / 100 (default) / 110 / 120 percent. Persisted to
   // localStorage so a player's preferred zoom survives reloads.
@@ -431,11 +438,7 @@ export default function GameRoom() {
     });
 
     socket.on('game:showdown', (data: any) => {
-      setShowdownData(data);
-      setBetweenHands(true);
-      // Win sound for the winner(s); lose sound for any non-winner who
-      // reached showdown (so the rest of the table who already folded
-      // earlier in the hand don't get a lose chime).
+      // Win/lose sound (fires immediately regardless of fast-forward).
       try {
         const winnerIds: string[] = Array.isArray(data?.winnerIds) ? data.winnerIds : [];
         const myId = user?.id;
@@ -446,6 +449,56 @@ export default function GameRoom() {
           if (meAtShowdown) playLoseSound();
         }
       } catch { /* ignore */ }
+
+      // FAST-FORWARD ANIMATED STREET REVEAL (Issue B, Shaun 2026-05-14).
+      // If the server fast-forwarded through one or more streets (all-in
+      // scenario), reveal each remaining community card 1s apart, with
+      // a chime per card, BEFORE showing the showdown modal. The player
+      // sees the streets play out as if the hand ran normally.
+      const ff: 'preflop' | 'flop' | 'turn' | undefined = data?.fastForwardFromStage;
+      const allCommunity: Array<{ rank: string; suit: string }> = Array.isArray(data?.communityCards) ? data.communityCards : [];
+      const REVEAL_STEP_MS = 1000;
+      if ((ff === 'preflop' || ff === 'flop' || ff === 'turn') && allCommunity.length === 5) {
+        // Compute the pre-FF board (cards already on felt when FF started).
+        // preflop → 0 cards; flop → 3 cards; turn → 4 cards.
+        const preFfCount = ff === 'preflop' ? 0 : ff === 'flop' ? 3 : 4;
+        const preFf = allCommunity.slice(0, preFfCount);
+        setBetweenHands(false); // make the felt visible so we can paint board
+        setRevealBoardOverride(preFf);
+
+        // Schedule each reveal step. Flop reveals 3 cards together (1
+        // step); turn and river each 1 card.
+        const steps: Array<Array<{ rank: string; suit: string }>> = [];
+        if (ff === 'preflop') {
+          steps.push(allCommunity.slice(0, 3)); // flop
+          steps.push(allCommunity.slice(0, 4)); // turn
+          steps.push(allCommunity.slice(0, 5)); // river
+        } else if (ff === 'flop') {
+          steps.push(allCommunity.slice(0, 4)); // turn
+          steps.push(allCommunity.slice(0, 5)); // river
+        } else {
+          steps.push(allCommunity.slice(0, 5)); // river
+        }
+        const totalDuration = steps.length * REVEAL_STEP_MS + REVEAL_STEP_MS; // +1s pause before modal
+        steps.forEach((boardAtStep, i) => {
+          setTimeout(() => {
+            setRevealBoardOverride(boardAtStep);
+            try { playNextHandChime(); } catch { /* ignore */ }
+          }, (i + 1) * REVEAL_STEP_MS);
+        });
+        // After all cards revealed + 1s pause: show the modal and
+        // restore the normal board source (gameState.board).
+        setTimeout(() => {
+          setShowdownData(data);
+          setBetweenHands(true);
+          setRevealBoardOverride(null);
+        }, totalDuration);
+      } else {
+        // No fast-forward (natural river→showdown) OR malformed data:
+        // show the modal immediately, same as before.
+        setShowdownData(data);
+        setBetweenHands(true);
+      }
     });
 
     socket.on('game:completed', (data: any) => {
@@ -913,7 +966,7 @@ export default function GameRoom() {
           <PokerTableMobile
             myPlayer={gameState.myPlayer}
             opponents={gameState.opponents || (gameState.opponent ? [gameState.opponent] : [])}
-            board={gameState.board}
+            board={revealBoardOverride ?? gameState.board}
             pot={gameState.pot}
             currentBet={gameState.currentBet}
             stage={gameState.stage}
@@ -973,7 +1026,7 @@ export default function GameRoom() {
         <PokerTable
           myPlayer={gameState.myPlayer}
           opponents={gameState.opponents || (gameState.opponent ? [gameState.opponent] : [])}
-          board={gameState.board}
+          board={revealBoardOverride ?? gameState.board}
           pot={gameState.pot}
           currentBet={gameState.currentBet}
           stage={gameState.stage}
