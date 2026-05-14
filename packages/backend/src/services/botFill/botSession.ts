@@ -93,6 +93,23 @@ export class BotSession {
   private shuttingDown = false;
   /** Coalesce in-flight peer-triggered state refetches. */
   private peerRefetchInFlight = false;
+
+  /**
+   * Self-heal poll interval handle.
+   *
+   * 2026-05-14 (Shaun playtest): bots occasionally stalled until the 17s
+   * turn-timer auto-folded them. Root cause is most likely a missed
+   * `game:state` socket push (rare but possible under load). Without
+   * the push, `maybeAct()` is never invoked and the bot sits forever.
+   * This periodic re-fetch catches that case so missed pushes self-heal
+   * within `SELF_HEAL_INTERVAL_MS` instead of waiting for the timer.
+   */
+  private selfHealTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Minimum gap between self-heal refetches in ms. */
+  private static readonly SELF_HEAL_INTERVAL_MS = 5_000;
+  /** Skip self-heal if a recent fetch already happened within this window. */
+  private static readonly SELF_HEAL_MIN_AGE_MS = 3_000;
   /** Last successful state-fetch timestamp; used to throttle peer pulls. */
   private lastStateFetchAt = 0;
   /** Minimum ms between peer-triggered state pulls. */
@@ -146,6 +163,36 @@ export class BotSession {
     } catch {
       /* socket pushes will catch up */
     }
+    // Self-heal poll: catches missed socket pushes that would otherwise
+    // leave the bot stalled until the 17s human turn-timer fires.
+    this.selfHealTimer = setInterval(() => { void this.selfHealTick(); }, BotSession.SELF_HEAL_INTERVAL_MS);
+  }
+
+  /**
+   * Cheap periodic check: if we haven't fetched state in a while and the
+   * cached state says it's our turn, re-fetch and try to act. Quietly
+   * does nothing if we're in flight, recently fetched, or it's plainly
+   * not our turn.
+   */
+  private async selfHealTick(): Promise<void> {
+    if (this.shuttingDown) return;
+    if (this.actionInFlight) return;
+    if (this.peerRefetchInFlight) return;
+    const age = Date.now() - this.lastStateFetchAt;
+    if (age < BotSession.SELF_HEAL_MIN_AGE_MS) return;
+    // No isMyTurn fast-path here: the whole point of this tick is to
+    // catch missed socket pushes where lastState is stale and says
+    // it's NOT our turn even though it is. We always re-fetch when the
+    // cached state is older than SELF_HEAL_MIN_AGE_MS.
+    try {
+      const s = await this.fetchState();
+      this.lastState = s;
+      this.lastStateFetchAt = Date.now();
+      this.handleStatePush(s);
+      await this.maybeAct();
+    } catch {
+      /* ignore — next tick retries */
+    }
   }
 
   /** Tear down the socket and mark ended. Idempotent. */
@@ -153,6 +200,10 @@ export class BotSession {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     this.status = 'shutting_down';
+    if (this.selfHealTimer) {
+      clearInterval(this.selfHealTimer);
+      this.selfHealTimer = null;
+    }
     try {
       this.socket?.disconnect();
     } catch { /* ignore */ }
