@@ -39,19 +39,28 @@ export function getBlindLevel(levelIndex: number): BlindLevel {
 /**
  * Check if blinds should increase, and return the new level if so.
  * Returns null if no change needed.
+ *
+ * DISABLED 2026-05-14 (Shaun + Gerald audit-26 [L-02]): ring-game mode
+ * has no blind escalation. Blinds stay at whatever was set at game-create
+ * time for the entire match. The original schedule logic is preserved
+ * below the early-return for when we add tournament mode — re-enabling
+ * is a one-line delete of the `return null` and a reset of `handsAtLevel`
+ * on any in-flight games at re-enable time.
  */
 export function checkBlindIncrease(
-  currentLevel: number,
-  handsAtLevel: number
+  _currentLevel: number,
+  _handsAtLevel: number
 ): { newLevel: number; blinds: BlindLevel } | null {
-  if (handsAtLevel >= HANDS_PER_LEVEL) {
-    const newLevel = currentLevel + 1;
-    return {
-      newLevel,
-      blinds: getBlindLevel(newLevel),
-    };
-  }
   return null;
+  // --- original logic, kept for future tournament mode ---
+  // if (_handsAtLevel >= HANDS_PER_LEVEL) {
+  //   const newLevel = _currentLevel + 1;
+  //   return {
+  //     newLevel,
+  //     blinds: getBlindLevel(newLevel),
+  //   };
+  // }
+  // return null;
 }
 
 /**
