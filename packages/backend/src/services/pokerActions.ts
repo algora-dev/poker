@@ -205,6 +205,26 @@ export async function processAction(
           return { action: 'fold', gameOver: true, showdownResults };
         }
 
+        // BETTING-COMPLETION CHECK (Gerald audit-26, 2026-05-14, Issue C).
+        // If this fold was the LAST unresolved actor on the current
+        // street, the round is complete — advance the street rather
+        // than asking the prior aggressor to act again. The shared
+        // helper handles all-in fast-forward, street advance, and
+        // showdown. Returns null when betting is genuinely incomplete
+        // (i.e. someone still owes an action), in which case we fall
+        // through to the existing "find next active player" loop.
+        {
+          const settled = await settlePostAction(tx, {
+            game,
+            currentHand,
+            action: 'fold',
+            newPot,
+          });
+          if (settled) {
+            return settled;
+          }
+        }
+
         // Multiple players still able to act — find next active player.
         // Skip folded, eliminated, AND all-in (all-in players have no
         // more decisions to make).
@@ -571,13 +591,14 @@ export async function processAction(
         // Deal community cards
         await advanceToNextStage(tx, currentHand, nextStage);
 
-        // Update hand
+        // Update hand. First-to-act uses freshPlayers (read above) so we
+        // don't accidentally point at a just-folded seat. (Gerald audit-26.)
         await tx.hand.update({
           where: { id: currentHand.id },
           data: {
             pot: newPot,
             currentBet: BigInt(0), // Reset bet for new street
-            activePlayerIndex: getPostFlopFirstToAct(game),
+            activePlayerIndex: getPostFlopFirstToAct(freshPlayers, game.dealerIndex),
             turnStartedAt: new Date(),
             stage: nextStage,
           },
@@ -1150,21 +1171,184 @@ export async function checkBettingComplete(tx: any, handId: string, players: any
 
 
 /**
- * Get first-to-act index post-flop (first active player left of dealer)
+ * Get first-to-act index post-flop (first active player left of dealer).
+ *
+ * IMPORTANT (Gerald audit-26, 2026-05-14): callers MUST pass an array
+ * of *fresh* players (just-read from DB), in seatIndex order. Previously
+ * this read `game.players` from the closure, which was the snapshot
+ * captured at the top of the processAction transaction; that snapshot
+ * is stale once any position has changed (e.g. just-folded player). A
+ * stale snapshot could return a `folded` player as next-to-act and
+ * stall the next street.
  */
-function getPostFlopFirstToAct(game: any): number {
-  const numPlayers = game.players.length;
-  const dealerIndex = game.dealerIndex % numPlayers;
-  
+function getPostFlopFirstToAct(
+  freshPlayers: Array<{ position: string }>,
+  dealerIndex: number,
+): number {
+  const numPlayers = freshPlayers.length;
+  const dIdx = dealerIndex % numPlayers;
+
   // Start checking from left of dealer
   for (let offset = 1; offset <= numPlayers; offset++) {
-    const idx = (dealerIndex + offset) % numPlayers;
-    const p = game.players[idx];
+    const idx = (dIdx + offset) % numPlayers;
+    const p = freshPlayers[idx];
     if (p.position !== 'folded' && p.position !== 'eliminated' && p.position !== 'all_in') {
       return idx;
     }
   }
   return 0; // fallback
+}
+
+/**
+ * Shared post-action settlement: runs the betting-completion check and,
+ * if betting is complete, advances the street (deals community cards)
+ * or runs the showdown. If betting is NOT complete, returns null so the
+ * caller can fall through to its own "advance turn to next actor"
+ * logic.
+ *
+ * Extracted 2026-05-14 to fix the fold lap bug (Issue C, Gerald audit-26):
+ * the fold path used to advance activePlayerIndex blindly without
+ * checking betting completion, so the prior aggressor could be re-asked
+ * to act after every other live player had already responded. Every
+ * action path (check / call / raise / all-in / FOLD) now calls this
+ * helper before any next-actor advancement.
+ *
+ * Semantics:
+ *  - returns { action, gameOver: true, showdownResults }       → hand ended
+ *  - returns { action, nextStage }                              → street advanced, new hand state in DB
+ *  - returns null                                                → betting NOT complete; caller must advance turn
+ *
+ * All DB mutations happen via the supplied tx so the caller's outer
+ * transaction is preserved.
+ */
+// NOTE: return type intentionally `any` so callers retain the broad
+// inferred shape they had before this refactor. processAction has
+// historically returned union shapes that callers introspect at
+// runtime; tightening the type here would force all callers to add
+// type guards. Internally the helper still has three well-defined
+// outcomes; see the inline returns below.
+async function settlePostAction(
+  tx: any,
+  ctx: {
+    game: any;
+    currentHand: any;
+    action: string;
+    newPot: bigint;
+  },
+): Promise<any> {
+  const { game, currentHand, action, newPot } = ctx;
+
+  const bettingComplete = await checkBettingComplete(tx, currentHand.id, game.players);
+  if (!bettingComplete) return null;
+
+  // Fresh players for first-to-act calc and all-in detection.
+  const freshPlayers = await tx.gamePlayer.findMany({
+    where: { gameId: game.id },
+    orderBy: { seatIndex: 'asc' },
+  });
+  const activeNonFolded = freshPlayers.filter(
+    (p: any) => p.position !== 'folded' && p.position !== 'eliminated',
+  );
+  const canStillAct = activeNonFolded.filter((p: any) => p.position === 'active');
+  const allInCount = activeNonFolded.filter((p: any) => p.position === 'all_in').length;
+
+  // All-in fast-forward: 0 or 1 players can still act AND ≥1 is all-in
+  // means there are no more decision points; fast-forward through any
+  // remaining streets and run showdown so all-in players' equity is
+  // contested.
+  if (canStillAct.length <= 1 && allInCount >= 1) {
+    logger.info('All-in fast-forward to showdown', {
+      gameId: game.id,
+      canAct: canStillAct.length,
+      allIn: allInCount,
+    });
+
+    let stage = currentHand.stage;
+    let board = JSON.parse(currentHand.board);
+    const deck = JSON.parse(currentHand.deck);
+    let deckIdx = 0;
+
+    while (stage !== 'river') {
+      const next = getNextStage(stage);
+      if (next === 'showdown') break;
+      const cards = next === 'flop' ? 3 : 1;
+      board = [...board, ...deck.slice(deckIdx, deckIdx + cards)];
+      deckIdx += cards;
+      stage = next;
+    }
+
+    await tx.hand.update({
+      where: { id: currentHand.id },
+      data: {
+        board: JSON.stringify(board),
+        deck: JSON.stringify(deck.slice(deckIdx)),
+        pot: newPot,
+        stage: 'river',
+      },
+    });
+
+    await recordHandEvent(tx, {
+      gameId: game.id,
+      handId: currentHand.id,
+      eventType: 'street_advanced',
+      payload: {
+        fromStage: currentHand.stage,
+        toStage: 'river',
+        allInFastForward: true,
+        board,
+      },
+    });
+
+    const showdownResults = await handleShowdown(tx, game, {
+      ...currentHand,
+      board: JSON.stringify(board),
+      pot: newPot,
+    });
+    return { action, gameOver: true, showdownResults };
+  }
+
+  // Normal completion: advance to next street or run showdown if we just
+  // finished the river.
+  const freshHand = await tx.hand.findUnique({ where: { id: currentHand.id } });
+  if (!freshHand || freshHand.stage === 'completed') {
+    // Already settled by a concurrent path. Defensive no-op.
+    return { action, gameOver: true, showdownResults: null };
+  }
+  const nextStage = getNextStage(freshHand.stage);
+
+  if (nextStage === 'showdown') {
+    const showdownResults = await handleShowdown(tx, game, currentHand);
+    return { action, gameOver: true, showdownResults };
+  }
+
+  // Deal community cards for the new street.
+  await advanceToNextStage(tx, currentHand, nextStage);
+  await tx.hand.update({
+    where: { id: currentHand.id },
+    data: {
+      pot: newPot,
+      currentBet: BigInt(0), // reset bet for new street
+      activePlayerIndex: getPostFlopFirstToAct(freshPlayers, game.dealerIndex),
+      turnStartedAt: new Date(),
+      stage: nextStage,
+    },
+  });
+
+  // Ledger event for the street advance with the freshly-updated board.
+  const advancedHand = await tx.hand.findUnique({ where: { id: currentHand.id } });
+  await recordHandEvent(tx, {
+    gameId: game.id,
+    handId: currentHand.id,
+    eventType: 'street_advanced',
+    payload: {
+      fromStage: currentHand.stage,
+      toStage: nextStage,
+      board: advancedHand ? JSON.parse(advancedHand.board) : [],
+      potAfter: newPot.toString(),
+    },
+  });
+
+  return { action, nextStage };
 }
 
 /**

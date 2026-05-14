@@ -470,4 +470,117 @@ describe('Layer B — 3-handed scenarios', () => {
     });
     assertScriptedOk('TH-07', r);
   });
+
+  it('TH-08: fold by last unresolved actor ENDS the street (Gerald audit-26, Issue C lap bug)', async () => {
+    // REGRESSION: pre-fix, the fold action handler in processAction
+    // advanced activePlayerIndex blindly without checking betting
+    // completion. So in the scenario below — BTN raises the flop, SB
+    // calls, BB folds — the engine would set activePlayerIndex back to
+    // BTN and wait for BTN to act AGAIN on the flop, instead of
+    // advancing to the turn. This let the prior aggressor see the full
+    // field's responses and then raise/check again with an unfair info
+    // advantage. Confirmed in production (CeceShaunV3 Hand 9 2026-05-14).
+    //
+    // Fix: fold path now calls settlePostAction() which runs
+    // checkBettingComplete and advances the street/showdown when
+    // appropriate. This test scripts the exact reproducer: BB's fold
+    // must complete the flop and let the engine transition to the
+    // turn, where SB acts first.
+    //
+    // If the engine still has the lap bug, the DSL's legality oracle
+    // will reject the first `turn` action ("SB check") as out-of-turn
+    // because the engine is still on the flop expecting BTN to act.
+    setForcedDeck(
+      buildPartialDeck([
+        'As', 'Kd',          // P1 (BTN, seat 0): hole cards
+        'Qs', 'Jd',          // P2 (SB, seat 1): hole cards
+        '7c', '6h',          // P3 (BB, seat 2): folds on flop
+        'Td', '9c', '2c',    // flop
+        '4d',                // turn
+        '5c',                // river
+      ])
+    );
+    const r = await runScripted({
+      name: 'TH-08_fold_completes_flop_no_extra_btn_action',
+      players: 3,
+      stacks: [200, 200, 200],
+      hands: [
+        {
+          // 3-handed preflop: BTN (seat 0), SB (seat 1), BB (seat 2).
+          // Everyone limps to keep the hand 3-way for the flop.
+          preflop: [
+            { actor: 'BTN', action: 'call' },
+            { actor: 'SB',  action: 'call' },
+            { actor: 'BB',  action: 'check' },
+          ],
+          // Flop: SB checks, BB checks, BTN raises, SB calls, BB folds.
+          // After BB's fold, BTN (the aggressor) has already raised AND
+          // SB has already called. No one else is unresolved. The street
+          // MUST end here. Pre-fix the engine would prompt BTN to check
+          // again — the bug we're regressing against.
+          flop: [
+            { actor: 'SB',  action: 'check' },
+            { actor: 'BB',  action: 'check' },
+            { actor: 'BTN', action: 'raise', amount: 5 },
+            { actor: 'SB',  action: 'call' },
+            { actor: 'BB',  action: 'fold' },
+          ],
+          // Turn: SB acts first (BB folded). If the lap bug is back,
+          // the engine is still on the flop expecting BTN, and the DSL
+          // will surface that here.
+          turn: [
+            { actor: 'SB',  action: 'check' },
+            { actor: 'BTN', action: 'check' },
+          ],
+          river: [
+            { actor: 'SB',  action: 'check' },
+            { actor: 'BTN', action: 'check' },
+          ],
+        },
+      ],
+      expect: {
+        handsCompleted: 1,
+        // Preflop: all 3 in for 1 chip. Pot = 3.
+        // Flop: BTN raises 5, SB calls 5. Pot = 3 + 5 + 5 = 13. BB folds.
+        // Turn/river: all checks.
+        // Board: T 9 2 4 5. BTN (A K) = A high. SB (Q J) = straight T-9-J-Q-? —
+        // wait, the board T9245 + SB's QJ = best 5 is J-T-9-Q-5 = no straight
+        // (T-9 + Q-J needs an 8 or K). SB has Q-J-T-9-5 = Q-high. BTN has
+        // A-K-T-9-5 = A-high. BTN wins.
+        // BTN started 200, in 6 → 194; wins 13 → 207.
+        // SB started 200, in 6 → 194.
+        // BB started 200, in 1 (BB blind) → 199.
+        finalStacks: [207, 194, 199],
+      },
+    });
+    assertScriptedOk('TH-08', r);
+
+    // EXPLICIT LAP-BUG ASSERTION (the real regression check).
+    //
+    // The DSL's default-action fallback would silently feed a no-op
+    // check when the engine asks the aggressor for an unexpected
+    // extra action, masking the bug. We need to inspect the ledger
+    // directly: the flop stage should have EXACTLY 5 actions (the 5
+    // we scripted). A 6th action by BTN (the prior aggressor) on the
+    // flop would mean the engine asked BTN to act AGAIN after BB's
+    // fold should have closed the street.
+    // LAP-BUG REGRESSION ASSERTION.
+    //
+    // My script has exactly 12 actions: 3 preflop + 5 flop + 2 turn + 2
+    // river. The DSL harness's stage label is off-by-one (the last
+    // action of each stage is logged with the NEXT stage's label
+    // because fresh.stage is re-read between iterations), so we can't
+    // partition by stage label. But the TOTAL action count is clean:
+    // pre-fix the engine would prompt BTN (the prior aggressor) to
+    // act AGAIN on the flop after BB's fold, generating an extra
+    // default-check action from the DSL's no-script fallback. Total
+    // jumps from 12 to 13.
+    const hand1 = r.report.hands[0];
+    expect(hand1).toBeDefined();
+    expect(
+      hand1.actions.length,
+      `lap-bug regression: hand had ${hand1.actions.length} total actions, expected exactly 12. ` +
+        `If 13, the engine asked BTN (the prior aggressor) to act AGAIN after BB's flop fold closed the street.`,
+    ).toBe(12);
+  });
 });
