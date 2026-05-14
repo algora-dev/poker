@@ -50,6 +50,10 @@ interface PokerTableProps {
    * and avoids the deal animation looking like it plays "twice".
    */
   betweenHands?: boolean;
+  /** Pre-action toggle: 'check_fold' when queued, null when not. */
+  preAction?: 'check_fold' | null;
+  /** Toggle pre-action on/off. */
+  onTogglePreAction?: () => void;
 }
 
 // Seat positions around an oval table (CSS positions as percentages).
@@ -138,7 +142,7 @@ export function PokerTable({
   onRaise,
   onAllIn,
   actionLoading,
-}: PokerTableProps & { betweenHands?: boolean }) {
+}: PokerTableProps & { betweenHands?: boolean; preAction?: 'check_fold' | null; onTogglePreAction?: () => void }) {
   // When between hands, override board + every player's hole cards to
   // empty so the felt is visually clean during the 12s gap. The deal
   // animation will populate fresh cards on game:new-hand.
@@ -576,6 +580,42 @@ export function PokerTable({
           Mobile: position:fixed at the bottom of the viewport so they
           are always reachable regardless of where the user has scrolled.
           All buttons sized for 44px+ touch targets on mobile. */}
+      {/* Pre-action zone: shown when it's NOT our turn but we're still
+          active in the hand. One toggle button ("Check / Fold" -> "FOLD?").
+          When turn arrives, GameRoom's effect auto-fires check or fold. */}
+      {!isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && !betweenHands && onTogglePreAction && (
+        <div
+          className={vp.isMobile
+            ? 'fixed bottom-0 inset-x-0 z-20 px-2 pt-2'
+            : 'z-20 mt-3 flex justify-center'}
+          style={vp.isMobile
+            ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }
+            : { marginTop: vp.isTablet ? '90px' : '110px' }}
+        >
+          <div
+            className={`${vp.isMobile ? 'flex gap-1.5 rounded-2xl p-2' : 'flex gap-2 rounded-2xl p-3'} border border-white/10 shadow-2xl justify-center`}
+            style={{ background: 'rgba(38,38,38,0.95)', backdropFilter: 'blur(8px)' }}
+          >
+            <button
+              onClick={onTogglePreAction}
+              className={`${vp.isMobile ? 'flex-1 px-3 py-3 min-h-[44px]' : 'px-6 py-2.5'} rounded-xl transition font-semibold text-sm flex items-center justify-center gap-1.5 shadow-lg ${
+                preAction === 'check_fold'
+                  ? 'bg-yellow-500 text-black ring-2 ring-yellow-300'
+                  : 'bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10'
+              }`}
+            >
+              {preAction === 'check_fold' ? (
+                <>
+                  <span>✓</span> FOLD?
+                </>
+              ) : (
+                <>Check / Fold</>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
       {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && (
         <div
           className={vp.isMobile

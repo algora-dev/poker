@@ -70,6 +70,8 @@ interface Props {
    * cards are shown.
    */
   betweenHands?: boolean;
+  preAction?: 'check_fold' | null;
+  onTogglePreAction?: () => void;
 }
 
 // Card rendering uses the single source-of-truth <PlayingCard/> /
@@ -112,6 +114,8 @@ export function PokerTableMobile({
   onAllIn,
   actionLoading,
   betweenHands,
+  preAction,
+  onTogglePreAction,
 }: Props) {
   // Between-hands felt-clear: empty board + empty hole cards everywhere
   // until the deal animation fires on game:new-hand.
@@ -307,6 +311,31 @@ export function PokerTableMobile({
           </div>
         )}
       </div>
+
+      {/* Pre-action zone (mobile): single Check/Fold toggle when it's not
+          our turn but we're still active in the hand. */}
+      {!isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && !betweenHands && onTogglePreAction && (
+        <div
+          className="fixed bottom-0 inset-x-0 z-20 px-2 pt-2"
+          style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+        >
+          <div
+            className="flex gap-1.5 rounded-2xl p-2 border border-white/10 shadow-2xl"
+            style={{ background: 'rgba(38,38,38,0.95)', backdropFilter: 'blur(8px)' }}
+          >
+            <button
+              onClick={onTogglePreAction}
+              className={`flex-1 px-3 py-3 min-h-[44px] rounded-xl transition font-semibold text-sm flex items-center justify-center gap-1 ${
+                preAction === 'check_fold'
+                  ? 'bg-yellow-500 text-black ring-2 ring-yellow-300'
+                  : 'bg-white/10 text-gray-300 active:bg-white/15 border border-white/10'
+              }`}
+            >
+              {preAction === 'check_fold' ? '✓ FOLD?' : 'Check / Fold'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Action Buttons — sticky bottom on mobile ── */}
       {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && (

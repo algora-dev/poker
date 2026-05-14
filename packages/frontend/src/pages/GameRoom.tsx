@@ -71,6 +71,12 @@ export default function GameRoom() {
   // doesn't leave the previous hand's cards lingering, and the deal
   // animation feels like a single clean event rather than "twice".
   const [betweenHands, setBetweenHands] = useState<boolean>(false);
+  // Pre-action: "Check/Fold" toggle (Shaun 2026-05-14). When set to
+  // 'check_fold' while it is NOT the player's turn, the moment turn
+  // arrives the client auto-issues check (if free) or fold (if any bet
+  // to call). Player can cancel by clicking the toggle again. Cleared
+  // automatically on hand end / leave / not-active-in-hand.
+  const [preAction, setPreAction] = useState<'check_fold' | null>(null);
   const previousTurn = useRef<boolean>(false);
   // Track previous "eliminated" state for the local user so we play the
   // lose chime exactly once when they bust. Initialised null so the
@@ -104,6 +110,33 @@ export default function GameRoom() {
       setShowdownData(null);
     }
   }, [audioPrefs.popups]);
+  // Pre-action auto-fire (Shaun 2026-05-14). When the local player has
+  // queued a Check/Fold pre-action and turn just arrived, immediately
+  // issue the right action: free check if amountToCall is 0, otherwise
+  // fold. Then clear the pre-action so the next turn starts fresh.
+  // Also clear preAction if the player is no longer active in the hand
+  // (folded, eliminated, all-in) so it doesn't persist into the next
+  // hand stale.
+  useEffect(() => {
+    if (!gameState) return;
+    const pos = gameState.myPlayer?.position;
+    if (pos === 'folded' || pos === 'eliminated' || pos === 'all_in') {
+      if (preAction !== null) setPreAction(null);
+      return;
+    }
+    if (gameState.isMyTurn && preAction === 'check_fold') {
+      const owesAny = parseInt(gameState.amountToCall || '0') > 0;
+      const next = owesAny ? 'fold' : 'check';
+      setPreAction(null);
+      // Fire through the shared handler so isMyTurn clears instantly.
+      handleAction(next);
+    }
+    // Clear preAction on hand end (no active hand / between hands).
+    if (betweenHands && preAction !== null) {
+      setPreAction(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState?.isMyTurn, gameState?.myPlayer?.position, betweenHands]);
   // Final standings snapshot captured BEFORE closeGame zeroes every chipStack.
   // closeGame refunds in-table chipStack back to off-table ChipBalance and
   // writes 0 to every GamePlayer.chipStack ÔÇö so the post-close gameState
@@ -822,6 +855,8 @@ export default function GameRoom() {
             onAllIn={() => handleAction('all-in')}
             actionLoading={actionLoading}
             betweenHands={betweenHands}
+            preAction={preAction}
+            onTogglePreAction={() => setPreAction(p => p === 'check_fold' ? null : 'check_fold')}
           />
         ) : (
         <div className="relative">
@@ -879,6 +914,8 @@ export default function GameRoom() {
           onAllIn={() => handleAction('all-in')}
           actionLoading={actionLoading}
           betweenHands={betweenHands}
+          preAction={preAction}
+          onTogglePreAction={() => setPreAction(p => p === 'check_fold' ? null : 'check_fold')}
         />
         </div>
         )}
