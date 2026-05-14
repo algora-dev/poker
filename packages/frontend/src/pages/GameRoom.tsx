@@ -381,7 +381,23 @@ export default function GameRoom() {
     });
 
     socket.on('game:started', () => {
-      loadGameState(); // Initial hand setup ÔÇö need full load
+      // First hand of a freshly-started match. Same UX as inter-hand
+      // pacing (Shaun 2026-05-14): chime, 2s pause, deal animation, then
+      // cards become visible. Keep the felt clean during the 2s pause
+      // by holding betweenHands true; we flip it false when the deal
+      // animation completes (onComplete fires from DealAnimation).
+      //
+      // IMPORTANT: flip betweenHands BEFORE the state load completes
+      // so there's no flash of cards-already-on-felt while the chime
+      // is playing.
+      setBetweenHands(true);
+      loadGameState();
+      try { playNextHandChime(); } catch { /* audio not ready */ }
+      // 2s after the chime, trigger the deal animation. The animation's
+      // own onComplete will flip betweenHands false.
+      setTimeout(() => {
+        setDealTrigger(t => t + 1);
+      }, 2000);
     });
 
     socket.on('player:joined', () => {
@@ -457,15 +473,16 @@ export default function GameRoom() {
     });
 
     socket.on('game:new-hand', () => {
-      // New hand actually starting — clear the between-hands felt-clear
-      // flag so cards reappear (via deal animation + game:state).
-      setBetweenHands(false);
+      // New hand actually starting. The 10s countdown and chime have
+      // already fired (game:next-hand-chime arrived ~2s ago). Now we
+      // trigger the deal animation. betweenHands STAYS true here so
+      // the felt remains clean while the animation plays; we only flip
+      // it false on the animation's onComplete callback so cards appear
+      // exactly when the last animated card lands.
       // 2026-05-13 (Shaun): showdown / fold-win modals must NOT auto-close
       // when the next hand starts — players need time to read the winning
       // hand. Only the modal's own "Play Next Hand" / "Leave" buttons,
-      // and the audioPrefs.popups toggle, may close it. The new-hand event
-      // just resets the countdown/completed flags and triggers the deal
-      // animation; the modal stays visible until the user dismisses it.
+      // and the audioPrefs.popups toggle, may close it.
       setGameCompleted(false);
       setNextHandCountdown(null);
       setDealTrigger(t => t + 1); // trigger deal animation
@@ -883,6 +900,7 @@ export default function GameRoom() {
               seatPositionByIndex={seatPositionByIndex}
               sbSeatIndex={gameState.sbSeatIndex ?? -1}
               dealerSeatIndex={gameState.dealerSeatIndex ?? -1}
+              onComplete={() => setBetweenHands(false)}
             />
           );
         })()}

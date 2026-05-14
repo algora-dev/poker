@@ -177,7 +177,7 @@ export function PokerTableMobile({
                     {formatChips(p.chipStack)}
                   </div>
                 </div>
-                {/* Cards / status */}
+                {/* Cards / status (between-hands clears card-backs too) */}
                 <div className="h-[40px] flex items-center justify-center mt-1 gap-0.5">
                   {isEliminated ? (
                     <span className="text-[9px] text-gray-500 font-bold">OUT</span>
@@ -185,7 +185,7 @@ export function PokerTableMobile({
                     <span className="text-[9px] text-red-400 font-bold">FOLD</span>
                   ) : isAllIn ? (
                     <span className="text-[9px] text-purple-400 font-bold animate-pulse">ALL IN</span>
-                  ) : (
+                  ) : betweenHands ? null : (
                     <>
                       <CardBack size="xs" />
                       <CardBack size="xs" />
@@ -296,9 +296,10 @@ export function PokerTableMobile({
             {myPlayer.position === 'all_in' && <div className="text-[10px] text-purple-400 font-bold animate-pulse">ALL IN</div>}
             {myPlayer.position === 'eliminated' && <div className="text-[10px] text-gray-500 font-bold">ELIMINATED</div>}
           </div>
-          {/* Hole cards on the right of your seat row */}
+          {/* Hole cards on the right of your seat row. Hidden between
+              hands so the deal animation can land them in cleanly. */}
           <div className="flex gap-1">
-            {myPlayer.holeCards.length > 0
+            {!betweenHands && myPlayer.holeCards.length > 0
               ? myPlayer.holeCards.map((c: any, i: number) => <PlayingCard key={i} card={c} size="md" />)
               : null}
           </div>

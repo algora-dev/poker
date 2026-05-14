@@ -37,6 +37,10 @@ interface Props {
   sbSeatIndex?: number;
   /** Seat index of dealer button (origin of the card flick). */
   dealerSeatIndex?: number;
+  /** Optional: fires when the last card has finished its flight. GameRoom
+   *  uses this to reveal the static face-down + face-up cards exactly
+   *  when the animation finishes, so there's no gap and no overlap. */
+  onComplete?: () => void;
 }
 
 const PASSES = 2;
@@ -63,6 +67,7 @@ export function DealAnimation({
   seatPositionByIndex,
   sbSeatIndex = -1,
   dealerSeatIndex = -1,
+  onComplete,
 }: Props) {
   const [flights, setFlights] = useState<Flight[] | null>(null);
 
@@ -115,10 +120,14 @@ export function DealAnimation({
     }
 
     // Clear the animation overlay after the last card has landed.
-    const clearTimer = setTimeout(
-      () => setFlights(null),
-      CLEAR_AFTER_MS(rotated.length)
-    );
+    const totalMs = CLEAR_AFTER_MS(rotated.length);
+    const clearTimer = setTimeout(() => {
+      setFlights(null);
+      // Fire onComplete on the same tick the overlay clears so the
+      // static cards (PokerTable's <CardBack/> + hero <PlayingCard/>)
+      // can fade in immediately, no visual gap.
+      try { onComplete?.(); } catch { /* ignore */ }
+    }, totalMs);
 
     return () => {
       for (const t of soundTimers) clearTimeout(t);

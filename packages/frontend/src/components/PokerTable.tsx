@@ -441,9 +441,14 @@ export function PokerTable({
           </div>
         );
 
-        const HoleCards = (
+        // Between hands, the felt must be CLEAN — no face-up hero
+          // cards, no face-down opponent cards (Shaun 2026-05-14). The
+          // deal animation lands cards into seats; the static cards then
+          // take over when DealAnimation's onComplete fires and flips
+          // betweenHands false.
+          const HoleCards = (
           <div className="flex gap-0.5 sm:gap-1">
-            {isMe ? (
+            {betweenHands ? null : isMe ? (
               player.holeCards.length > 0 ? (
                 player.holeCards.map((card: any, i: number) => (
                   <PlayingCard key={i} card={card} size={sizing.cardHeroSize} />
