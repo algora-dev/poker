@@ -40,6 +40,16 @@ interface PokerTableProps {
   onRaise: () => void;
   onAllIn: () => void;
   actionLoading: boolean;
+  /**
+   * Between-hands flag (Shaun 2026-05-14). Set true after a hand ends
+   * (game:showdown / game:fold-win) and false again on game:new-hand.
+   * While true, the felt renders with no community cards and no
+   * opponent/hero hole cards visible — the table is "clean" while the
+   * 10s countdown + chime + 2s pause runs. Prevents the previous hand's
+   * cards from lingering when a player closes the result modal early,
+   * and avoids the deal animation looking like it plays "twice".
+   */
+  betweenHands?: boolean;
 }
 
 // Seat positions around an oval table (CSS positions as percentages).
@@ -106,9 +116,9 @@ export function getRelativeSeatPositions(
 // ── Main component ──
 
 export function PokerTable({
-  myPlayer,
-  opponents,
-  board,
+  myPlayer: _myPlayer,
+  opponents: _opponents,
+  board: _board,
   pot,
   currentBet,
   stage,
@@ -128,7 +138,16 @@ export function PokerTable({
   onRaise,
   onAllIn,
   actionLoading,
-}: PokerTableProps) {
+}: PokerTableProps & { betweenHands?: boolean }) {
+  // When between hands, override board + every player's hole cards to
+  // empty so the felt is visually clean during the 12s gap. The deal
+  // animation will populate fresh cards on game:new-hand.
+  // (Shaun playtest 2026-05-14.)
+  const board = betweenHands ? [] : _board;
+  const myPlayer = betweenHands ? { ..._myPlayer, holeCards: [] } : _myPlayer;
+  const opponents = betweenHands ? _opponents.map(o => ({ ...o, holeCards: [] })) : _opponents;
+  // Silence unused-var warning on the deprecated formatCard prop.
+  void formatCard;
   const allPlayers = [myPlayer, ...opponents];
   const vp = useViewport();
 
@@ -295,7 +314,8 @@ export function PokerTable({
             )}
           </div>
 
-          {/* Community Cards */}
+          {/* Community Cards — board is cleared above when betweenHands
+              is true, so the felt is empty during the 12s gap. */}
           <div className={`flex ${vp.isMobile ? 'gap-1' : 'gap-2'} justify-center`}>
             {board.length === 0 ? (
               status === 'in_progress' ? (

@@ -64,6 +64,13 @@ export default function GameRoom() {
   const [showdownData, setShowdownData] = useState<any>(null);
   const [foldWinData, setFoldWinData] = useState<any>(null);
   const [nextHandCountdown, setNextHandCountdown] = useState<number | null>(null);
+  // Between-hands flag (Shaun 2026-05-14). True from the moment a hand
+  // ends (game:showdown / game:fold-win) until the next hand actually
+  // starts (game:new-hand). While true, the felt is rendered with no
+  // community cards and no hole cards so closing the result modal early
+  // doesn't leave the previous hand's cards lingering, and the deal
+  // animation feels like a single clean event rather than "twice".
+  const [betweenHands, setBetweenHands] = useState<boolean>(false);
   const previousTurn = useRef<boolean>(false);
   // Track previous "eliminated" state for the local user so we play the
   // lose chime exactly once when they bust. Initialised null so the
@@ -357,6 +364,7 @@ export default function GameRoom() {
 
     socket.on('game:showdown', (data: any) => {
       setShowdownData(data);
+      setBetweenHands(true);
       // Win sound for the winner(s); lose sound for any non-winner who
       // reached showdown (so the rest of the table who already folded
       // earlier in the hand don't get a lose chime).
@@ -386,6 +394,7 @@ export default function GameRoom() {
 
     socket.on('game:fold-win', (data: any) => {
       setFoldWinData(data);
+      setBetweenHands(true);
       // Only the winner hears the win chime on fold-win. Folders are
       // not considered "losers" ÔÇö they chose to fold.
       try {
@@ -415,6 +424,9 @@ export default function GameRoom() {
     });
 
     socket.on('game:new-hand', () => {
+      // New hand actually starting — clear the between-hands felt-clear
+      // flag so cards reappear (via deal animation + game:state).
+      setBetweenHands(false);
       // 2026-05-13 (Shaun): showdown / fold-win modals must NOT auto-close
       // when the next hand starts — players need time to read the winning
       // hand. Only the modal's own "Play Next Hand" / "Leave" buttons,
@@ -714,7 +726,7 @@ export default function GameRoom() {
         {gameState.status === 'waiting' && (
           <div className="mb-6 rounded-xl p-6 border" style={{background:'rgba(18,206,236,0.06)', borderColor:'rgba(18,206,236,0.2)'}}>
             <h2 className="text-2xl font-bold text-white text-center mb-4">
-              ÔÅ│ Waiting for Players... ({gameState.playerCount || 1}/9)
+              {'\u23F3'} Waiting for Players... ({gameState.playerCount || 1}/9)
             </h2>
             
             {/* Show different UI for creator vs other players */}
@@ -755,7 +767,7 @@ export default function GameRoom() {
               // Other players view
               <>
                 <p className="text-gray-300 text-center mb-4 text-lg">
-                  ­ƒòÉ Waiting for host to start the game...
+                  {'\u23F3'} Waiting for host to start the game...
                 </p>
                 <p className="text-yellow-400 text-center text-sm">
                   Game will auto-start in 2 minutes
@@ -809,6 +821,7 @@ export default function GameRoom() {
             // and then snap forward when state arrived. (Gerald audit-25.)
             onAllIn={() => handleAction('all-in')}
             actionLoading={actionLoading}
+            betweenHands={betweenHands}
           />
         ) : (
         <div className="relative">
@@ -865,6 +878,7 @@ export default function GameRoom() {
           // and then snap forward when state arrived. (Gerald audit-25.)
           onAllIn={() => handleAction('all-in')}
           actionLoading={actionLoading}
+          betweenHands={betweenHands}
         />
         </div>
         )}

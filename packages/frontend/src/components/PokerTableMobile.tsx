@@ -64,6 +64,12 @@ interface Props {
   onRaise: () => void;
   onAllIn: () => void;
   actionLoading: boolean;
+  /**
+   * Between-hands flag (Shaun 2026-05-14). True from hand-end until
+   * game:new-hand fires. While true, the felt is empty and no hole
+   * cards are shown.
+   */
+  betweenHands?: boolean;
 }
 
 // Card rendering uses the single source-of-truth <PlayingCard/> /
@@ -84,9 +90,9 @@ function PositionBadge({ kind }: { kind: 'D' | 'SB' | 'BB' }) {
 }
 
 export function PokerTableMobile({
-  myPlayer,
-  opponents,
-  board,
+  myPlayer: _myPlayer,
+  opponents: _opponents,
+  board: _board,
   pot,
   currentBet: _currentBet,
   stage,
@@ -105,7 +111,13 @@ export function PokerTableMobile({
   onRaise,
   onAllIn,
   actionLoading,
+  betweenHands,
 }: Props) {
+  // Between-hands felt-clear: empty board + empty hole cards everywhere
+  // until the deal animation fires on game:new-hand.
+  const board = betweenHands ? [] : _board;
+  const myPlayer = betweenHands ? { ..._myPlayer, holeCards: [] } : _myPlayer;
+  const opponents = betweenHands ? _opponents.map(o => ({ ...o, holeCards: [] })) : _opponents;
   const stageLabel: Record<string, string> = {
     preflop: 'Pre-Flop', flop: 'Flop', turn: 'Turn', river: 'River',
     showdown: 'Showdown', completed: 'Complete', waiting: 'Waiting',
