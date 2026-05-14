@@ -424,7 +424,13 @@ export default function GameRoom() {
     });
 
     return () => {
-      socket.off('connect');
+      // IMPORTANT: do NOT call bare `socket.off('connect')` here.
+      // The socket is a module-level singleton in useSocket.ts and
+      // `off('connect')` with no handler strips ALL connect listeners,
+      // including the hook's own reconnect/rejoin logic. Always pass
+      // the specific handler reference so we only remove ours.
+      // (Gerald audit-25, 2026-05-14.)
+      socket.off('connect', onReconnect);
       socket.off('game:action');
       socket.off('game:updated');
       socket.off('game:state');
@@ -807,17 +813,12 @@ export default function GameRoom() {
             onCheck={handleCheck}
             onCall={handleCall}
             onRaise={handleRaiseClick}
-            onAllIn={async () => {
-              try {
-                setActionLoading(true);
-                await api.post(`/api/games/${gameId}/action`, { action: 'all-in' });
-                await loadGameState();
-              } catch (err: any) {
-                setError(err.response?.data?.message || 'Action failed');
-              } finally {
-                setActionLoading(false);
-              }
-            }}
+            // All In goes through the shared handleAction path so the
+            // local isMyTurn flag clears IMMEDIATELY on click (same as
+            // fold/check/call/raise). The old inline POST + loadGameState
+            // path made the UI feel stuck for the full backend latency
+            // and then snap forward when state arrived. (Gerald audit-25.)
+            onAllIn={() => handleAction('all-in')}
             actionLoading={actionLoading}
           />
         ) : (
@@ -869,17 +870,12 @@ export default function GameRoom() {
           onCheck={handleCheck}
           onCall={handleCall}
           onRaise={handleRaiseClick}
-          onAllIn={async () => {
-            try {
-              setActionLoading(true);
-              await api.post(`/api/games/${gameId}/action`, { action: 'all-in' });
-              await loadGameState();
-            } catch (err: any) {
-              setError(err.response?.data?.message || 'Action failed');
-            } finally {
-              setActionLoading(false);
-            }
-          }}
+          // All In goes through the shared handleAction path so the
+          // local isMyTurn flag clears IMMEDIATELY on click (same as
+          // fold/check/call/raise). The old inline POST + loadGameState
+          // path made the UI feel stuck for the full backend latency
+          // and then snap forward when state arrived. (Gerald audit-25.)
+          onAllIn={() => handleAction('all-in')}
           actionLoading={actionLoading}
         />
         </div>
