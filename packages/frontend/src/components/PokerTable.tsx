@@ -142,6 +142,9 @@ export function PokerTable({
   onRaise,
   onAllIn,
   actionLoading,
+  betweenHands,
+  preAction,
+  onTogglePreAction,
 }: PokerTableProps & { betweenHands?: boolean; preAction?: 'check_fold' | null; onTogglePreAction?: () => void }) {
   // When between hands, override board + every player's hole cards to
   // empty so the felt is visually clean during the 12s gap. The deal
