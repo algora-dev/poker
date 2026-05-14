@@ -34,6 +34,26 @@ const HAND_RANK_VALUES: Record<HandRank, number> = {
 };
 
 /**
+ * Convert a card value (2..14) to its human-readable name. Used to
+ * build descriptive hand names like "Pair of Aces" instead of just
+ * "Pair".
+ *
+ * Plural form (e.g. for "Pair of 7s") just appends an 's' to the rank
+ * name; for face cards we use the standard poker plurals ("Aces",
+ * "Kings", "Queens", "Jacks").
+ */
+function rankName(value: number, plural: boolean = false): string {
+  switch (value) {
+    case 14: return plural ? 'Aces' : 'Ace';
+    case 13: return plural ? 'Kings' : 'King';
+    case 12: return plural ? 'Queens' : 'Queen';
+    case 11: return plural ? 'Jacks' : 'Jack';
+    case 10: return plural ? '10s' : '10';
+    default: return plural ? `${value}s` : `${value}`;
+  }
+}
+
+/**
  * Evaluate the best 5-card poker hand from 7 cards
  */
 export function evaluateHand(holeCards: Card[], communityCards: Card[]): HandResult {
@@ -126,7 +146,7 @@ function evaluateFiveCards(cards: Card[]): HandResult {
       rankValue: HAND_RANK_VALUES['four-of-a-kind'],
       cards: sorted,
       tiebreakers: [counts[0][0], counts[1][0]],
-      description: 'Four of a Kind',
+      description: `Four ${rankName(counts[0][0], true)}`,
     };
   }
   
@@ -137,7 +157,7 @@ function evaluateFiveCards(cards: Card[]): HandResult {
       rankValue: HAND_RANK_VALUES['full-house'],
       cards: sorted,
       tiebreakers: [counts[0][0], counts[1][0]],
-      description: 'Full House',
+      description: `Full House, ${rankName(counts[0][0], true)} over ${rankName(counts[1][0], true)}`,
     };
   }
   
@@ -148,18 +168,19 @@ function evaluateFiveCards(cards: Card[]): HandResult {
       rankValue: HAND_RANK_VALUES['flush'],
       cards: sorted,
       tiebreakers: values,
-      description: 'Flush',
+      description: `Flush, ${rankName(values[0])}-high`,
     };
   }
   
   // Straight
   if (isStraight || isWheelStraight) {
+    const highCard = isWheelStraight ? 5 : values[0];
     return {
       rank: 'straight',
       rankValue: HAND_RANK_VALUES['straight'],
       cards: sorted,
       tiebreakers: isWheelStraight ? [5] : [values[0]],
-      description: 'Straight',
+      description: `Straight, ${rankName(highCard)}-high`,
     };
   }
   
@@ -170,7 +191,7 @@ function evaluateFiveCards(cards: Card[]): HandResult {
       rankValue: HAND_RANK_VALUES['three-of-a-kind'],
       cards: sorted,
       tiebreakers: [counts[0][0], counts[1][0], counts[2][0]],
-      description: 'Three of a Kind',
+      description: `Three ${rankName(counts[0][0], true)}`,
     };
   }
   
@@ -181,7 +202,7 @@ function evaluateFiveCards(cards: Card[]): HandResult {
       rankValue: HAND_RANK_VALUES['two-pair'],
       cards: sorted,
       tiebreakers: [counts[0][0], counts[1][0], counts[2][0]],
-      description: 'Two Pair',
+      description: `Two Pair, ${rankName(counts[0][0], true)} and ${rankName(counts[1][0], true)}`,
     };
   }
   
@@ -192,7 +213,7 @@ function evaluateFiveCards(cards: Card[]): HandResult {
       rankValue: HAND_RANK_VALUES['pair'],
       cards: sorted,
       tiebreakers: [counts[0][0], counts[1][0], counts[2][0], counts[3][0]],
-      description: 'Pair',
+      description: `Pair of ${rankName(counts[0][0], true)}, ${rankName(counts[1][0])} kicker`,
     };
   }
   
@@ -202,7 +223,7 @@ function evaluateFiveCards(cards: Card[]): HandResult {
     rankValue: HAND_RANK_VALUES['high-card'],
     cards: sorted,
     tiebreakers: values,
-    description: 'High Card',
+    description: `${rankName(values[0])} high`,
   };
 }
 
