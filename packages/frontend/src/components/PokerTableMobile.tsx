@@ -123,9 +123,15 @@ export function PokerTableMobile({
   // Hide cards while waiting / between hands (Shaun 2026-05-15 — no
   // deal has happened yet during the lobby/waiting state, so card
   // backs are a lie). Matches PokerTable.tsx `hideCards` derivation.
+  // Also hide the hero's own cards once they are eliminated; the
+  // server doesn't blank out stale holeCards on the GamePlayer row
+  // for spectating eliminated players. (Shaun playtest 2026-05-15.)
   const hideCards = betweenHands || status !== 'in_progress';
+  const heroEliminated = _myPlayer?.position === 'eliminated';
   const board = hideCards ? [] : _board;
-  const myPlayer = hideCards ? { ..._myPlayer, holeCards: [] } : _myPlayer;
+  const myPlayer = (hideCards || heroEliminated)
+    ? { ..._myPlayer, holeCards: [] }
+    : _myPlayer;
   const opponents = hideCards ? _opponents.map(o => ({ ...o, holeCards: [] })) : _opponents;
   const stageLabel: Record<string, string> = {
     preflop: 'Pre-Flop', flop: 'Flop', turn: 'Turn', river: 'River',

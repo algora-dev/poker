@@ -331,6 +331,30 @@ export default function GameRoom() {
     return () => clearInterval(interval);
   }, [gameId, gameState?.status]);
 
+  // WAITING-ROOM POLLING (Shaun playtest 2026-05-15, repeated incidents).
+  //
+  // The match creator's UI persistently fails to show newly-joined
+  // players — happened in CeceAndShaunTest, CeceVsShaunV4, ShaunVsCeceV6.
+  // Every fix so far has tried to make the socket push reliable
+  // (server-side broadcastGameState after join, audit-28 ordering fix,
+  // the playerCount watchdog above). The bug keeps coming back, which
+  // means the socket-push assumption is brittle in production (network,
+  // proxies, replica lag, browser tab throttling, all real causes).
+  //
+  // PERMANENT FIX: just poll while in waiting. 3-second cadence is
+  // fast enough that the creator never sees a stale lobby for more
+  // than 3 seconds, lightweight enough to be invisible to backend
+  // (one GET /api/games/:id/state every 3s during a 2-minute lobby
+  // window = 40 requests, trivial). Stops the moment the game flips
+  // to in_progress (or any non-waiting state).
+  useEffect(() => {
+    if (!gameId || !gameState || gameState.status !== 'waiting') return;
+    const interval = setInterval(() => {
+      loadGameState();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [gameId, gameState?.status]);
+
   useEffect(() => {
     loadGameState(true); // Show loader on initial load only
     

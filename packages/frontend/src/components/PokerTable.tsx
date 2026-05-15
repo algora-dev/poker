@@ -157,7 +157,16 @@ export function PokerTable({
   // (Shaun playtest 2026-05-14; waiting-room fix 2026-05-15.)
   const hideCards = betweenHands || status !== 'in_progress';
   const board = hideCards ? [] : _board;
-  const myPlayer = hideCards ? { ..._myPlayer, holeCards: [] } : _myPlayer;
+  // Hide the hero's OWN hole cards if the hero is eliminated. They've
+  // bust and are spectating; their stale holeCards from the hand they
+  // were knocked out on should not linger on the felt. (Shaun playtest
+  // 2026-05-15.) Opponents already have their holeCards omitted by the
+  // server for non-showdown players — only the hero's `myPlayer.holeCards`
+  // needs explicit hiding here.
+  const heroEliminated = _myPlayer?.position === 'eliminated';
+  const myPlayer = (hideCards || heroEliminated)
+    ? { ..._myPlayer, holeCards: [] }
+    : _myPlayer;
   const opponents = hideCards ? _opponents.map(o => ({ ...o, holeCards: [] })) : _opponents;
   // Silence unused-var warning on the deprecated formatCard prop.
   void formatCard;
@@ -295,14 +304,15 @@ export function PokerTable({
         />
 
         {/* T3 logos at ends of table — hidden on small viewports to free
-            up centre space for the pot + board cards. */}
+            up centre space for the pot + board cards.
+            Sized w-28 h-28 (was w-16 h-16, +75% per Shaun 2026-05-15). */}
         {!vp.isMobile && (
           <>
             <div className="absolute top-1/2 left-[12%] -translate-y-1/2 select-none">
-              <img src="/assets/t3-logo-white.png" alt="T3" className="w-16 h-16 opacity-[0.12]" />
+              <img src="/assets/t3-logo-white.png" alt="T3" className="w-28 h-28 opacity-[0.12]" />
             </div>
             <div className="absolute top-1/2 right-[12%] -translate-y-1/2 select-none">
-              <img src="/assets/t3-logo-white.png" alt="T3" className="w-16 h-16 opacity-[0.12]" />
+              <img src="/assets/t3-logo-white.png" alt="T3" className="w-28 h-28 opacity-[0.12]" />
             </div>
           </>
         )}
