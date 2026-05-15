@@ -59,7 +59,7 @@ export function PreActionBar({ selected, onSelect, isMobile, isTablet }: PreActi
           dimColor="bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10"
           onClick={() => onSelect('check')}
           isMobile={isMobile}
-          symbol="\u2713"
+          symbol={'\u2713'}
         />
         <PreActionButton
           label="Fold"
@@ -70,7 +70,7 @@ export function PreActionBar({ selected, onSelect, isMobile, isTablet }: PreActi
           dimColor="bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10"
           onClick={() => onSelect('fold')}
           isMobile={isMobile}
-          symbol="\u2715"
+          symbol={'\u2715'}
         />
         <PreActionButton
           label="Check/Fold"
@@ -81,7 +81,7 @@ export function PreActionBar({ selected, onSelect, isMobile, isTablet }: PreActi
           dimColor="bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10"
           onClick={() => onSelect('check_fold')}
           isMobile={isMobile}
-          symbol="\u21AA"
+          symbol={'\u21AA'}
         />
       </div>
     </div>

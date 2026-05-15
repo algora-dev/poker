@@ -305,7 +305,24 @@ function scheduleNextHand(
         return;
       }
 
-      // ─── Pre-flight checks passed — fire chime + init ──────────
+      // ─── Pre-flight checks passed — fire chime, init, push state,
+      //     THEN announce new hand. (Gerald audit-28 sign-off.) ─────────
+      //
+      // ORDER MATTERS. Previously the order was:
+      //   chime → initializeHand → game:new-hand → broadcastGameState
+      //
+      // That allowed `game:new-hand` to arrive on a client BEFORE the
+      // per-player state (positions reset to 'active', new hole cards).
+      // DealAnimation's effect ran with stale `players` (all marked
+      // folded/eliminated from the previous hand), found zero
+      // eligible seats, early-returned without firing onComplete.
+      // betweenHands stayed true forever → cards stayed hidden until
+      // page reload. Reproduced 2026-05-15 in CeceVsShaunV3 hand 2:
+      // Shaun saw a blank table while Cece saw cards normally (her
+      // events arrived in the opposite order).
+      //
+      // New order: state lands BEFORE the trigger event, so the deal
+      // animation always reads fresh positions / new hand id.
       logger.info('8s countdown finished, starting next hand + chime', {
         gameId,
         completedHandId,
@@ -313,16 +330,35 @@ function scheduleNextHand(
       });
       emitGameEvent(gameId, 'game:next-hand-chime', { gameId });
       await initializeHand(gameId);
-      emitGameEvent(gameId, 'game:new-hand', { gameId });
 
-      // Broadcast full state so clients pick up the new hand without
-      // a refetch.
-      const gp = await prisma.game.findUnique({
+      // Read the freshly-created hand for the event payload. Clients
+      // use this as a deal-animation trigger key + correlation id, so
+      // an animation can correlate with the game state it reads from
+      // broadcastGameState. (Gerald audit-28 Q1 follow-up.)
+      const refreshedGame = await prisma.game.findUnique({
         where: { id: gameId },
-        select: { players: { select: { userId: true } } },
+        select: {
+          currentHandId: true,
+          players: { select: { userId: true } },
+        },
       });
+      const newHandId = refreshedGame?.currentHandId ?? null;
+      const playerIds = refreshedGame?.players.map(p => p.userId) || [];
+
+      // Push fresh per-player state to every seated client BEFORE the
+      // trigger event. Await it so we know clients have received it
+      // before we announce the new hand.
       const { broadcastGameState } = await import('../socket');
-      await broadcastGameState(gameId, gp?.players.map(p => p.userId) || []).catch(() => {});
+      await broadcastGameState(gameId, playerIds).catch(err => {
+        logger.warn('broadcastGameState before game:new-hand failed', {
+          gameId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+      // NOW announce the new hand. Clients already have the state
+      // they need to render the deal animation.
+      emitGameEvent(gameId, 'game:new-hand', { gameId, handId: newHandId });
     } catch (err: any) {
       logger.error('Failed to start next hand', {
         gameId,

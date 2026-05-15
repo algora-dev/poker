@@ -101,7 +101,25 @@ export function DealAnimation({
       p => p.position !== 'folded' && p.position !== 'eliminated'
     );
     if (eligible.length === 0) {
+      // FAIL-OPEN (Shaun 2026-05-15, Gerald audit-28). Previously this
+      // early-return did NOT call onComplete, leaving betweenHands
+      // true forever and hiding all cards on the table. Reproduced
+      // when game:new-hand arrived before the broadcastGameState that
+      // reset positions for the new hand. Server-side ordering has
+      // been fixed (handLifecycle.ts pushes state BEFORE the event),
+      // but this safety net guarantees the UI never gets stuck even
+      // if some other path re-creates the race.
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[DealAnimation] empty eligible at triggerKey change; firing onComplete to fail-open',
+        {
+          triggerKey,
+          playerCount: playersRef.current.length,
+          positions: playersRef.current.map(p => p.position),
+        }
+      );
       setFlights(null);
+      try { onCompleteRef.current?.(); } catch { /* ignore */ }
       return;
     }
     // Sort eligible by seatIndex first; we'll pick the order from SB.

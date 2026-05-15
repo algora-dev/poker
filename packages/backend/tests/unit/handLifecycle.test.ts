@@ -295,4 +295,68 @@ describe('handLifecycle.emitPostActionLifecycle', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(initializeHandMock).not.toHaveBeenCalled();
   });
+
+  // Gerald audit-28 (CeceVsShaunV3 hand 2 missing-cards bug). The
+  // event order on the next-hand init must be:
+  //   chime → initializeHand → broadcastGameState → game:new-hand
+  // Previously broadcastGameState came AFTER game:new-hand, allowing
+  // some clients to receive the trigger event before the state it
+  // depends on. DealAnimation then saw stale (folded/eliminated) seats
+  // and aborted without firing onComplete, leaving betweenHands stuck
+  // and cards hidden until page reload.
+  it('audit-28 ordering: broadcastGameState must run BEFORE game:new-hand', async () => {
+    await runLifecycle(
+      {
+        action: 'fold',
+        gameOver: true,
+        foldWinResult: { winnerId: 'u_winner', winnerName: 'winner', pot: '5000000' },
+      },
+      { autoAction: true }
+    );
+
+    // Track in which order initializeHand, broadcastGameState, and
+    // game:new-hand fired across the 8s window.
+    const callOrder: string[] = [];
+    initializeHandMock.mockImplementationOnce(async () => {
+      callOrder.push('initializeHand');
+    });
+    broadcastGameStateMock.mockImplementationOnce(async () => {
+      callOrder.push('broadcastGameState');
+    });
+    const origEmit = emitGameEventMock.getMockImplementation();
+    emitGameEventMock.mockImplementation((...args: any[]) => {
+      if (args[1] === 'game:new-hand') callOrder.push('game:new-hand');
+      return origEmit?.(...args);
+    });
+
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    expect(callOrder).toEqual(['initializeHand', 'broadcastGameState', 'game:new-hand']);
+  });
+
+  it('audit-28: game:new-hand payload carries the new handId', async () => {
+    // Server populates currentHandId during initializeHand. The test
+    // store is reset each beforeEach() so currentHandId is the
+    // FAKE_HAND_ID; in a real run it would be the freshly-created hand.
+    // We assert that whatever the post-init currentHandId is, it ends
+    // up in the game:new-hand payload — not null/undefined — so the
+    // client can correlate the deal animation with the state it reads.
+    await runLifecycle(
+      {
+        action: 'fold',
+        gameOver: true,
+        foldWinResult: { winnerId: 'u_winner', winnerName: 'winner', pot: '5000000' },
+      },
+      { autoAction: true }
+    );
+
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    const newHandCall = emitGameEventMock.mock.calls.find(c => c[1] === 'game:new-hand');
+    expect(newHandCall).toBeDefined();
+    expect(newHandCall?.[2]).toMatchObject({
+      gameId: FAKE_GAME_ID,
+      handId: FAKE_HAND_ID,
+    });
+  });
 });

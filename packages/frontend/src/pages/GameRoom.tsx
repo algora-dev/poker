@@ -96,6 +96,15 @@ export default function GameRoom() {
   // lose chime exactly once when they bust. Initialised null so the
   // initial state-load isn't treated as a transition.
   const wasEliminatedRef = useRef<boolean | null>(null);
+  // betweenHands watchdog (Shaun 2026-05-15, Gerald audit-28).
+  // When game:new-hand arrives we set a single one-shot timer; if
+  // betweenHands is still true after 4s (deal animation worst-case
+  // is ~3s for 8 seats), we force-flip it false so the UI never
+  // gets stuck with hidden cards. Mobile portrait has NO
+  // DealAnimation mounted, so this watchdog is the ONLY thing that
+  // clears betweenHands on mobile new-hand. Cleared on every successful
+  // animation onComplete + on unmount.
+  const betweenHandsWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Counter incremented on every game:new-hand. DealAnimation watches this
   // to (re)trigger the card-flick animation + per-card sound.
   // Deal-animation trigger key. NULL initial so the animation does NOT
@@ -601,7 +610,7 @@ export default function GameRoom() {
       try { playNextHandChime(); } catch { /* audio not ready */ }
     });
 
-    socket.on('game:new-hand', () => {
+    socket.on('game:new-hand', (_payload?: { handId?: string | null }) => {
       // New hand actually starting. The 10s countdown and chime have
       // already fired (game:next-hand-chime arrived ~2s ago). Now we
       // trigger the deal animation. betweenHands STAYS true here so
@@ -615,7 +624,19 @@ export default function GameRoom() {
       setGameCompleted(false);
       setNextHandCountdown(null);
       setDealTrigger(t => (t ?? 0) + 1); // trigger deal animation
-      // State will come via game:state event from broadcastGameState
+      // State arrives via broadcastGameState which the server now sends
+      // BEFORE this event (Gerald audit-28). Even so, install a 4s
+      // watchdog so the UI never gets stuck on betweenHands=true if the
+      // animation aborts or (on mobile portrait) is never mounted.
+      if (betweenHandsWatchdogRef.current) {
+        clearTimeout(betweenHandsWatchdogRef.current);
+      }
+      betweenHandsWatchdogRef.current = setTimeout(() => {
+        // eslint-disable-next-line no-console
+        console.warn('[betweenHands watchdog] forcing false 4s after game:new-hand');
+        setBetweenHands(false);
+        betweenHandsWatchdogRef.current = null;
+      }, 4_000);
     });
 
     socket.on('game:turn-warning', () => {
@@ -642,6 +663,10 @@ export default function GameRoom() {
       socket.off('game:next-hand-countdown');
       socket.off('game:next-hand-chime');
       socket.off('game:turn-warning');
+      if (betweenHandsWatchdogRef.current) {
+        clearTimeout(betweenHandsWatchdogRef.current);
+        betweenHandsWatchdogRef.current = null;
+      }
       leaveGameRoom(gameId);
     };
   }, [socket, gameId]);
@@ -785,29 +810,24 @@ export default function GameRoom() {
     );
   }
 
-  // Show eliminated state
-  if (gameState?.myPlayer.position === 'eliminated' && gameState?.status === 'in_progress') {
-    return (
-      <div className="min-h-screen flex items-center justify-center" style={{background:'#262626'}}>
-        <div className="rounded-2xl p-8 max-w-md w-full mx-4 border border-white/10 text-center" style={{background:'rgba(255,255,255,0.03)'}}>
-          <div className="w-14 h-14 mx-auto rounded-full flex items-center justify-center mb-4" style={{background:'rgba(239,68,68,0.1)'}}>
-            <svg className="w-7 h-7 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-bold text-white mb-2">You've Been Eliminated</h2>
-          <p className="text-gray-400 text-sm mb-6">You ran out of chips. Better luck next time!</p>
-          <button
-            onClick={handleLeaveGame}
-            className="w-full py-3 text-white font-semibold rounded-xl hover:opacity-90 transition"
-            style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
-          >
-            Back to Lobby
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Eliminated player → spectator mode (Shaun 2026-05-15, Gerald audit-28).
+  //
+  // PREVIOUSLY: when the local player was marked eliminated, this branch
+  // returned a full-screen "You've Been Eliminated" card that REPLACED
+  // the table. That unmounted the showdown modal, the fast-forward
+  // street reveal, the fold-win modal — anything in flight. Cece's
+  // playtest report: she went all-in, busted, and immediately got the
+  // eliminated screen WITHOUT ever seeing who won or what happened.
+  //
+  // NEW BEHAVIOUR: keep the table mounted. The per-seat plate already
+  // renders "ELIMINATED" status (PokerTable + PokerTableMobile both
+  // know how to suppress action/pre-action buttons for eliminated
+  // players). A small dismissible banner is rendered below the header
+  // so eliminated players are reminded they're out, and they get a
+  // single-click Leave button right where the live Leave button used
+  // to be. Auto-leave on elimination is deliberately NOT wired:
+  // leaveGame has accounting implications and must stay user-triggered.
+  // (Gerald audit-28 sign-off.)
 
   // Show game completed screen.
   // Playtest 2026-05-13 fix: in a heads-up game, when opponent folds the
@@ -872,8 +892,22 @@ export default function GameRoom() {
     <div className="min-h-screen" style={{background:'#262626'}}>
       {/* Top padding 2026-05-13: top-centre seats anchored at felt rail
           y=8% render their meta column ABOVE that line; at 8-handed the
-          top row was getting cut off by the page header. */}
-      <div className="max-w-6xl mx-auto px-2 sm:px-4 pt-24 sm:pt-28 pb-2 sm:pb-4">
+          top row was getting cut off by the page header.
+          2026-05-15 Shaun playtest: previous pt-24/28 forced the table
+          so far down the page that even at min zoom the action bar
+          went off-screen and required scrolling every turn. Cut to
+          ~50%; the deal animation + top-row seats still clear the
+          header cleanly because the avatar+plate sit BELOW the felt
+          rail at top seats since the 2026-05-14 horizontal layout. */}
+      <div className="max-w-6xl mx-auto px-2 sm:px-4 pt-12 sm:pt-14 pb-2 sm:pb-4">
+        {/* Eliminated banner (Shaun 2026-05-15). Sits at the very top
+            of the in-game view so the player can keep watching the
+            action play out below. Dismissible — only re-appears on
+            page reload. Leave button takes them back to the lobby. */}
+        {gameState?.myPlayer.position === 'eliminated' && gameState?.status === 'in_progress' && (
+          <EliminatedBanner onLeave={handleLeaveGame} />
+        )}
+
         {/* Header */}
         <div className="flex justify-between items-center mb-3 sm:mb-4">
           <div>
@@ -1099,7 +1133,15 @@ export default function GameRoom() {
               seatPositionByIndex={seatPositionByIndex}
               sbSeatIndex={gameState.sbSeatIndex ?? -1}
               dealerSeatIndex={gameState.dealerSeatIndex ?? -1}
-              onComplete={() => setBetweenHands(false)}
+              onComplete={() => {
+                setBetweenHands(false);
+                // Successful animation clear — cancel the safety watchdog
+                // installed by game:new-hand. (Gerald audit-28.)
+                if (betweenHandsWatchdogRef.current) {
+                  clearTimeout(betweenHandsWatchdogRef.current);
+                  betweenHandsWatchdogRef.current = null;
+                }
+              }}
             />
           );
         })()}
@@ -1375,6 +1417,57 @@ export default function GameRoom() {
           )}
         </>
       )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * EliminatedBanner — small dismissible toast shown at the top of the
+ * in-game view when the local player has been knocked out but the game
+ * is still in progress. Replaces the full-screen "You've Been
+ * Eliminated" card that previously REPLACED the table and killed
+ * in-flight showdown/fold-win modals. (Shaun 2026-05-15, Gerald
+ * audit-28.)
+ *
+ * The eliminated player stays at the table as a spectator. Real poker
+ * sites do this — players want to see who beat them, who's running
+ * the table now, and decide when to leave on their own terms.
+ */
+function EliminatedBanner({ onLeave }: { onLeave: () => void }) {
+  const [dismissed, setDismissed] = useState(false);
+  if (dismissed) return null;
+  return (
+    <div
+      className="mb-3 rounded-xl px-4 py-3 border flex items-center justify-between gap-3"
+      style={{ background: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.35)' }}
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: 'rgba(239,68,68,0.18)' }}>
+          <svg className="w-4 h-4 text-red-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-white leading-tight">You’ve been eliminated</p>
+          <p className="text-xs text-gray-400 leading-tight">You can stay and watch, or leave the table when you’re ready.</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={onLeave}
+          className="px-3 py-1.5 text-xs text-white font-semibold rounded-lg hover:opacity-90 transition"
+          style={{ background: 'linear-gradient(135deg, #12ceec, #9c51ff)' }}
+        >
+          Leave
+        </button>
+        <button
+          onClick={() => setDismissed(true)}
+          title="Dismiss banner"
+          className="px-2 py-1.5 text-xs text-gray-300 rounded-lg hover:bg-white/5 transition"
+        >
+          ✕
+        </button>
       </div>
     </div>
   );
