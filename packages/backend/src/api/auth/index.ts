@@ -208,27 +208,18 @@ export default async function authRoutes(fastify: FastifyInstance) {
         tokenType?: 'access' | 'refresh';
       };
 
-      // SECURITY [audit-30 H-03]: refresh endpoint must reject access
-      // tokens. Previously any valid JWT (access OR refresh) could be
-      // used here, meaning a stolen access token could mint fresh
-      // access tokens indefinitely.
-      //
-      // Transition rule: tokens issued BEFORE this fix have no
-      // `tokenType` claim. We accept those (with a deprecation
-      // warning) so existing logged-in users aren't kicked out the
-      // moment this deploys. Once all pre-fix refresh tokens expire
-      // (7 days max), we can tighten to "tokenType must equal 'refresh'".
-      if (payload.tokenType === 'access') {
+      // SECURITY [audit-30 H-03, tightened in audit-31 H-01]: refresh
+      // endpoint REQUIRES `tokenType === 'refresh'`. Access tokens and
+      // legacy no-claim tokens are both rejected. The earlier
+      // soft-transition (accept missing claim with a warning) was
+      // removed on Gerald's call: pre-production is the right time
+      // to force re-login rather than hold a 7-day legacy hole open.
+      if (payload.tokenType !== 'refresh') {
         return reply.code(401).send({
           error: 'Unauthorized',
-          message: 'Access tokens cannot be used to refresh; use a refresh token.',
+          message:
+            'Refresh requires a refresh token. Access / legacy tokens are rejected; please log in again.',
         });
-      }
-      if (!payload.tokenType) {
-        logger.warn(
-          '[auth/refresh] DEPRECATED legacy token without tokenType claim. User will need to re-login after 7d.',
-          { userId: payload.userId }
-        );
       }
 
       // Generate new access token (with tokenType claim).

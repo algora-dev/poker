@@ -608,18 +608,30 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           retryAfterMs = res.retryAfterMs;
         } catch (_) {}
 
-        // Emit a security_event AppLog row distinct from the normal
-        // action error category, so ops dashboards can separate adversarial
-        // probing from honest mistakes. (Gerald audit-30.)
+        // Categorise the rejection into `gameplay_reject` (benign
+        // gameplay-rule rejections — frequent, expected) vs
+        // `security_event` (probing-shaped rejections — dead-seat,
+        // wrong-user, malformed input, throttle exceeded). Audit-31
+        // M-03 (Gerald): separate buckets so ops telemetry isn't
+        // dominated by honest mistakes.
+        const errMsg = error instanceof Error ? error.message : String(error);
+        const isGameplayReject =
+          /^Not your turn$|^Cannot check|^Nothing to call|min-raise|^Stale action|^Raise must be higher|^Invalid raise amount$|^Raise amount must exceed/i.test(
+            errMsg
+          );
+        const logCategory: 'gameplay_reject' | 'security_event' =
+          isGameplayReject && !throttleExceeded
+            ? 'gameplay_reject'
+            : 'security_event';
         try {
           const { appLog } = await import('../../services/appLogger');
           await appLog(
             'warn',
-            'security_event',
+            logCategory,
             `Rejected action ${action} for user ${request.user!.id.slice(-6)}`,
             {
               action,
-              reason: error instanceof Error ? error.message : String(error),
+              reason: errMsg,
               throttleExceeded,
             },
             { userId: request.user!.id, gameId: id }

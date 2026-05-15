@@ -175,11 +175,26 @@ describe('Anti-cheat phase 2 — admin endpoint authentication (audit-30 H-01)',
   });
 
   // ─── 5. Legacy query-based auth still works ───────────────────
-  it('still accepts admin secret via query (legacy, deprecated)', async () => {
+  it('audit-31 H-02: REJECTS admin secret via query string (403)', async () => {
+    // Even with the CORRECT secret value, query-string transport is
+    // no longer accepted. The caller must use X-Admin-Secret header.
+    // Audit-31 H-02 tightening on Gerald's call.
     app = await buildAdminApp();
     const res = await app.inject({
       method: 'GET',
       url: `/api/admin/logs?secret=${encodeURIComponent(TEST_ADMIN_SECRET)}`,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('audit-31 H-02: query secret IGNORED but valid header still works', async () => {
+    // Sanity: a request that has BOTH a query secret (now ignored) AND
+    // the proper header should still authenticate via the header.
+    app = await buildAdminApp();
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/admin/logs?secret=${encodeURIComponent(TEST_ADMIN_SECRET)}`,
+      headers: { 'x-admin-secret': TEST_ADMIN_SECRET },
     });
     expect(res.statusCode).toBe(200);
   });

@@ -36,29 +36,28 @@ function isAdminSecretValid(provided: unknown): boolean {
 }
 
 /**
- * Extract the admin secret from a request, preferring the
- * `X-Admin-Secret` header over query/body fallbacks.
+ * Extract the admin secret from a request.
  *
- * SECURITY [audit-30 H-01, Gerald-flagged 2026-05-15]:
- * Previously admin secrets travelled via query string and request
+ * SECURITY [audit-30 H-01 + audit-31 H-02, Gerald-flagged 2026-05-15]:
+ * Originally admin secrets travelled via query string and request
  * body. Query strings leak into browser history, reverse-proxy logs,
  * support screenshots, and referrers — a real exposure risk for a
  * real-money product.
  *
- * NEW (preferred): clients send `X-Admin-Secret: <secret>` header.
- * Headers are not logged by default proxies and are not visible in
- * browser history or referrer.
+ * Audit-30 deprecated both legacy transports. Audit-31 tightened:
+ *   - `X-Admin-Secret` header is the only production-supported path.
+ *   - `body.secret` is still accepted as a short migration fallback
+ *     (POST routes only) but emits a loud deprecation warning.
+ *   - `query.secret` is NO LONGER ACCEPTED — callers using it get 403.
+ *     Removed entirely on Gerald's call because the leakage risk is
+ *     too high to keep accepting even with a warning.
  *
- * DEPRECATED (still accepted with a warning log so existing tooling
- * keeps working through this transition): the legacy body / query
- * `secret` field. Tooling should migrate to the header.
- *
- * Returns the secret if found anywhere (or null), plus a `legacy`
- * flag so callers can emit a deprecation warning.
+ * Returns the secret if found in an accepted transport (or null),
+ * plus a `legacy` flag so callers can emit a deprecation warning.
  */
 export function getAdminSecretFromRequest(request: any): {
   secret: string | null;
-  legacy: 'body' | 'query' | null;
+  legacy: 'body' | null;
 } {
   // Preferred: X-Admin-Secret header. fastify normalises header names
   // to lower-case.
@@ -68,16 +67,15 @@ export function getAdminSecretFromRequest(request: any): {
   if (typeof headerSecret === 'string' && headerSecret.length > 0) {
     return { secret: headerSecret, legacy: null };
   }
-  // Fallback: body.secret (legacy).
+  // Short-migration fallback: body.secret. Will be removed in a
+  // follow-up phase; for now it works on POST endpoints only and
+  // logs a deprecation warning.
   const body: any = request.body;
   if (typeof body?.secret === 'string' && body.secret.length > 0) {
     return { secret: body.secret, legacy: 'body' };
   }
-  // Fallback: query.secret (legacy, worst case — hits server logs).
-  const query: any = request.query;
-  if (typeof query?.secret === 'string' && query.secret.length > 0) {
-    return { secret: query.secret, legacy: 'query' };
-  }
+  // Query-string secret is NO LONGER an accepted transport (audit-31
+  // H-02). Even if query.secret is present, treat as no secret.
   return { secret: null, legacy: null };
 }
 

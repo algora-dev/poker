@@ -45,6 +45,14 @@ declare module '@fastify/jwt' {
 
 /**
  * Middleware to verify JWT token and attach the full user record.
+ *
+ * SECURITY [audit-31 H-01, Gerald-flagged 2026-05-15]:
+ * This middleware now REQUIRES `tokenType === 'access'`. Refresh
+ * tokens (7-day TTL) cannot be used to call protected routes —
+ * previously they could, which collapsed the access/refresh
+ * separation entirely. Legacy tokens issued before tokenType was
+ * added are rejected so the pre-production migration is clean;
+ * users re-login on first request.
  */
 export async function authMiddleware(
   request: FastifyRequest,
@@ -57,6 +65,16 @@ export async function authMiddleware(
 
     // Re-read the payload as the raw shape we signed so we can fetch the user.
     const payload = request.user as unknown as JwtPayload;
+
+    // SECURITY [audit-31 H-01]: only access tokens may authenticate
+    // protected routes. Reject refresh tokens and legacy no-claim tokens.
+    if (payload.tokenType !== 'access') {
+      return reply.code(401).send({
+        error: 'Unauthorized',
+        message:
+          'Invalid token type for this endpoint. Use an access token; refresh tokens are for /api/auth/refresh only.',
+      });
+    }
 
     const user = await getUserById(payload.userId);
     if (!user) {
@@ -78,6 +96,10 @@ export async function authMiddleware(
 
 /**
  * Optional auth - attaches user if token present, but doesn't require it.
+ *
+ * SECURITY [audit-31 H-01]: same tokenType enforcement as the strict
+ * middleware. A refresh-token wielder cannot be silently "signed in"
+ * to an optional-auth route either.
  */
 export async function optionalAuthMiddleware(
   request: FastifyRequest,
@@ -86,6 +108,11 @@ export async function optionalAuthMiddleware(
   try {
     await request.jwtVerify();
     const payload = request.user as unknown as JwtPayload;
+    if (payload.tokenType !== 'access') {
+      // Refresh or legacy token — do not attach a user. Optional-auth
+      // routes treat the caller as anonymous.
+      return;
+    }
     const user = await getUserById(payload.userId);
     if (user) {
       request.user = user as AuthUser;

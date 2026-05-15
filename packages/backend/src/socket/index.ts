@@ -76,6 +76,12 @@ export function initializeSocketServer(server: any) {
   // Auth middleware: every connection must present a valid JWT.
   // The verified userId is bound to the socket and is the ONLY identity
   // we trust for room joins (clients can no longer self-claim a userId).
+  //
+  // SECURITY [audit-31 H-01, Gerald-flagged 2026-05-15]: sockets now
+  // REQUIRE `tokenType === 'access'`. Refresh tokens cannot open a
+  // socket. Legacy no-claim tokens are also rejected for clean
+  // pre-production migration — clients re-login to acquire a tokenType-
+  // tagged access token.
   io.use((socket, next) => {
     const token = extractToken(socket);
     if (!token) {
@@ -83,9 +89,21 @@ export function initializeSocketServer(server: any) {
       return next(new Error('Unauthorized: missing token'));
     }
     try {
-      const payload = verifyJwt(token) as { userId?: string };
+      const payload = verifyJwt(token) as {
+        userId?: string;
+        tokenType?: 'access' | 'refresh';
+      };
       if (!payload?.userId) {
         return next(new Error('Unauthorized: invalid token payload'));
+      }
+      if (payload.tokenType !== 'access') {
+        logger.warn('Socket auth rejected: wrong token type', {
+          socketId: socket.id,
+          tokenType: payload.tokenType ?? 'missing',
+        });
+        return next(
+          new Error('Unauthorized: socket auth requires an access token')
+        );
       }
       socket.userId = payload.userId;
       return next();

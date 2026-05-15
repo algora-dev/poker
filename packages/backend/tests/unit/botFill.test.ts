@@ -428,9 +428,12 @@ describe('botFill — admin endpoint auth', () => {
     expect(body.bots).toHaveLength(2);
 
     // GET /api/admin/bots should list them.
+    // SECURITY [audit-31 H-02]: query-string admin secret is no longer
+    // accepted; use the X-Admin-Secret header.
     const list = await app.inject({
       method: 'GET',
-      url: '/api/admin/bots?secret=correct-secret',
+      url: '/api/admin/bots',
+      headers: { 'x-admin-secret': 'correct-secret' },
     });
     expect(list.statusCode).toBe(200);
     expect(JSON.parse(list.body).bots.length).toBe(2);

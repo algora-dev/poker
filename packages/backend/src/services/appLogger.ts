@@ -8,12 +8,22 @@ import { logger } from '../utils/logger';
 /**
  * Log categories.
  *
- * `security_event` was added 2026-05-15 (audit-30, Gerald-flagged) to
- * separate adversarial / probing rejections from normal action errors
- * so ops dashboards can distinguish:
- *   - `action` errors  — expected gameplay errors (Cannot check, etc.)
- *   - `security_event` — rejected actions that may indicate probing
- *     (wrong-user, dead-seat, replay-stale, throttle-exceeded)
+ * Audit-30 added `security_event`; audit-31 (Gerald M-03) split that
+ * further so dashboards aren't drowned in honest gameplay mistakes:
+ *
+ *   - `action`           — normal action lifecycle info (Player call, ...)
+ *   - `gameplay_reject`  — expected gameplay-rule rejections
+ *                          (Not your turn, Cannot check, Nothing to
+ *                          call, min-raise, Stale action). These are
+ *                          frequent and BENIGN — stale UI clicks,
+ *                          mid-action races. Keep them separate so
+ *                          the security signal isn't polluted.
+ *   - `security_event`   — rejections that may indicate probing:
+ *                          wrong-user, dead-seat, malformed input,
+ *                          throttle exceeded, auth/socket probing.
+ *
+ * Action route logic decides which bucket a rejection lands in based
+ * on the error message shape.
  */
 export type AppLogCategory =
   | 'action'
@@ -21,6 +31,7 @@ export type AppLogCategory =
   | 'auth'
   | 'system'
   | 'timer'
+  | 'gameplay_reject'
   | 'security_event';
 
 export async function appLog(
