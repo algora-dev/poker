@@ -68,6 +68,40 @@ export async function processAction(
       throw new Error('Player not found in game');
     }
 
+    // ANTI-CHEAT [audit-30 H-02]: explicit dead-seat rejection.
+    //
+    // Defence in depth. Under normal flow, turn advancement skips
+    // folded/eliminated/all-in seats, so activePlayerIndex should
+    // never point at one. BUT: if any future bug or race leaves the
+    // index on a dead seat, a player whose position is
+    // 'folded' / 'eliminated' / 'all_in' must NOT be able to submit
+    // an action. They have no remaining decisions: folded players
+    // are done for the hand, all-in players are committed, eliminated
+    // players are out of the game.
+    //
+    // Reject BEFORE the H-02 version guard so even if the guard
+    // somehow passed via stale-state, no mutation runs.
+    if (
+      player.position === 'folded' ||
+      player.position === 'eliminated' ||
+      player.position === 'all_in'
+    ) {
+      throw new Error(
+        `Player cannot act from current seat state: ${player.position}`
+      );
+    }
+
+    // ANTI-CHEAT [audit-30 M-01]: finite-number validation on raiseAmount.
+    //
+    // The Zod schema also rejects non-finite numbers, but the engine
+    // is callable from internal paths (turnTimer auto-action, tests,
+    // future internal callers) so defend here too. `Math.floor(NaN)`
+    // is NaN; `BigInt(NaN)` throws a RangeError that surfaces as a
+    // confusing 500. Catch it explicitly and surface as a clean error.
+    if (action === 'raise' && raiseAmount !== undefined && !Number.isFinite(raiseAmount)) {
+      throw new Error('Invalid raise amount');
+    }
+
     // PHASE 3 [H-02]: optimistic concurrency guard.
     // Atomically claim the right to advance this turn before any state
     // mutation. The guard requires the same hand id, active player index,

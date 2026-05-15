@@ -528,7 +528,11 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         ({ action, raiseAmount } = z
           .object({
             action: z.enum(['fold', 'check', 'call', 'raise', 'all-in']),
-            raiseAmount: z.number().optional(),
+            // ANTI-CHEAT [audit-30 M-01]: .finite() rejects NaN / Infinity
+            // / -Infinity at the HTTP boundary. Engine also defends with
+            // Number.isFinite (defence in depth) but catching here gives
+            // a clean 400 instead of a 500 from BigInt(NaN).
+            raiseAmount: z.number().finite().optional(),
           })
           .parse(request.body));
 
