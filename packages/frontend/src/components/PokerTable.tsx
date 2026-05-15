@@ -303,15 +303,18 @@ export function PokerTable({
              style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg width=\'4\' height=\'4\' viewBox=\'0 0 4 4\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cpath d=\'M1 3h1v1H1V3zm2-2h1v1H3V1z\' fill=\'%23000000\' fill-opacity=\'0.3\'/%3E%3C/svg%3E")' }}
         />
 
-        {/* T3 logos at ends of table — hidden on small viewports to free
-            up centre space for the pot + board cards.
-            Sized w-28 h-28 (was w-16 h-16, +75% per Shaun 2026-05-15). */}
+        {/* T3 logos near the ends of the table — hidden on small
+            viewports to free up centre space for the pot + board cards.
+            Sized w-28 h-28 (was w-16 h-16, +75% per Shaun 2026-05-15).
+            Positioned at 22% from each edge (was 12% — the east/west
+            seat avatars at 6-8 handed overlapped the logos at 12%).
+            Shaun playtest 2026-05-15. */}
         {!vp.isMobile && (
           <>
-            <div className="absolute top-1/2 left-[12%] -translate-y-1/2 select-none">
+            <div className="absolute top-1/2 left-[22%] -translate-y-1/2 select-none">
               <img src="/assets/t3-logo-white.png" alt="T3" className="w-28 h-28 opacity-[0.12]" />
             </div>
-            <div className="absolute top-1/2 right-[12%] -translate-y-1/2 select-none">
+            <div className="absolute top-1/2 right-[22%] -translate-y-1/2 select-none">
               <img src="/assets/t3-logo-white.png" alt="T3" className="w-28 h-28 opacity-[0.12]" />
             </div>
           </>
@@ -647,10 +650,12 @@ export function PokerTable({
             ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }
             : {
                 // Push the action bar down enough that the hero row
-                // (which absolute-positions OUT of the felt-container,
-                // extending below it by ~ avatar+plate height) doesn't
-                // overlap. Tuned per viewport.
-                marginTop: vp.isTablet ? '90px' : '110px',
+                // (avatar + name plate + chip plate row) doesn't get
+                // obscured by the bar. Tuned per viewport.
+                // Shaun playtest 2026-05-15: bumped from 90/110 to
+                // 125/145 because the chip-balance plate under the
+                // hero name was being cut by the bar.
+                marginTop: vp.isTablet ? '125px' : '145px',
               }}
         >
           <div

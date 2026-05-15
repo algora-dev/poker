@@ -40,7 +40,10 @@ export function PreActionBar({ selected, onSelect, isMobile, isTablet }: PreActi
     ? { paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }
     : {
         // Match the live action bar's spacing so the swap doesn't jump.
-        marginTop: isTablet ? '90px' : '110px',
+        // Match the live action bar's spacing so the swap doesn't jump.
+        // Shaun playtest 2026-05-15: bumped from 90/110 to 125/145 so
+        // the hero's chip plate is no longer obscured by either bar.
+        marginTop: isTablet ? '125px' : '145px',
       };
 
   const innerClass = isMobile

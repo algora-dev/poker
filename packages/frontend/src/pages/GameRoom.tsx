@@ -274,7 +274,47 @@ export default function GameRoom() {
       if (showLoader) setLoading(true);
       const response = await api.get(`/api/games/${gameId}/state`);
       captureFinalStandingsIfNeeded(response.data);
-      setGameState(response.data);
+      // STALE-POLL GUARD (Shaun playtest 2026-05-15): the 3s
+      // waiting-room polling can land AFTER a fresh socket-pushed
+      // game:state for in_progress / next hand. If we blindly
+      // setGameState(staleHttp), the table 'flaps' — creator saw
+      // 2-3 seconds of laggy UI right after the match started.
+      //
+      // Rule: only accept the HTTP payload if it isn't OLDER than
+      // what we already have.
+      //   - status: don't regress (in_progress > waiting; completed > in_progress).
+      //   - currentHandId: don't regress to a previous hand id when we
+      //     already know the new one (when both sides have one).
+      const incoming = response.data;
+      setGameState(curr => {
+        if (!curr) return incoming; // first load, just accept.
+        const order: Record<string, number> = {
+          waiting: 0, in_progress: 1, showdown: 2, completed: 3, cancelled: 3,
+        };
+        const currStatusRank = order[curr.status] ?? 0;
+        const incStatusRank = order[incoming.status] ?? 0;
+        if (incStatusRank < currStatusRank) {
+          // HTTP poll regressing status — ignore.
+          return curr;
+        }
+        const currHandId = (curr as any).currentHandId;
+        const incHandId = (incoming as any).currentHandId;
+        if (
+          incStatusRank === currStatusRank &&
+          currHandId &&
+          incHandId &&
+          currHandId !== incHandId
+        ) {
+          // Both in_progress, but currentHandId disagrees. Prefer the
+          // socket-pushed hand id (curr) over a stale HTTP read —
+          // unless incoming's hand has a HIGHER number (meaning HTTP
+          // legitimately knows about a newer hand).
+          const currHandNumber = (curr as any).handNumber ?? 0;
+          const incHandNumber = (incoming as any).handNumber ?? 0;
+          if (incHandNumber < currHandNumber) return curr;
+        }
+        return incoming;
+      });
       setError('');
       
       // Don't auto-set gameCompleted - only showdown event should do that
