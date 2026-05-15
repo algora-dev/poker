@@ -459,4 +459,114 @@ describe('Layer B — multi-way scenarios (5–8 handed)', () => {
     const totalChips = (totalStack + totalBalance) / 1_000_000;
     expect(totalChips).toBe(1200);
   });
+
+  // MW-07 — Gerald audit-29 regression (CeceVsShaunV4 hand 5).
+  //
+  // Scenario: when a fold leaves exactly ONE non-all-in player but
+  // THAT player still has an unresolved decision against a previous
+  // all-in raise, the engine MUST give them their decision. It must
+  // NOT fast-forward to showdown.
+  //
+  // Previously (pre-fix): the fold-path block at pokerActions.ts:167
+  // ran `if (remainingNonAllIn.length <= 1) { fast-forward; }`
+  // unconditionally. Under this script, after seat-0's fold,
+  // remainingNonAllIn = [seat-2 (BB)] (length 1) and the engine
+  // ran showdown without asking BB whether to call the all-in raise
+  // — confirmed real fairness/chip-distribution bug.
+  //
+  // Fix: delete the early fast-forward; let settlePostAction()'s
+  // bettingComplete gate be the single settlement check. If betting
+  // is incomplete, fall through to find-next-active-player which
+  // correctly hands the decision to BB.
+  //
+  // Test shape: this hand SHOULD complete in two betting decisions
+  // after the trigger fold (BB acts, then settlement). If the bug
+  // re-appears, the script's BB action below would be rejected as
+  // "no active hand" / "not your turn" because the engine already
+  // ran showdown, and the test would fail.
+  it('MW-07 (audit-29): fold leaving 1 non-all-in with unresolved action must NOT fast-forward', async () => {
+    // SETUP NOTE: the lone non-all-in survivor (seat 2 = BB) must have
+    // chips REMAINING after her last action, otherwise the engine
+    // auto-marks her all-in on the raise and the bug condition never
+    // arises. So BB has stack=20 and only commits 8 of it (call,
+    // not all-in). After BTN folds, BB still has 12 chips left and
+    // an unresolved 7-chip call vs UTG's all-in re-raise to 15.
+    //
+    // Blinds 1/2 (integer-friendly).
+    setForcedDeck(
+      buildPartialDeck([
+        // 6 seats; deal order: seat 0 (BTN), 1 (SB), 2 (BB), 3 (UTG), 4 (HJ), 5 (CO).
+        // Board completes a 5-9 straight flush on spades so eligible
+        // showdown participants split equally — keeps math clean.
+        '2c', '3c',          // seat 0 (BTN, stack 100)
+        '4c', '5c',          // seat 1 (SB,  stack 4)
+        '6c', '7c',          // seat 2 (BB,  stack 20)
+        '8c', '9c',          // seat 3 (UTG, stack 15)
+        'Tc', 'Jc',          // seat 4 (HJ,  stack 8)
+        'Qc', 'Kc',          // seat 5 (CO,  stack 6)
+        '5s', '6s', '7s',    // flop
+        '8s',                // turn
+        '9s',                // river: 5-9 straight flush of spades on board
+      ])
+    );
+    const r = await runScripted({
+      name: 'MW-07_audit29_unresolved_decision_after_fold',
+      players: 6,
+      stacks: [100, 4, 20, 15, 8, 6],
+      blinds: { sb: 1, bb: 2 },
+      hands: [
+        {
+          preflop: [
+            // 6-handed preflop order: UTG (seat 3), HJ (4), CO (5),
+            // BTN (0), SB (1), BB (2). SB has already posted 1, BB 2.
+            { seat: 3, action: 'raise', amount: 4 },  // UTG raises to 4
+            { seat: 4, action: 'all-in' },            // HJ all-in 8 (raise above min, reopens)
+            { seat: 5, action: 'all-in' },            // CO all-in 6 (short, M-01: does NOT reopen)
+            { seat: 0, action: 'call' },              // BTN calls 8 (HJ's all-in is the high-water bet)
+            { seat: 1, action: 'fold' },              // SB folds (loses 1 blind)
+            { seat: 2, action: 'call' },              // BB calls 8 (had 20; needs 6 more; 12 left; stays 'active')
+            { seat: 3, action: 'all-in' },            // UTG all-in 15 (re-raise on top of HJ's 8)
+            // Action wraps back: HJ and CO already all-in (skip). BTN next,
+            // owes 7 more to call UTG's 15.
+            { seat: 0, action: 'fold' },              // BTN folds. THIS IS THE TRIGGER.
+            // After BTN's fold: remainingActive = [BB, UTG, HJ, CO]
+            // (4 players, 3 all-in). remainingNonAllIn = [BB] (length
+            // 1). BB still has 12 chips AND owes 7 chips to call UTG's
+            // re-raise. PRE-FIX engine ran showdown HERE without
+            // asking BB. POST-FIX engine MUST give BB her decision.
+            { seat: 2, action: 'fold' },              // BB folds her decision (forfeits her 8 of investment)
+          ],
+        },
+      ],
+      expect: {
+        handsCompleted: 1,
+      },
+    });
+    assertScriptedOk('MW-07', r);
+
+    // ASSERTION: BB (seat 2) MUST have taken a fold action AFTER the
+    // BTN fold (the trigger). If the pre-fix bug regresses, the engine
+    // fast-forwards immediately on BTN's fold, BB never gets her turn,
+    // and the action log only shows BB's earlier 'call' — no fold.
+    //
+    // We assert the LAST action in the log for the BB userId is a
+    // fold. Specifically: there must be exactly TWO actions by BB on
+    // preflop (call, then fold). In the buggy version there's only one.
+    const bbUserId = r.report.finalStacks[2]?.userId;
+    expect(bbUserId).toBeDefined();
+    const handActions = r.report.hands[0]?.actions ?? [];
+    const bbActions = handActions.filter(a => a.userId === bbUserId);
+    expect(
+      bbActions.length,
+      `BB should have acted TWICE preflop (call then fold) — if only 1 action, the engine fast-forwarded prematurely and skipped her decision. Got actions: ${JSON.stringify(bbActions)}`
+    ).toBe(2);
+    expect(bbActions[bbActions.length - 1]?.action).toBe('fold');
+
+    // Belt-and-braces total-chips invariant.
+    const totalStack = r.report.finalStacks.reduce((s, p) => s + Number(p.chipStack), 0);
+    const totalBalance = r.report.finalBalances.reduce((s, p) => s + Number(p.chips), 0);
+    const totalChips = (totalStack + totalBalance) / 1_000_000;
+    // Starting stacks: 100 + 4 + 20 + 15 + 8 + 6 = 153.
+    expect(totalChips).toBe(153);
+  });
 });

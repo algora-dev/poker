@@ -147,66 +147,39 @@ export async function processAction(
           };
         }
 
-        // If 0 OR 1 non-all-in players remain (with at least one all-in
-        // player still live), there are no more decision points. We must
-        // fast-forward through remaining streets and run a showdown so
-        // all-in players' main-pot equity is contested.
+        // BUG FIX 2026-05-15 (CeceVsShaunV4 hand 5, Gerald audit-29).
         //
-        // remainingNonAllIn.length === 1: lone non-all-in survivor + at
-        //   least one all-in player. (TH-05 case, original B1 fix.)
-        // remainingNonAllIn.length === 0: every remaining player is
-        //   all-in. (TH-07 case, found by Gerald audit-22 review H-01.)
-        // Both paths need the same showdown fast-forward.
+        // PREVIOUSLY: a block here ran an unconditional fast-forward to
+        // showdown whenever `remainingNonAllIn.length <= 1` (lone
+        // non-all-in survivor + at least one all-in player, or every
+        // remaining player all-in). The intent was the TH-05 / TH-07
+        // case: "no more decision points, contest all-in equity".
         //
-        // Why this matters: previously when 0 non-all-in remained, the
-        // engine fell through to "find next active player", which
-        // (a) skips all-in seats, (b) had no safety guard if no actor
-        // could be found, and (c) could set activePlayerIndex to an
-        // all-in/folded seat, stalling the hand and silently denying
-        // the all-in players their showdown.
-        if (remainingNonAllIn.length <= 1) {
-          let stage = currentHand.stage;
-          let board: any[] = JSON.parse(currentHand.board);
-          const deckArr: any[] = JSON.parse(currentHand.deck);
-          let deckIdx = 0;
-          while (stage !== 'river') {
-            const nextStg = getNextStage(stage);
-            if (nextStg === 'showdown') break;
-            const cards = nextStg === 'flop' ? 3 : 1;
-            board = [...board, ...deckArr.slice(deckIdx, deckIdx + cards)];
-            deckIdx += cards;
-            stage = nextStg;
-          }
-          await tx.hand.update({
-            where: { id: currentHand.id },
-            data: {
-              board: JSON.stringify(board),
-              deck: JSON.stringify(deckArr.slice(deckIdx)),
-              pot: newPot,
-              stage: 'river',
-            },
-          });
-          await recordHandEvent(tx, {
-            gameId: game.id,
-            handId: currentHand.id,
-            eventType: 'street_advanced',
-            payload: {
-              fromStage: currentHand.stage,
-              toStage: 'river',
-              foldFastForward: true,
-              board,
-            },
-          });
-          const showdownResults = await handleShowdown(tx, game, {
-            ...currentHand,
-            board: JSON.stringify(board),
-            pot: newPot,
-          });
-          // Tag for the frontend so it can animate the remaining street
-          // cards 1s apart before showing the showdown modal. (Issue B,
-          // Shaun 2026-05-14.)
-          return { action: 'fold', gameOver: true, showdownResults: { ...showdownResults, fastForwardFromStage: currentHand.stage } };
-        }
+        // The assumption "<= 1 non-all-in => no decisions remain" is
+        // FALSE when the lone non-all-in survivor still has an
+        // unresolved decision on the current street (e.g. they haven't
+        // yet responded to a previous all-in raise). In hand 5 of
+        // CeceVsShaunV4: after bot6 folded, Cece was the only
+        // non-all-in player BUT she still owed call/fold against
+        // Shaun's all-in re-raise of 10.8. The engine ran showdown
+        // without giving her the decision — confirmed real fairness /
+        // chip-distribution bug (Gerald audit-29).
+        //
+        // FIX: delete the early fast-forward. The shared settlePostAction()
+        // helper below already does the right thing:
+        //   - if betting is COMPLETE → advance street / fast-forward as
+        //     appropriate (its `canStillAct.length <= 1 && allInCount >= 1`
+        //     branch covers both the TH-05 and TH-07 shapes).
+        //   - if betting is INCOMPLETE → returns null, and the
+        //     fold-path's "find next active player" loop below correctly
+        //     gives the next live actor their decision.
+        //
+        // Gerald audit-29 sign-off: "My preferred patch is to remove the
+        // special early fast-forward from the fold branch and let
+        // settlePostAction() be the single settlement gate after a fold."
+        //
+        // (Also silences the unused-binding warning on remainingNonAllIn.)
+        void remainingNonAllIn;
 
         // BETTING-COMPLETION CHECK (Gerald audit-26, 2026-05-14, Issue C).
         // If this fold was the LAST unresolved actor on the current
@@ -252,9 +225,14 @@ export async function processAction(
           // Safety guard: if we couldn't find any actor (everyone is
           // folded/eliminated/all-in including the just-folded player),
           // we should NOT silently set activePlayerIndex to a bogus
-          // seat. The remainingNonAllIn.length <= 1 branch above should
-          // have caught this; if we got here something is inconsistent.
-          // Fall through to showdown rather than stalling the hand.
+          // seat. After Gerald audit-29 this fallback should be
+          // unreachable in practice — settlePostAction() handles every
+          // "betting complete" path including 0 non-all-in survivors
+          // (TH-07) and 1 non-all-in survivor with no owed action
+          // (TH-05). If we get here, settlePostAction returned null
+          // (betting not complete) AND no live actor remains —
+          // inconsistent state. Fall through to showdown as a defensive
+          // last resort and log loudly so we notice.
           if (safety >= numPlayers) {
             logger.warn('No next actor after fold; falling through to showdown', {
               gameId: game.id,
