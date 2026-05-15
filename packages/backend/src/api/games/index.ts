@@ -535,164 +535,37 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
         const { appLog, logError } = await import('../../services/appLogger');
         await appLog('info', 'action', `Player ${action}`, { action, raiseAmount, userId: request.user!.id.slice(-6) }, { userId: request.user!.id, gameId: id });
 
+        // Capture the hand id BEFORE processAction runs so the shared
+        // lifecycle helper can dedupe scheduling by completedHandId.
+        // If the action ends the hand, this is the hand that just
+        // completed; both the API path and the turnTimer auto-action
+        // path key dedupe off the same id, so a race (e.g. H-02
+        // stale-action window) can't double-schedule the next hand.
+        // (Gerald audit-27, 2026-05-15.)
+        const preActionGame = await prisma.game.findUnique({
+          where: { id },
+          select: { currentHandId: true },
+        });
+        const completedHandId = preActionGame?.currentHandId ?? undefined;
+
         const result = await processAction(id, request.user!.id, action, raiseAmount);
 
-        // IMMEDIATELY emit action event with ALL data clients need
-        emitGameEvent(id, 'game:action', {
-          gameId: id,
-          action,
-          userId: request.user!.id,
-          nextPlayer: result.nextPlayer || null,
-          pot: result.pot || null,
-          currentBet: result.currentBet || null,
-          stage: result.stage || null,
-          actionAmount: result.actionAmount || null,
-          timestamp: Date.now(),
-        });
-
-        // Broadcast full personalized state to all players (replaces client-side refetch)
-        if (!result.gameOver) {
-          const gPlayers = await prisma.game.findUnique({ where: { id }, select: { players: { select: { userId: true } } } });
-          if (gPlayers) {
-            const { broadcastGameState: bgsAction } = await import('../../socket');
-            bgsAction(id, gPlayers.players.map(p => p.userId)).catch(() => {});
-          }
-        }
-
-        // Game-over detection: if processAction ran closeGameInTx, the
-        // game's status flipped to 'completed'. Compose final standings
-        // from MoneyEvent (game_cashout) rows so the Game Over screen
-        // shows correct winners/amounts, not the stale mid-hand snapshot
-        // captured by the frontend's broadcastGameState loop.
-        //
-        // Bug fixed 2026-05-13: Game Over previously displayed the last
-        // in-progress chipStack snapshot, which on all-in fast-forward
-        // could show a bot with ~5 chips as "winner" even though the
-        // hero (Shaun) actually won the whole pot (logs: hand 9 had
-        // mid-hand snapshot Shaun=0/Bot=5.1 captured between two all-ins).
-        let finalStandingsPayload: any = null;
-        try {
-          const postGame = await prisma.game.findUnique({
-            where: { id },
-            select: { status: true },
-          });
-          if (postGame?.status === 'completed') {
-            const cashouts = await prisma.moneyEvent.findMany({
-              where: { gameId: id, eventType: { in: ['game_cashout', 'game_cancel_refund'] } },
-              orderBy: { serverTime: 'asc' },
-            });
-            const userIds = Array.from(new Set(cashouts.map(c => c.userId)));
-            const users = await prisma.user.findMany({
-              where: { id: { in: userIds } },
-              select: { id: true, username: true },
-            });
-            const nameByUser = new Map(users.map(u => [u.id, u.username]));
-            // Sum refunds per user (defensive: one row per user expected,
-            // but be tolerant of edge cases like split-pot remainders).
-            const totalByUser = new Map<string, bigint>();
-            for (const c of cashouts) {
-              totalByUser.set(c.userId, (totalByUser.get(c.userId) ?? 0n) + BigInt(c.amount));
-            }
-            const standings = Array.from(totalByUser.entries()).map(([userId, amount]) => ({
-              userId,
-              username: nameByUser.get(userId) ?? userId.slice(-6),
-              chipStack: amount.toString(),
-            }));
-            standings.sort((a, b) => Number(BigInt(b.chipStack) - BigInt(a.chipStack)));
-            finalStandingsPayload = { gameId: id, standings };
-          }
-        } catch (err) {
-          logger.warn('Failed to compose final standings (non-fatal)', {
-            gameId: id, error: err instanceof Error ? err.message : String(err),
-          });
-        }
-
-        // Emit specific events
-        if (result.showdownResults) {
-          // Hand completed via showdown - emit results
-          emitGameEvent(id, 'game:showdown', {
+        // Single post-action lifecycle path — same for human + auto
+        // actions. Emits game:action, broadcasts state, emits
+        // showdown/fold-win + countdown + game:completed as needed,
+        // and schedules the new-hand init with dedupe + pre-flight
+        // re-check. (handLifecycle.ts.)
+        const { emitPostActionLifecycle } = await import('../../services/handLifecycle');
+        await emitPostActionLifecycle(
+          {
             gameId: id,
-            ...result.showdownResults,
-          });
-
-          // After showdown: 10-second countdown so players can read the
-          // result modal, then a 3-tone airport-style chime, then a 2s
-          // pause, then the new hand is dealt. (Shaun 2026-05-14:
-          // 8s countdown then chime + deal animation fire AT THE SAME
-          // INSTANT — the previous 2s gap felt too long.)
-          logger.info('Starting 8s countdown before next hand', { gameId: id });
-          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 8 });
-          setTimeout(async () => {
-            try {
-              logger.info('8s countdown finished, starting next hand + chime', { gameId: id });
-              // Chime + deal-animation trigger fire together at t=8s.
-              emitGameEvent(id, 'game:next-hand-chime', { gameId: id });
-              const game = await prisma.game.findUnique({ where: { id } });
-              if (game && game.status === 'in_progress') {
-                await initializeHand(id);
-                emitGameEvent(id, 'game:new-hand', { gameId: id });
-                // Broadcast full state
-                const gp = await prisma.game.findUnique({ where: { id }, select: { players: { select: { userId: true } } } });
-                const { broadcastGameState: bgs2 } = await import('../../socket');
-                bgs2(id, gp?.players.map(p => p.userId) || []).catch(() => {});
-              }
-            } catch (err: any) {
-              logger.error('Failed to start next hand', {
-                gameId: id,
-                error: err?.message || String(err),
-                stack: err?.stack,
-              });
-            }
-          }, 8_000); // 8s total: chime + deal anim fire simultaneously at t=8s
-        } else if (result.gameOver) {
-          // Hand completed via fold
-          if (result.foldWinResult) {
-            // Someone won because everyone else folded
-            emitGameEvent(id, 'game:fold-win', {
-              gameId: id,
-              ...result.foldWinResult,
-            });
-          }
-          emitGameEvent(id, 'game:updated', {
-            gameId: id,
-            action,
             userId: request.user!.id,
-          });
-
-          // Fold-win uses the same 8s countdown + simultaneous chime +
-          // deal-animation flow as showdown for consistent pacing.
-          // (Shaun 2026-05-14.)
-          emitGameEvent(id, 'game:next-hand-countdown', { gameId: id, seconds: 8 });
-          setTimeout(async () => {
-            try {
-              emitGameEvent(id, 'game:next-hand-chime', { gameId: id });
-              const game = await prisma.game.findUnique({ where: { id } });
-              if (game && game.status === 'in_progress') {
-                await initializeHand(id);
-                emitGameEvent(id, 'game:new-hand', { gameId: id });
-                const gp2 = await prisma.game.findUnique({ where: { id }, select: { players: { select: { userId: true } } } });
-                const { broadcastGameState: bgs3 } = await import('../../socket');
-                bgs3(id, gp2?.players.map(p => p.userId) || []).catch(() => {});
-              }
-            } catch (err) {
-              logger.error('Failed to start next hand after fold', {
-                gameId: id,
-                error: (err as any)?.message || String(err),
-                stack: (err as any)?.stack,
-              });
-            }
-          }, 8_000); // 8s total: chime + deal anim fire simultaneously
-        } else {
-          // Normal action - game:action already emitted above
-        }
-
-        // If the game has just completed, emit a final-standings event so
-        // the frontend Game Over screen can show authoritative winner +
-        // chip totals (not the stale mid-hand snapshot it captures from
-        // in_progress state broadcasts).
-        if (finalStandingsPayload) {
-          emitGameEvent(id, 'game:completed', finalStandingsPayload);
-        }
+            action,
+            autoAction: false,
+            completedHandId,
+          },
+          result
+        );
 
         logger.info('Player action processed', {
           gameId: id,

@@ -157,25 +157,33 @@ async function checkExpiredTurns() {
       });
 
       try {
-        await processAction(game.id, activePlayer.userId, autoAction);
-        emitGameEvent(game.id, 'game:updated', {
-          gameId: game.id,
-          action: autoAction,
-          userId: activePlayer.userId,
-          autoAction: true,
-        });
-        // Phase 10 [H-03]: also push fresh per-player state so clients
-        // don't have to refetch after every auto-fold/auto-check. Mirrors
-        // what /api/games/:id/action does at the end of a real action.
-        try {
-          const playerIds = game.players.map((p: any) => p.userId);
-          await broadcastGameState(game.id, playerIds);
-        } catch (broadcastErr) {
-          logger.warn('broadcastGameState after auto-action failed (non-fatal)', {
+        // BUG FIX 2026-05-15 (CeceAndShaunTest freeze, Gerald audit-27):
+        // previously this path called processAction() then emitted ONLY
+        // game:updated + broadcastGameState. If the auto-action ended
+        // the hand (auto-fold that became the fold-win, or fast-forward
+        // showdown), the frontend never received game:fold-win /
+        // game:showdown / game:next-hand-countdown and no setTimeout
+        // ever fired initializeHand() — the table died.
+        //
+        // Now we route through the SAME shared lifecycle helper that
+        // the /api/games/:id/action route handler uses. Identical emit
+        // chain for human and auto actions, with per-completed-handId
+        // dedupe so a race (e.g. H-02 stale-action window) can't
+        // double-schedule the next hand.
+        const result = await processAction(game.id, activePlayer.userId, autoAction);
+
+        const { emitPostActionLifecycle } = await import('../services/handLifecycle');
+        await emitPostActionLifecycle(
+          {
             gameId: game.id,
-            error: (broadcastErr as Error).message,
-          });
-        }
+            userId: activePlayer.userId,
+            action: autoAction,
+            autoAction: true,
+            completedHandId: hand.id,
+          },
+          result as any
+        );
+
         // Clear any warning state for this turn since it's over.
         warnedTurns.delete(lockKey);
       } catch (err) {

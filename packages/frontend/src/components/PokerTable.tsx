@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
 import { getAvatarSrc } from '../utils/avatars';
 import { useViewport } from '../hooks/useViewport';
 import { computeSeatPositionsForViewport, type SeatPos } from '../utils/seatLayout';
 import { PlayingCard, CardBack, type CardSize } from './PlayingCard';
+import { PreActionBar, type PreActionOption } from './PreActionBar';
 
 interface Player {
   userId: string;
@@ -50,10 +50,9 @@ interface PokerTableProps {
    * and avoids the deal animation looking like it plays "twice".
    */
   betweenHands?: boolean;
-  /** Pre-action toggle: 'check_fold' when queued, null when not. */
-  preAction?: 'check_fold' | null;
-  /** Toggle pre-action on/off. */
-  onTogglePreAction?: () => void;
+  // Pre-action props are defined on the function-signature intersection
+  // below (alongside the imported PreActionOption type) so the runtime
+  // type and the imported union stay in lock-step.
 }
 
 // Seat positions around an oval table (CSS positions as percentages).
@@ -144,15 +143,22 @@ export function PokerTable({
   actionLoading,
   betweenHands,
   preAction,
-  onTogglePreAction,
-}: PokerTableProps & { betweenHands?: boolean; preAction?: 'check_fold' | null; onTogglePreAction?: () => void }) {
-  // When between hands, override board + every player's hole cards to
-  // empty so the felt is visually clean during the 12s gap. The deal
-  // animation will populate fresh cards on game:new-hand.
-  // (Shaun playtest 2026-05-14.)
-  const board = betweenHands ? [] : _board;
-  const myPlayer = betweenHands ? { ..._myPlayer, holeCards: [] } : _myPlayer;
-  const opponents = betweenHands ? _opponents.map(o => ({ ...o, holeCards: [] })) : _opponents;
+  onSelectPreAction,
+}: PokerTableProps & {
+  /** Currently-queued pre-action; null = nothing queued. */
+  preAction?: PreActionOption | null;
+  /** Click handler — toggles the option (same option clicked again = deselect). */
+  onSelectPreAction?: (opt: PreActionOption) => void;
+}) {
+  // Hide cards when:
+  //  - between hands (8s countdown gap; clean felt before deal animation)
+  //  - game hasn't started yet (waiting/lobby state — no deal has
+  //    happened, so showing card backs is a lie)
+  // (Shaun playtest 2026-05-14; waiting-room fix 2026-05-15.)
+  const hideCards = betweenHands || status !== 'in_progress';
+  const board = hideCards ? [] : _board;
+  const myPlayer = hideCards ? { ..._myPlayer, holeCards: [] } : _myPlayer;
+  const opponents = hideCards ? _opponents.map(o => ({ ...o, holeCards: [] })) : _opponents;
   // Silence unused-var warning on the deprecated formatCard prop.
   void formatCard;
   const allPlayers = [myPlayer, ...opponents];
@@ -441,14 +447,17 @@ export function PokerTable({
           </div>
         );
 
-        // Between hands, the felt must be CLEAN — no face-up hero
-          // cards, no face-down opponent cards (Shaun 2026-05-14). The
-          // deal animation lands cards into seats; the static cards then
-          // take over when DealAnimation's onComplete fires and flips
-          // betweenHands false.
+        // The felt must be CLEAN — no face-up hero cards, no face-down
+          // opponent cards — in TWO states:
+          //   1. Between hands (8s countdown gap, Shaun 2026-05-14): the
+          //      deal animation lands cards into seats; the static
+          //      cards take over when DealAnimation's onComplete fires.
+          //   2. Waiting / pre-start lobby (Shaun 2026-05-15): no deal
+          //      has happened, so showing card backs is misleading.
+          // Both states are unified into `hideCards` above.
           const HoleCards = (
           <div className="flex gap-0.5 sm:gap-1">
-            {betweenHands ? null : isMe ? (
+            {hideCards ? null : isMe ? (
               player.holeCards.length > 0 ? (
                 player.holeCards.map((card: any, i: number) => (
                   <PlayingCard key={i} card={card} size={sizing.cardHeroSize} />
@@ -465,38 +474,11 @@ export function PokerTable({
           </div>
         );
 
-        // Per-seat pre-action button. Only rendered for the hero (isMe),
-          // only when pre-action is showable (not their turn, still active
-          // in the hand, not between-hands). Sits directly below their
-          // hole cards so it never obscures other players' info
-          // (Gerald audit-26 [L-01], Shaun playtest 2026-05-14).
-          const PreActionButton = (
-          isMe
-          && !isMyTurn
-          && status === 'in_progress'
-          && !isFolded
-          && !isEliminated
-          && !isAllIn
-          && !betweenHands
-          && onTogglePreAction
-        ) ? (
-          <button
-            onClick={onTogglePreAction}
-            title={preAction === 'check_fold' ? 'Click again to choose another action' : 'Queue Check (if free) or Fold (if anyone raises) for your next turn'}
-            className={`px-4 py-1.5 rounded-lg transition font-semibold text-xs flex items-center justify-center gap-1 shadow-lg whitespace-nowrap ${
-              preAction === 'check_fold'
-                ? 'bg-yellow-500 text-black ring-2 ring-yellow-300'
-                : 'bg-white/10 text-gray-300 hover:bg-white/15 border border-white/10'
-            }`}
-            style={{ backdropFilter: 'blur(8px)' }}
-          >
-            {preAction === 'check_fold' ? (
-              <><span>✓</span> FOLD?</>
-            ) : (
-              <>Check / Fold</>
-            )}
-          </button>
-        ) : null;
+        // Per-seat pre-action button removed 2026-05-15. Pre-actions
+          // now live in a dedicated <PreActionBar/> rendered at the
+          // bottom (same physical spot as the live action bar) so the
+          // player always looks at one location. Three options instead
+          // of the v1 single Check/Fold button: Check, Fold, Check/Fold.
 
         const ActionBadge = (player.lastAction || (player.currentStageBet && parseInt(player.currentStageBet) > 0)) ? (
           <div className="flex flex-col items-center">
@@ -598,11 +580,8 @@ export function PokerTable({
                     {NamePlate}
                     {ActionBadge}
                   </div>
-                  {/* Stack HoleCards + (hero-only) PreActionButton vertically
-                      so the button sits DIRECTLY UNDER the hero's cards. */}
                   <div className="flex flex-col items-center gap-1">
                     {HoleCards}
-                    {PreActionButton}
                   </div>
                 </>
               )}
@@ -611,7 +590,6 @@ export function PokerTable({
                   {AvatarBlock}
                   <div className="mt-1.5">{NamePlate}</div>
                   <div className="mt-1">{HoleCards}</div>
-                  {PreActionButton && <div className="mt-1">{PreActionButton}</div>}
                   {ActionBadge && <div className="mt-1">{ActionBadge}</div>}
                 </>
               )}
@@ -622,15 +600,33 @@ export function PokerTable({
 
       </div>{/* close felt-container */}
 
-      {/* Pre-action button is rendered INSIDE the hero seat block above
-          (under their hole cards), not globally. See per-seat render
-          for layoutMode 'bottom' / 'side'. */}
-
-      {/* ── Action Buttons ──
-          Desktop/tablet: positioned in the gutter beneath the table felt.
+      {/* ── Bottom Action Area ──
+          Two mutually-exclusive bars share the same physical slot:
+            • Live action bar  (Fold / Check / Call / Bet|Raise / All-In)
+                Visible when isMyTurn.
+            • Pre-action bar   (Check / Fold / Check/Fold)
+                Visible when it's NOT my turn but I'm still active in the
+                hand. Lets the player queue an intent for their next turn.
           Mobile: position:fixed at the bottom of the viewport so they
           are always reachable regardless of where the user has scrolled.
-          All buttons sized for 44px+ touch targets on mobile. */}
+          All buttons sized for 44px+ touch targets on mobile.
+          (Shaun 2026-05-15.) */}
+
+      {!isMyTurn
+        && status === 'in_progress'
+        && myPlayer.position !== 'folded'
+        && myPlayer.position !== 'eliminated'
+        && myPlayer.position !== 'all_in'
+        && !betweenHands
+        && onSelectPreAction
+        && (
+          <PreActionBar
+            selected={preAction ?? null}
+            onSelect={onSelectPreAction}
+            isMobile={vp.isMobile}
+            isTablet={vp.isTablet}
+          />
+        )}
 
       {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && (
         <div

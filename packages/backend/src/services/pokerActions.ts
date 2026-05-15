@@ -304,12 +304,23 @@ export async function processAction(
             return { action: 'fold', gameOver: true, showdownResults: { ...showdownResults, fastForwardFromStage: currentHand.stage } };
           }
 
+          // BUG FIX 2026-05-15 (CeceAndShaunTest freeze, Gerald audit-27):
+          // every other turn-handoff branch writes `turnStartedAt: new Date()`
+          // (raise/call ~line 691, street advance ~line 609, advanceTurn.ts
+          // ~line 90, holdemGame.ts new-hand ~line 107). This fold→next-player
+          // branch did NOT, so the next actor inherited the previous actor's
+          // clock. When 2-3 non-terminal folds chained, the timer fired on a
+          // stale `turnStartedAt` and auto-folded the new actor within ~1s of
+          // their turn starting. Combined with the turnTimer's missing
+          // end-of-hand emit chain (handLifecycle.ts), this killed Hand 7→8
+          // in CeceAndShaunTest. The one-line fix:
           await tx.hand.update({
             where: { id: currentHand.id },
             data: {
               pot: newPot,
               currentBet: newCurrentBet,
               activePlayerIndex: nextIdx,
+              turnStartedAt: new Date(),
             },
           });
           return { action: 'fold', nextPlayer: freshPlayers[nextIdx].userId };

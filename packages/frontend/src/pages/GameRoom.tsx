@@ -71,12 +71,26 @@ export default function GameRoom() {
   // doesn't leave the previous hand's cards lingering, and the deal
   // animation feels like a single clean event rather than "twice".
   const [betweenHands, setBetweenHands] = useState<boolean>(false);
-  // Pre-action: "Check/Fold" toggle (Shaun 2026-05-14). When set to
-  // 'check_fold' while it is NOT the player's turn, the moment turn
-  // arrives the client auto-issues check (if free) or fold (if any bet
-  // to call). Player can cancel by clicking the toggle again. Cleared
-  // automatically on hand end / leave / not-active-in-hand.
-  const [preAction, setPreAction] = useState<'check_fold' | null>(null);
+  // Pre-action queue (Shaun 2026-05-14 v1, expanded to 3 options 2026-05-15).
+  // When set while it is NOT the player's turn, the moment turn arrives
+  // the client auto-issues the queued action:
+  //   'check'      — auto-check ONLY if amountToCall === 0. If anyone
+  //                  raises before our turn, this auto-deselects (you
+  //                  wouldn't want to surprise-call).
+  //   'fold'       — auto-fold whatever the situation. Useful if you
+  //                  know you're out regardless.
+  //   'check_fold' — check if free, fold if anyone bets. The classic
+  //                  pre-action button.
+  // Mutually exclusive. Player can cancel by clicking the same button
+  // again, or by switching to a different option. Cleared automatically
+  // on hand end / stage change / leave / not-active-in-hand. (Shaun
+  // 2026-05-15.)
+  type PreAction = 'check' | 'fold' | 'check_fold' | null;
+  const [preAction, setPreAction] = useState<PreAction>(null);
+  // Track the stage we last saw so we can auto-clear pre-actions when
+  // the betting round changes (preflop → flop, etc). Re-deciding on
+  // each street is safer than carrying intent across rounds.
+  const lastSeenStageRef = useRef<string | null>(null);
   const previousTurn = useRef<boolean>(false);
   // Track previous "eliminated" state for the local user so we play the
   // lose chime exactly once when they bust. Initialised null so the
@@ -142,13 +156,17 @@ export default function GameRoom() {
       setShowdownData(null);
     }
   }, [audioPrefs.popups]);
-  // Pre-action auto-fire (Shaun 2026-05-14). When the local player has
-  // queued a Check/Fold pre-action and turn just arrived, immediately
-  // issue the right action: free check if amountToCall is 0, otherwise
-  // fold. Then clear the pre-action so the next turn starts fresh.
-  // Also clear preAction if the player is no longer active in the hand
-  // (folded, eliminated, all-in) so it doesn't persist into the next
-  // hand stale.
+  // Pre-action auto-fire + auto-clear logic (Shaun 2026-05-14 v1,
+  // expanded to 3 options 2026-05-15).
+  //   1. If player is no longer active in the hand → clear.
+  //   2. If queued 'check' and anyone has raised (currentBet > 0 and we
+  //      owe to call) → auto-deselect. You queued a check; we won't
+  //      surprise-call you.
+  //   3. If stage changed (preflop → flop, etc) → clear all pre-actions.
+  //      Each street is a fresh decision.
+  //   4. If between hands → clear (already-completed hand context).
+  //   5. If it's now my turn AND a pre-action is queued → fire the
+  //      mapped live action and clear.
   useEffect(() => {
     if (!gameState) return;
     const pos = gameState.myPlayer?.position;
@@ -156,19 +174,58 @@ export default function GameRoom() {
       if (preAction !== null) setPreAction(null);
       return;
     }
-    if (gameState.isMyTurn && preAction === 'check_fold') {
-      const owesAny = parseInt(gameState.amountToCall || '0') > 0;
-      const next = owesAny ? 'fold' : 'check';
+
+    // (2) Auto-deselect 'check' when anyone has raised the action.
+    const owesAny = parseInt(gameState.amountToCall || '0') > 0;
+    if (preAction === 'check' && owesAny) {
       setPreAction(null);
-      // Fire through the shared handler so isMyTurn clears instantly.
-      handleAction(next);
+      return;
     }
-    // Clear preAction on hand end (no active hand / between hands).
+
+    // (3) Stage change → clear all pre-actions.
+    const stageNow = gameState.stage ?? null;
+    if (
+      lastSeenStageRef.current !== null &&
+      stageNow !== null &&
+      lastSeenStageRef.current !== stageNow &&
+      preAction !== null
+    ) {
+      setPreAction(null);
+      lastSeenStageRef.current = stageNow;
+      return;
+    }
+    if (stageNow !== null) lastSeenStageRef.current = stageNow;
+
+    // (4) Between hands → clear.
     if (betweenHands && preAction !== null) {
       setPreAction(null);
+      return;
+    }
+
+    // (5) Fire queued action on turn arrival.
+    if (gameState.isMyTurn && preAction !== null) {
+      let next: 'check' | 'fold' | null = null;
+      if (preAction === 'check_fold') {
+        next = owesAny ? 'fold' : 'check';
+      } else if (preAction === 'check') {
+        // Should already be cleared if owesAny became true (see (2)),
+        // but defensive: only fire check if it's actually legal.
+        next = owesAny ? null : 'check';
+      } else if (preAction === 'fold') {
+        next = 'fold';
+      }
+      setPreAction(null);
+      if (next) handleAction(next);
+      return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameState?.isMyTurn, gameState?.myPlayer?.position, betweenHands]);
+  }, [
+    gameState?.isMyTurn,
+    gameState?.myPlayer?.position,
+    gameState?.amountToCall,
+    gameState?.stage,
+    betweenHands,
+  ]);
   // Final standings snapshot captured BEFORE closeGame zeroes every chipStack.
   // closeGame refunds in-table chipStack back to off-table ChipBalance and
   // writes 0 to every GamePlayer.chipStack ÔÇö so the post-close gameState
@@ -824,15 +881,24 @@ export default function GameRoom() {
             <p className="text-gray-500 text-xs sm:text-sm">
               Blinds: {formatChips(gameState.smallBlind)} / {formatChips(gameState.bigBlind)}
             </p>
-            {/* Pre-action status (Shaun 2026-05-14): persistent text under
-                the blinds when the player has queued Check/Fold, so they
-                know what's about to happen and how to undo it. */}
-            {preAction === 'check_fold' && (
+            {/* Pre-action status (Shaun 2026-05-14, expanded 2026-05-15):
+                persistent text under the blinds when the player has
+                queued a pre-action, so they know what's about to happen
+                and how to undo it. */}
+            {preAction !== null && (
               <p
                 className="text-xs sm:text-sm mt-1 max-w-xs sm:max-w-md"
                 style={{ color: '#facc15' }}
               >
-                You've selected Check/Fold — click again to undo or choose another action before your turn.
+                {preAction === 'check_fold' && (
+                  <>You've selected Check/Fold — click again to undo or pick another action.</>
+                )}
+                {preAction === 'check' && (
+                  <>You've selected Check — auto-checks if no one raises. Auto-cancels if anyone raises.</>
+                )}
+                {preAction === 'fold' && (
+                  <>You've selected Fold — auto-folds when your turn arrives.</>
+                )}
               </p>
             )}
           </div>
@@ -951,15 +1017,29 @@ export default function GameRoom() {
 
             Wrapped in a transform: scale(tableZoom/100) container so the
             user-adjustable zoom buttons in the header (80/90/100/110/120)
-            resize the entire table proportionally. Width is inverse-scaled
-            so the table fills the same horizontal space at every zoom
-            level. (Shaun 2026-05-14.) */}
+            resize the entire table proportionally.
+
+            ZOOM-CENTERING FIX 2026-05-15: previous version used
+            `width: ${100*100/tableZoom}%` to inverse-scale the natural
+            width so the table filled the same horizontal space at every
+            zoom. But `transform: scale()` does NOT affect layout — the
+            inverse-width box still took its natural (overscaled) space
+            in the parent, and `margin: 0 auto` centred the
+            PRE-SCALE box. With clipping parents upstream (mx-auto +
+            max-w + overflow constraints), zoom < 100 drifted right
+            because the inverse-width overflowed asymmetrically.
+
+            New approach: `transform-origin: 50% 0` (top-centre), full
+            natural width, scale shrinks the visual size symmetrically
+            around the horizontal centre. At zoom < 100 there is extra
+            blank space below the table (acceptable; the layout below
+            is already separately positioned). Table stays centred at
+            every zoom level. */}
         <div
           style={{
             transform: `scale(${tableZoom / 100})`,
-            transformOrigin: 'top center',
-            width: `${(100 * 100) / tableZoom}%`,
-            margin: '0 auto',
+            transformOrigin: '50% 0',
+            width: '100%',
           }}
         >
         {viewport.isMobilePortrait ? (
@@ -992,7 +1072,7 @@ export default function GameRoom() {
             actionLoading={actionLoading}
             betweenHands={betweenHands}
             preAction={preAction}
-            onTogglePreAction={() => setPreAction(p => p === 'check_fold' ? null : 'check_fold')}
+            onSelectPreAction={(opt) => setPreAction(p => p === opt ? null : opt)}
           />
         ) : (
         <div className="relative">
@@ -1052,7 +1132,7 @@ export default function GameRoom() {
           actionLoading={actionLoading}
           betweenHands={betweenHands}
           preAction={preAction}
-          onTogglePreAction={() => setPreAction(p => p === 'check_fold' ? null : 'check_fold')}
+          onSelectPreAction={(opt) => setPreAction(p => p === opt ? null : opt)}
         />
         </div>
         )}

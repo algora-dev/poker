@@ -29,6 +29,7 @@
 
 import { getAvatarSrc } from '../utils/avatars';
 import { PlayingCard, CardBack } from './PlayingCard';
+import { PreActionBar, type PreActionOption } from './PreActionBar';
 
 interface Player {
   userId: string;
@@ -70,8 +71,8 @@ interface Props {
    * cards are shown.
    */
   betweenHands?: boolean;
-  preAction?: 'check_fold' | null;
-  onTogglePreAction?: () => void;
+  preAction?: PreActionOption | null;
+  onSelectPreAction?: (opt: PreActionOption) => void;
 }
 
 // Card rendering uses the single source-of-truth <PlayingCard/> /
@@ -115,13 +116,17 @@ export function PokerTableMobile({
   actionLoading,
   betweenHands,
   preAction,
-  onTogglePreAction,
+  onSelectPreAction,
 }: Props) {
   // Between-hands felt-clear: empty board + empty hole cards everywhere
   // until the deal animation fires on game:new-hand.
-  const board = betweenHands ? [] : _board;
-  const myPlayer = betweenHands ? { ..._myPlayer, holeCards: [] } : _myPlayer;
-  const opponents = betweenHands ? _opponents.map(o => ({ ...o, holeCards: [] })) : _opponents;
+  // Hide cards while waiting / between hands (Shaun 2026-05-15 — no
+  // deal has happened yet during the lobby/waiting state, so card
+  // backs are a lie). Matches PokerTable.tsx `hideCards` derivation.
+  const hideCards = betweenHands || status !== 'in_progress';
+  const board = hideCards ? [] : _board;
+  const myPlayer = hideCards ? { ..._myPlayer, holeCards: [] } : _myPlayer;
+  const opponents = hideCards ? _opponents.map(o => ({ ...o, holeCards: [] })) : _opponents;
   const stageLabel: Record<string, string> = {
     preflop: 'Pre-Flop', flop: 'Flop', turn: 'Turn', river: 'River',
     showdown: 'Showdown', completed: 'Complete', waiting: 'Waiting',
@@ -177,7 +182,7 @@ export function PokerTableMobile({
                     {formatChips(p.chipStack)}
                   </div>
                 </div>
-                {/* Cards / status (between-hands clears card-backs too) */}
+                {/* Cards / status (waiting + between-hands both clear card-backs) */}
                 <div className="h-[40px] flex items-center justify-center mt-1 gap-0.5">
                   {isEliminated ? (
                     <span className="text-[9px] text-gray-500 font-bold">OUT</span>
@@ -185,7 +190,7 @@ export function PokerTableMobile({
                     <span className="text-[9px] text-red-400 font-bold">FOLD</span>
                   ) : isAllIn ? (
                     <span className="text-[9px] text-purple-400 font-bold animate-pulse">ALL IN</span>
-                  ) : betweenHands ? null : (
+                  ) : hideCards ? null : (
                     <>
                       <CardBack size="xs" />
                       <CardBack size="xs" />
@@ -299,7 +304,7 @@ export function PokerTableMobile({
           {/* Hole cards on the right of your seat row. Hidden between
               hands so the deal animation can land them in cleanly. */}
           <div className="flex gap-1">
-            {!betweenHands && myPlayer.holeCards.length > 0
+            {!hideCards && myPlayer.holeCards.length > 0
               ? myPlayer.holeCards.map((c: any, i: number) => <PlayingCard key={i} card={c} size="md" />)
               : null}
           </div>
@@ -313,29 +318,24 @@ export function PokerTableMobile({
         )}
       </div>
 
-      {/* Pre-action zone (mobile): single Check/Fold toggle when it's not
-          our turn but we're still active in the hand. Rendered INLINE
-          directly below the hero seat row (Shaun playtest 2026-05-14)
-          so it sits under the hero's hole cards rather than as a fixed
-          viewport-bottom bar that obscures the rest of the table. */}
-      {!isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && !betweenHands && onTogglePreAction && (
-        <div className="mt-2 flex justify-center">
-          <button
-            onClick={onTogglePreAction}
-            title={preAction === 'check_fold' ? 'Click again to choose another action' : 'Queue Check (if free) or Fold (if anyone raises) for your next turn'}
-            className={`px-5 py-2.5 min-h-[44px] rounded-xl transition font-semibold text-sm flex items-center justify-center gap-1.5 shadow-lg whitespace-nowrap ${
-              preAction === 'check_fold'
-                ? 'bg-yellow-500 text-black ring-2 ring-yellow-300'
-                : 'bg-white/10 text-gray-300 active:bg-white/15 border border-white/10'
-            }`}
-            style={{ backdropFilter: 'blur(8px)' }}
-          >
-            {preAction === 'check_fold' ? '✓ FOLD?' : 'Check / Fold'}
-          </button>
-        </div>
+      {/* ── Bottom Action Area (mobile) ──
+          Two bars share the fixed-bottom slot:
+            • Live action bar  (Fold / Check / Call / Bet|Raise / All-In)
+            • Pre-action bar   (Check / Fold / Check/Fold)
+          Pre-action visible when not my turn but still active in hand.
+          Live bar visible when isMyTurn. (Shaun 2026-05-15 — unified
+          slot replaces the inline v1 Check/Fold button under the
+          hero's cards.) */}
+      {!isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && !betweenHands && onSelectPreAction && (
+        <PreActionBar
+          selected={preAction ?? null}
+          onSelect={onSelectPreAction}
+          isMobile={true}
+          isTablet={false}
+        />
       )}
 
-      {/* ── Action Buttons — sticky bottom on mobile ── */}
+      {/* ── Live action bar — sticky bottom on mobile ── */}
       {isMyTurn && status === 'in_progress' && myPlayer.position !== 'folded' && myPlayer.position !== 'eliminated' && myPlayer.position !== 'all_in' && (
         <div
           className="fixed bottom-0 inset-x-0 z-20 px-2 pt-2"
