@@ -17,6 +17,45 @@ declare module 'socket.io' {
   }
 }
 
+/**
+ * Verify a socket-handshake JWT and decide whether the bearer is
+ * authorised to open a socket connection.
+ *
+ * SECURITY [audit-31 H-01 / audit-32]:
+ * Sockets carry private game-state pushes (hole cards via the
+ * per-user room, action streams via the game room). Only access
+ * tokens may open a socket. Refresh tokens, legacy no-claim tokens,
+ * and anything with the wrong tokenType are rejected with a
+ * distinctive `reason` code so the test layer can assert which
+ * branch fired without parsing log strings.
+ *
+ * Exported for unit testing. The runtime `io.use` middleware below
+ * calls this and wraps the result in a `next(Error)` for socket.io.
+ */
+export function verifySocketToken(token: string): {
+  ok: true;
+  userId: string;
+} | {
+  ok: false;
+  reason: 'invalid_payload' | 'wrong_token_type' | 'invalid_or_expired';
+} {
+  try {
+    const payload = verifyJwt(token) as {
+      userId?: string;
+      tokenType?: 'access' | 'refresh';
+    };
+    if (!payload?.userId) {
+      return { ok: false, reason: 'invalid_payload' };
+    }
+    if (payload.tokenType !== 'access') {
+      return { ok: false, reason: 'wrong_token_type' };
+    }
+    return { ok: true, userId: payload.userId };
+  } catch {
+    return { ok: false, reason: 'invalid_or_expired' };
+  }
+}
+
 function extractToken(socket: Socket): string | null {
   // Preferred: socket.io auth handshake
   const authToken = (socket.handshake.auth as any)?.token;
@@ -88,28 +127,29 @@ export function initializeSocketServer(server: any) {
       logger.warn('Socket auth rejected: no token', { socketId: socket.id });
       return next(new Error('Unauthorized: missing token'));
     }
-    try {
-      const payload = verifyJwt(token) as {
-        userId?: string;
-        tokenType?: 'access' | 'refresh';
-      };
-      if (!payload?.userId) {
+    const verdict = verifySocketToken(token);
+    if (verdict.ok === true) {
+      socket.userId = verdict.userId;
+      return next();
+    }
+    // Map the verdict reason to a stable error message + log line.
+    switch (verdict.reason) {
+      case 'invalid_payload':
+        logger.warn('Socket auth rejected: invalid token payload', {
+          socketId: socket.id,
+        });
         return next(new Error('Unauthorized: invalid token payload'));
-      }
-      if (payload.tokenType !== 'access') {
+      case 'wrong_token_type':
         logger.warn('Socket auth rejected: wrong token type', {
           socketId: socket.id,
-          tokenType: payload.tokenType ?? 'missing',
         });
         return next(
           new Error('Unauthorized: socket auth requires an access token')
         );
-      }
-      socket.userId = payload.userId;
-      return next();
-    } catch (err) {
-      logger.warn('Socket auth rejected: bad token', { socketId: socket.id });
-      return next(new Error('Unauthorized: invalid or expired token'));
+      case 'invalid_or_expired':
+      default:
+        logger.warn('Socket auth rejected: bad token', { socketId: socket.id });
+        return next(new Error('Unauthorized: invalid or expired token'));
     }
   });
 

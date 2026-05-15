@@ -487,8 +487,11 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   });
 
   /**
-   * GET /api/admin/bots?secret=...
+   * GET /api/admin/bots
    * List active bot sessions across the process.
+   * Authenticate via the `X-Admin-Secret` header. (Query-string
+   * secret was the legacy transport; removed in audit-31 H-02 because
+   * query strings leak via browser history / proxy logs / referrers.)
    */
   fastify.get('/bots', async (request, reply) => {
     try {
