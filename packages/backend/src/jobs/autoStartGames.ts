@@ -91,7 +91,9 @@ async function cleanupFinishedGames() {
         status: 'in_progress',
       },
       include: {
-        players: true,
+        players: {
+          include: { user: { select: { username: true } } },
+        },
         hands: {
           orderBy: { createdAt: 'desc' as const },
           take: 1,
@@ -100,6 +102,40 @@ async function cleanupFinishedGames() {
     });
 
     for (const game of inProgressGames) {
+      // BOT-ONLY ORPHAN CHECK (Shaun playtest 2026-05-15, CeceVsShaunV4).
+      // If every non-eliminated seat is a bot user (username starts
+      // with 'bot_'), no real player is watching this game and it
+      // should be cancelled immediately. Otherwise the bots play
+      // forever and the game accumulates hands until something else
+      // intervenes (Shaun's V4 game ran 72 hands bot-only before
+      // manual cancel).
+      const liveSeats = game.players.filter(p => p.position !== 'eliminated');
+      const liveHumans = liveSeats.filter(
+        p => !(p.user?.username || '').startsWith('bot_')
+      );
+      if (liveSeats.length > 0 && liveHumans.length === 0) {
+        try {
+          const result = await closeGame({
+            gameId: game.id,
+            reason: 'stale_cleanup',
+            notes: 'Bot-only orphan: all live seats are bots (no humans seated/active)',
+          });
+          logger.info('Cleaned up bot-only orphan game', {
+            gameId: game.id,
+            name: game.name,
+            liveBots: liveSeats.length,
+            refundedPlayers: result.refundedPlayers.length,
+            totalRefunded: result.totalRefunded.toString(),
+          });
+        } catch (closeErr) {
+          logger.error('Bot-only orphan close failed', {
+            gameId: game.id,
+            error: (closeErr as Error).message,
+          });
+        }
+        continue;
+      }
+
       const latestHand = game.hands[0];
       const hasActiveHand = latestHand && latestHand.stage !== 'completed';
       

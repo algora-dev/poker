@@ -492,15 +492,42 @@ export default function GameRoom() {
       setDealTrigger(t => (t ?? 0) + 1);
     });
 
-    socket.on('player:joined', () => {
+    socket.on('player:joined', (data: any) => {
       // Playtest 2026-05-13: creator could not see joiners until manual
       // refresh. Belt-and-braces: server now also pushes a full game:state
-      // on join (see api/games/index.ts), but we also force a GET refresh
-      // immediately AND again at 500ms in case of replication lag between
-      // the joinGame transaction commit and the read replica getGameState
-      // hits, OR in case the socket missed the game:state push.
-      loadGameState();
-      setTimeout(() => loadGameState(), 500);
+      // on join (see api/games/index.ts).
+      //
+      // PLAYTEST 2026-05-15 follow-up (Shaun, CeceVsShaunV4): bug
+      // RE-APPEARED. Root cause this time: the two HTTP loadGameState()
+      // calls (immediately + at 500ms) were racing the socket-pushed
+      // game:state. HTTP reads can hit the read-replica and return
+      // STALE playerCount=1 just after the join transaction committed
+      // (replication lag), then setGameState() with the stale payload
+      // OVERWROTE the fresh socket-pushed state. The creator's UI then
+      // showed playerCount=1 until manual refresh.
+      //
+      // FIX: trust the socket-pushed game:state push. Only HTTP-refetch
+      // as a last-resort fallback at 1.2s, and ONLY if our local
+      // playerCount is still below what the player:joined event told
+      // us. If the broadcastGameState push has already updated us,
+      // we'll see the new playerCount and skip the HTTP call entirely
+      // — no clobbering.
+      const expectedCount = typeof data?.playerCount === 'number' ? data.playerCount : null;
+      setTimeout(() => {
+        setGameState(curr => {
+          const have = curr?.playerCount ?? 0;
+          if (expectedCount !== null && have >= expectedCount) {
+            // Socket push beat us — already up to date. Leave it alone.
+            return curr;
+          }
+          // Fallback: socket push didn't arrive or carried a stale
+          // count. Trigger an HTTP refetch (outside this updater).
+          // Use Promise.resolve so we don't run an effect inside the
+          // setState callback.
+          Promise.resolve().then(() => loadGameState());
+          return curr;
+        });
+      }, 1_200);
     });
 
     socket.on('game:showdown', (data: any) => {
@@ -915,26 +942,13 @@ export default function GameRoom() {
             <p className="text-gray-500 text-xs sm:text-sm">
               Blinds: {formatChips(gameState.smallBlind)} / {formatChips(gameState.bigBlind)}
             </p>
-            {/* Pre-action status (Shaun 2026-05-14, expanded 2026-05-15):
-                persistent text under the blinds when the player has
-                queued a pre-action, so they know what's about to happen
-                and how to undo it. */}
-            {preAction !== null && (
-              <p
-                className="text-xs sm:text-sm mt-1 max-w-xs sm:max-w-md"
-                style={{ color: '#facc15' }}
-              >
-                {preAction === 'check_fold' && (
-                  <>You've selected Check/Fold — click again to undo or pick another action.</>
-                )}
-                {preAction === 'check' && (
-                  <>You've selected Check — auto-checks if no one raises. Auto-cancels if anyone raises.</>
-                )}
-                {preAction === 'fold' && (
-                  <>You've selected Fold — auto-folds when your turn arrives.</>
-                )}
-              </p>
-            )}
+            {/* Pre-action status text was previously rendered HERE, under
+                the blinds line. It caused the table to shift down by a
+                line whenever a player queued a pre-action because the
+                text claimed extra header height (Shaun playtest
+                2026-05-15). The status info is now rendered INSIDE the
+                PreActionBar itself (which lives in the fixed-position
+                action-bar slot), so the table layout no longer reflows. */}
           </div>
           <div className="flex gap-2 items-center">
             <AudioToggle variant="compact" />
@@ -1360,7 +1374,11 @@ export default function GameRoom() {
                   className="flex-1 py-2.5 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition"
                   style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
                 >
-                  {gameState?.status === 'completed' ? 'Continue' : 'Play Next Hand'}
+                  {gameState?.status === 'completed'
+                    ? 'Continue'
+                    : gameState?.myPlayer?.position === 'eliminated'
+                      ? 'Watch Next Hand'
+                      : 'Play Next Hand'}
                 </button>
                 <button
                   onClick={handleLeaveGame}
@@ -1398,7 +1416,7 @@ export default function GameRoom() {
               className="px-5 py-2.5 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition"
               style={{background:'linear-gradient(135deg, #12ceec, #9c51ff)'}}
             >
-              Play Next Hand
+              {gameState?.myPlayer?.position === 'eliminated' ? 'Watch Next Hand' : 'Play Next Hand'}
             </button>
             <button
               onClick={handleLeaveGame}

@@ -44,12 +44,30 @@ export function PreActionBar({ selected, onSelect, isMobile, isTablet }: PreActi
       };
 
   const innerClass = isMobile
-    ? 'flex gap-1.5 rounded-2xl p-2 border border-white/10 shadow-2xl justify-center'
-    : 'flex gap-2 rounded-2xl p-3 border border-white/10 shadow-2xl justify-center';
+    ? 'flex flex-col gap-1 rounded-2xl p-2 border border-white/10 shadow-2xl'
+    : 'flex flex-col gap-1 rounded-2xl p-3 border border-white/10 shadow-2xl';
+  const buttonRowClass = isMobile
+    ? 'flex gap-1.5 justify-center'
+    : 'flex gap-2 justify-center';
+
+  // Compact status line beneath the buttons — keeps everything in the
+  // fixed-position bar slot so the table layout above never reflows when
+  // a pre-action is queued. Previous version put this text in the page
+  // header under "Blinds: x/y" and the wrap pushed the table down by
+  // ~1 line. (Shaun playtest 2026-05-15.)
+  const statusText =
+    selected === 'check_fold'
+      ? 'Check/Fold queued — click again to undo.'
+      : selected === 'check'
+        ? 'Check queued — auto-cancels if anyone raises.'
+        : selected === 'fold'
+          ? 'Fold queued — auto-folds on your turn.'
+          : null;
 
   return (
     <div className={wrapperClass} style={wrapperStyle}>
       <div className={innerClass} style={{ background: 'rgba(38,38,38,0.95)', backdropFilter: 'blur(8px)' }}>
+        <div className={buttonRowClass}>
         <PreActionButton
           label="Check"
           option="check"
@@ -83,6 +101,15 @@ export function PreActionBar({ selected, onSelect, isMobile, isTablet }: PreActi
           isMobile={isMobile}
           symbol={'\u21AA'}
         />
+        </div>
+        {statusText && (
+          <div
+            className="text-[10px] sm:text-xs text-center font-medium"
+            style={{ color: '#facc15' }}
+          >
+            {statusText}
+          </div>
+        )}
       </div>
     </div>
   );
