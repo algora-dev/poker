@@ -24,11 +24,16 @@ export interface AuthUser {
 }
 
 /**
- * Internal JWT payload shape we sign and verify. Includes a discriminator so
- * the same module can also represent the post-auth user without a TS conflict.
+ * Internal JWT payload shape we sign and verify.
+ *
+ * `tokenType` was added 2026-05-15 (audit-30 H-03) so /refresh can
+ * distinguish access tokens from refresh tokens. Optional in the type
+ * for backward compatibility with tokens issued before that fix
+ * landed; those will lack the claim until they expire (7d max).
  */
 interface JwtPayload {
   userId: string;
+  tokenType?: 'access' | 'refresh';
 }
 
 declare module '@fastify/jwt' {

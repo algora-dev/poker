@@ -577,16 +577,74 @@ export default async function gamesRoutes(fastify: FastifyInstance) {
           action,
         });
 
+        // SECURITY [audit-30, Gerald-flagged]: successful action clears
+        // any accumulated failure count so legitimate play after a
+        // momentary lapse (e.g. mis-clicked a check that was illegal)
+        // doesn't accumulate indefinitely.
+        try {
+          const { clearFailedActions } = await import(
+            '../../services/failedActionThrottle'
+          );
+          clearFailedActions(request.user!.id, id);
+        } catch (_) {}
+
         return reply.send({
           success: true,
           result,
         });
       } catch (error) {
+        // SECURITY [audit-30, Gerald-flagged 2026-05-15]: count rejected
+        // actions per (user, game) and 429 above 5/min. Stops adversarial
+        // probing while leaving normal play untouched (humans hit at most
+        // 1-2 illegal actions per minute even when fumbling).
+        let throttleExceeded = false;
+        let retryAfterMs = 0;
+        try {
+          const { recordFailedAction } = await import(
+            '../../services/failedActionThrottle'
+          );
+          const res = recordFailedAction(request.user!.id, id!);
+          throttleExceeded = res.exceeded;
+          retryAfterMs = res.retryAfterMs;
+        } catch (_) {}
+
+        // Emit a security_event AppLog row distinct from the normal
+        // action error category, so ops dashboards can separate adversarial
+        // probing from honest mistakes. (Gerald audit-30.)
+        try {
+          const { appLog } = await import('../../services/appLogger');
+          await appLog(
+            'warn',
+            'security_event',
+            `Rejected action ${action} for user ${request.user!.id.slice(-6)}`,
+            {
+              action,
+              reason: error instanceof Error ? error.message : String(error),
+              throttleExceeded,
+            },
+            { userId: request.user!.id, gameId: id }
+          );
+        } catch (_) {}
+
+        if (throttleExceeded) {
+          return reply.code(429).send({
+            error: 'Too many failed actions',
+            message:
+              'You have exceeded the rejected-action rate limit. Wait before trying again.',
+            retryAfterMs,
+          });
+        }
+
         if (error instanceof Error) {
           if (
             error.message.includes('Not your turn') ||
             error.message.includes('Invalid') ||
-            error.message.includes('Cannot check')
+            error.message.includes('Cannot check') ||
+            error.message.includes('cannot act') ||
+            error.message.includes('seat state') ||
+            error.message.includes('Stale action') ||
+            error.message.includes('min-raise') ||
+            error.message.includes('Nothing to call')
           ) {
             return reply.code(400).send({
               error: 'Bad request',

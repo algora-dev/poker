@@ -77,14 +77,18 @@ export default async function authRoutes(fastify: FastifyInstance) {
       // Create user
       const user = await createUser(data);
 
-      // Generate JWT tokens
+      // Generate JWT tokens.
+      // SECURITY [audit-30 H-03]: tokenType claim differentiates
+      // access vs refresh so /refresh can reject access tokens. The
+      // auth middleware ignores tokenType (any valid token from us
+      // identifies the user), but the refresh route enforces it.
       const accessToken = fastify.jwt.sign(
-        { userId: user.id },
+        { userId: user.id, tokenType: 'access' },
         { expiresIn: '15m' }
       );
 
       const refreshToken = fastify.jwt.sign(
-        { userId: user.id },
+        { userId: user.id, tokenType: 'refresh' },
         { expiresIn: '7d' }
       );
 
@@ -143,14 +147,14 @@ export default async function authRoutes(fastify: FastifyInstance) {
       // Authenticate user
       const user = await authenticateUser(data);
 
-      // Generate JWT tokens
+      // Generate JWT tokens. tokenType added (audit-30 H-03).
       const accessToken = fastify.jwt.sign(
-        { userId: user.id },
+        { userId: user.id, tokenType: 'access' },
         { expiresIn: '15m' }
       );
 
       const refreshToken = fastify.jwt.sign(
-        { userId: user.id },
+        { userId: user.id, tokenType: 'refresh' },
         { expiresIn: '7d' }
       );
 
@@ -197,13 +201,39 @@ export default async function authRoutes(fastify: FastifyInstance) {
     try {
       // Verify refresh token. After jwtVerify(), request.user is typed as
       // AuthUser, but on this route we actually want the raw signed payload
-      // (we sign { userId } only). Two-step cast: AuthUser -> unknown -> JwtPayload.
+      // (we sign { userId, tokenType } only).
       await request.jwtVerify();
-      const payload = (request.user as unknown) as { userId: string };
+      const payload = (request.user as unknown) as {
+        userId: string;
+        tokenType?: 'access' | 'refresh';
+      };
 
-      // Generate new access token
+      // SECURITY [audit-30 H-03]: refresh endpoint must reject access
+      // tokens. Previously any valid JWT (access OR refresh) could be
+      // used here, meaning a stolen access token could mint fresh
+      // access tokens indefinitely.
+      //
+      // Transition rule: tokens issued BEFORE this fix have no
+      // `tokenType` claim. We accept those (with a deprecation
+      // warning) so existing logged-in users aren't kicked out the
+      // moment this deploys. Once all pre-fix refresh tokens expire
+      // (7 days max), we can tighten to "tokenType must equal 'refresh'".
+      if (payload.tokenType === 'access') {
+        return reply.code(401).send({
+          error: 'Unauthorized',
+          message: 'Access tokens cannot be used to refresh; use a refresh token.',
+        });
+      }
+      if (!payload.tokenType) {
+        logger.warn(
+          '[auth/refresh] DEPRECATED legacy token without tokenType claim. User will need to re-login after 7d.',
+          { userId: payload.userId }
+        );
+      }
+
+      // Generate new access token (with tokenType claim).
       const accessToken = fastify.jwt.sign(
-        { userId: payload.userId },
+        { userId: payload.userId, tokenType: 'access' },
         { expiresIn: '15m' }
       );
 

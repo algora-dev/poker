@@ -259,11 +259,16 @@ export class BotSession {
     // Use the existing admin add-chips endpoint so we reuse its audit path.
     // It writes a ChipAudit row tagged 'admin_adjustment' with notes — we
     // append the BOT_FILL marker so audit queries can split it out cleanly.
+    // SECURITY [audit-30 H-01]: admin secret travels via header,
+    // not body. The body fallback still works for backward compatibility
+    // but emits a deprecation warning on the server side.
     const res = await fetch(`${this.cfg.baseUrl}/api/admin/add-chips`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-admin-secret': this.cfg.adminSecret,
+      },
       body: JSON.stringify({
-        secret: this.cfg.adminSecret,
         // Bot accounts use deterministic email: bot_<id>@bots.local
         email: `${this.username}@bots.local`,
         amount: needChips,

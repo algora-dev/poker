@@ -35,6 +35,70 @@ function isAdminSecretValid(provided: unknown): boolean {
   }
 }
 
+/**
+ * Extract the admin secret from a request, preferring the
+ * `X-Admin-Secret` header over query/body fallbacks.
+ *
+ * SECURITY [audit-30 H-01, Gerald-flagged 2026-05-15]:
+ * Previously admin secrets travelled via query string and request
+ * body. Query strings leak into browser history, reverse-proxy logs,
+ * support screenshots, and referrers — a real exposure risk for a
+ * real-money product.
+ *
+ * NEW (preferred): clients send `X-Admin-Secret: <secret>` header.
+ * Headers are not logged by default proxies and are not visible in
+ * browser history or referrer.
+ *
+ * DEPRECATED (still accepted with a warning log so existing tooling
+ * keeps working through this transition): the legacy body / query
+ * `secret` field. Tooling should migrate to the header.
+ *
+ * Returns the secret if found anywhere (or null), plus a `legacy`
+ * flag so callers can emit a deprecation warning.
+ */
+export function getAdminSecretFromRequest(request: any): {
+  secret: string | null;
+  legacy: 'body' | 'query' | null;
+} {
+  // Preferred: X-Admin-Secret header. fastify normalises header names
+  // to lower-case.
+  const headerSecret =
+    request.headers?.['x-admin-secret'] ??
+    request.headers?.['X-Admin-Secret'];
+  if (typeof headerSecret === 'string' && headerSecret.length > 0) {
+    return { secret: headerSecret, legacy: null };
+  }
+  // Fallback: body.secret (legacy).
+  const body: any = request.body;
+  if (typeof body?.secret === 'string' && body.secret.length > 0) {
+    return { secret: body.secret, legacy: 'body' };
+  }
+  // Fallback: query.secret (legacy, worst case — hits server logs).
+  const query: any = request.query;
+  if (typeof query?.secret === 'string' && query.secret.length > 0) {
+    return { secret: query.secret, legacy: 'query' };
+  }
+  return { secret: null, legacy: null };
+}
+
+/**
+ * Validate + log helper combining `getAdminSecretFromRequest` with
+ * `isAdminSecretValid`. Returns true if the request is admin-authenticated,
+ * false otherwise. Always logs the source (header / body / query) at info
+ * level so we can monitor migration progress in production.
+ */
+function validateAdminAuth(request: any, route: string): boolean {
+  const { secret, legacy } = getAdminSecretFromRequest(request);
+  if (!isAdminSecretValid(secret)) return false;
+  if (legacy) {
+    logger.warn(
+      `[admin-auth] DEPRECATED admin secret transport via ${legacy} on ${route}. Migrate to X-Admin-Secret header.`,
+      { route, legacy }
+    );
+  }
+  return true;
+}
+
 export default async function adminRoutes(fastify: FastifyInstance) {
   /**
    * POST /api/admin/cleanup-games
@@ -43,14 +107,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/cleanup-games', async (request, reply) => {
     try {
-      // Check admin secret
-      const { secret } = z
-        .object({
-          secret: z.string(),
-        })
-        .parse(request.body);
-
-      if (!isAdminSecretValid(secret)) {
+      if (!validateAdminAuth(request, '/cleanup-games')) {
         return reply.code(403).send({
           error: 'Forbidden',
           message: 'Invalid admin secret',
@@ -81,20 +138,22 @@ export default async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/cancel-game', async (request, reply) => {
     try {
-      const { secret, gameId, reason } = z
-        .object({
-          secret: z.string(),
-          gameId: z.string(),
-          reason: z.string(),
-        })
-        .parse(request.body);
-
-      if (!isAdminSecretValid(secret)) {
+      if (!validateAdminAuth(request, '/cancel-game')) {
         return reply.code(403).send({
           error: 'Forbidden',
           message: 'Invalid admin secret',
         });
       }
+      const { gameId, reason } = z
+        .object({
+          // `secret` is now optional in the body since the preferred
+          // transport is the X-Admin-Secret header. validateAdminAuth
+          // above already checked the secret from whichever source.
+          secret: z.string().optional(),
+          gameId: z.string(),
+          reason: z.string(),
+        })
+        .parse(request.body);
 
       const result = await cancelGame(gameId, reason);
 
@@ -124,11 +183,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get('/refund-log', async (request, reply) => {
     try {
-      const { secret } = z
-        .object({ secret: z.string() })
-        .parse(request.query);
-
-      if (!isAdminSecretValid(secret)) {
+      if (!validateAdminAuth(request, '/refund-log')) {
         return reply.code(403).send({
           error: 'Forbidden',
           message: 'Invalid admin secret',
@@ -183,10 +238,10 @@ export default async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get('/logs', async (request, reply) => {
     try {
-      const query = request.query as any;
-      if (!isAdminSecretValid(query.secret)) {
+      if (!validateAdminAuth(request, '/logs')) {
         return reply.code(403).send({ error: 'Invalid admin secret' });
       }
+      const query = request.query as any;
 
       const level = query.level || undefined;
       const category = query.category || undefined;
@@ -221,15 +276,14 @@ export default async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/add-chips', async (request, reply) => {
     try {
-      const { secret, email, amount } = z.object({
-        secret: z.string(),
-        email: z.string().email(),
-        amount: z.number().min(0.01),
-      }).parse(request.body);
-
-      if (!isAdminSecretValid(secret)) {
+      if (!validateAdminAuth(request, '/add-chips')) {
         return reply.code(403).send({ error: 'Invalid admin secret' });
       }
+      const { email, amount } = z.object({
+        secret: z.string().optional(),
+        email: z.string().email(),
+        amount: z.number().finite().min(0.01),
+      }).parse(request.body);
 
       const user = await prisma.user.findUnique({ where: { email } });
       if (!user) {
@@ -297,21 +351,20 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         });
       }
 
+      if (!validateAdminAuth(request, '/spawn-bots')) {
+        return reply.code(403).send({ error: 'Forbidden', message: 'Invalid admin secret' });
+      }
       const body = z
         .object({
-          secret: z.string(),
+          secret: z.string().optional(),
           gameId: z.string(),
           count: z.number().int().min(1).max(MAX_BOTS_PER_CALL),
           strategy: z.enum(['random', 'tight', 'loose']).optional(),
-          buyInChips: z.number().min(0.01).optional(),
-          bankrollChips: z.number().min(0.01).optional(),
+          buyInChips: z.number().finite().min(0.01).optional(),
+          bankrollChips: z.number().finite().min(0.01).optional(),
           thinkMs: z.number().int().min(0).max(10_000).optional(),
         })
         .parse(request.body);
-
-      if (!isAdminSecretValid(body.secret)) {
-        return reply.code(403).send({ error: 'Forbidden', message: 'Invalid admin secret' });
-      }
 
       // Re-validate (defense in depth) and also normalize the strategy field.
       validateSpawnRequest({
@@ -377,7 +430,11 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         baseUrl: botBaseUrl,
         buyInChips,
         bankrollChips,
-        adminSecret: body.secret,
+        // adminSecret for child bot HTTP calls: whichever transport the
+        // caller used (header or legacy body). Extracted via the helper so
+        // we don't depend on body.secret being present after the header
+        // migration. (audit-30 H-01.)
+        adminSecret: getAdminSecretFromRequest(request).secret ?? '',
         thinkMs: body.thinkMs,
       });
 
@@ -414,12 +471,12 @@ export default async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/kill-bots', async (request, reply) => {
     try {
-      const { secret, gameId } = z
-        .object({ secret: z.string(), gameId: z.string() })
-        .parse(request.body);
-      if (!isAdminSecretValid(secret)) {
+      if (!validateAdminAuth(request, '/kill-bots')) {
         return reply.code(403).send({ error: 'Forbidden', message: 'Invalid admin secret' });
       }
+      const { gameId } = z
+        .object({ secret: z.string().optional(), gameId: z.string() })
+        .parse(request.body);
       const killed = killBotsAtGame(gameId);
       return reply.send({ success: true, killed });
     } catch (error) {
@@ -437,8 +494,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
    */
   fastify.get('/bots', async (request, reply) => {
     try {
-      const { secret } = z.object({ secret: z.string() }).parse(request.query);
-      if (!isAdminSecretValid(secret)) {
+      if (!validateAdminAuth(request, '/bots')) {
         return reply.code(403).send({ error: 'Forbidden', message: 'Invalid admin secret' });
       }
       return reply.send({

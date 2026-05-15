@@ -116,16 +116,48 @@ export function initializeSocketServer(server: any) {
     // private game room. Non-participants must not subscribe to private hand
     // events (hole cards, action streams) or be able to spy on tables.
     // See audits/t3-poker/06-dave-fix-prompt.md Phase 4.
+    //
+    // SECURITY [audit-30 M-02, Gerald-flagged 2026-05-15]: per-socket
+    // throttle + log coalescing. An authenticated attacker can spam
+    // invalid join:game requests, forcing the server to write a
+    // socket:join_rejected AppLog row per attempt. That doesn't steal
+    // chips but it amplifies DB/log volume cheaply. We:
+    //   1. Cap join attempts at 10/socket/60s. Above that, silently
+    //      reject (no log write, no ack-with-code) for the rest of
+    //      the window. Honest reconnects never hit 10/min.
+    //   2. Coalesce rejected-join AppLog rows: at most one rejection
+    //      row per (socket, gameId) per 60s. Repeated rejections to
+    //      the same room are dropped from the log.
+    const joinAttempts: number[] = [];
+    const recentRejectedJoins = new Map<string, number>(); // gameId -> last log ts
+    const JOIN_ATTEMPT_WINDOW_MS = 60_000;
+    const JOIN_ATTEMPT_LIMIT = 10;
+    const JOIN_REJECT_LOG_DEDUPE_MS = 60_000;
+
     socket.on('join:game', async (gameId: string, ack?: (resp: any) => void) => {
       const respond = (ok: boolean, code?: string, message?: string) => {
         if (typeof ack === 'function') {
           try { ack({ ok, code, message }); } catch { /* ignore ack errors */ }
         }
       };
+
+      // Spam throttle.
+      const now = Date.now();
+      const cutoff = now - JOIN_ATTEMPT_WINDOW_MS;
+      while (joinAttempts.length && joinAttempts[0] < cutoff) joinAttempts.shift();
+      joinAttempts.push(now);
+      if (joinAttempts.length > JOIN_ATTEMPT_LIMIT) {
+        // Silent reject. No AppLog row. Honest clients never hit this.
+        return respond(false, 'rate_limited', 'Too many join attempts');
+      }
+
       const verdict = await checkGameRoomJoin(prisma, userId, gameId);
       if (verdict.ok === true) {
         socket.join(`game:${gameId}`);
         logger.info('Player joined game room', { gameId, socketId: socket.id, userId });
+        // Clear rejected-coalesce state for this room since we just
+        // successfully joined.
+        recentRejectedJoins.delete(gameId);
         // DIAGNOSTIC (2026-05-13): persist join outcomes so we can confirm,
         // after the fact, which sockets actually subscribed to a given game
         // room. Bug being chased: UI desync where clients seem to miss
@@ -138,18 +170,25 @@ export function initializeSocketServer(server: any) {
         } catch { /* non-fatal */ }
         return respond(true);
       } else {
-        logger.warn('join:game rejected', {
-          gameId,
-          socketId: socket.id,
-          userId,
-          code: verdict.code,
-        });
-        try {
-          const { appLog } = await import('../services/appLogger');
-          await appLog('warn', 'system', 'socket:join_rejected', {
-            socketId: socket.id, userId: userId.slice(-6), code: verdict.code,
-          }, { userId, gameId });
-        } catch { /* non-fatal */ }
+        // Coalesce rejected-join log writes. At most one row per
+        // (socket, gameId) per 60s.
+        const lastLogTs = recentRejectedJoins.get(gameId) ?? 0;
+        const shouldLog = now - lastLogTs >= JOIN_REJECT_LOG_DEDUPE_MS;
+        if (shouldLog) {
+          recentRejectedJoins.set(gameId, now);
+          logger.warn('join:game rejected', {
+            gameId,
+            socketId: socket.id,
+            userId,
+            code: verdict.code,
+          });
+          try {
+            const { appLog } = await import('../services/appLogger');
+            await appLog('warn', 'system', 'socket:join_rejected', {
+              socketId: socket.id, userId: userId.slice(-6), code: verdict.code,
+            }, { userId, gameId });
+          } catch { /* non-fatal */ }
+        }
         return respond(false, verdict.code, verdict.message);
       }
     });

@@ -87,4 +87,29 @@ if (CONFIG.NODE_ENV === 'production') {
   }
 }
 
+// SECURITY [audit-30 M-04]: JWT secret hardening in production.
+// A weak JWT secret collapses the entire auth model. We already require
+// JWT_SECRET (via `requiredVars` above), but the boot-time check below
+// catches secrets that exist but are too short or are obvious placeholders.
+//
+// Mirror the ADMIN_SECRET rules: ≥ 32 chars, no known placeholders.
+if (CONFIG.NODE_ENV === 'production') {
+  if (CONFIG.JWT_SECRET.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters in production');
+  }
+  const jwtPlaceholders = [
+    'change-me-in-production',
+    'secret',
+    'jwt-secret',
+    'your-secret-here',
+    'changeme',
+    'changethis',
+    'test-secret',
+    'dev-secret',
+  ];
+  if (jwtPlaceholders.includes(CONFIG.JWT_SECRET.toLowerCase())) {
+    throw new Error('JWT_SECRET is set to a known placeholder; rotate to a random 256-bit value');
+  }
+}
+
 export default CONFIG;
