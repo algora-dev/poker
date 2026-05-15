@@ -42,9 +42,18 @@ const credentialLimit = {
     keyGenerator: credKey,
   },
 };
+// Signup rate limit. Tuned 2026-05-15 (Shaun playtest feedback):
+// the previous 5/hour/IP was tripping legitimate testers who shared
+// an IP (office wifi, mobile carrier NAT, household). Bumped to
+// 30/hour/IP — still tight enough to block automated abuse but
+// loose enough that a group of 4-6 testers signing up from the
+// same network can all get in without hitting the wall.
+//
+// Anti-cheat phase 2 will add additional protections (per-user
+// failure throttle, JWT tokenType strictness) before public mainnet.
 const signupLimit = {
   rateLimit: {
-    max: 5,                   // 5 signups/hour per IP
+    max: 30,
     timeWindow: '1 hour',
   },
 };
